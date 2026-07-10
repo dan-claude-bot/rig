@@ -5,7 +5,7 @@ set -euo pipefail
 
 log()  { printf 'deployor-bootstrap: %s\n' "$*"; }
 warn() { printf 'deployor-bootstrap: WARNING: %s\n' "$*" >&2; }
-die()  { printf 'deployor-bootstrap: ERROR: %s\n' "$*" >&2; exit "${2:-1}"; }
+die()  { printf 'deployor-bootstrap: ERROR: %s\n' "$1" >&2; exit "${2:-1}"; }
 
 usage() {
   cat <<'EOF'
