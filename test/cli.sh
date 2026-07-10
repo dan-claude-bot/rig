@@ -17,7 +17,7 @@ check() {
     printf '%s\n' "$out" | sed 's/^/    /'
     FAIL=$((FAIL + 1)); return
   fi
-  if [ -n "$substr" ] && ! printf '%s' "$out" | grep -qF "$substr"; then
+  if [ -n "$substr" ] && ! printf '%s' "$out" | grep -qF -e "$substr"; then
     echo "FAIL: $desc — output missing '$substr'"
     printf '%s\n' "$out" | sed 's/^/    /'
     FAIL=$((FAIL + 1)); return
