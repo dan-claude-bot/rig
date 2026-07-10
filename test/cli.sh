@@ -42,6 +42,16 @@ else
   echo "skip: bootstrap non-root refusal (running as root)"
 fi
 
+check "coolify: version required, exit 2"  2 "--version"      "$ROOT/commands/coolify-install.sh"
+check "coolify: --help exits 0"            0 "usage:"         "$ROOT/commands/coolify-install.sh" --help
+check "coolify: version needs value"       2 "needs a value"  "$ROOT/commands/coolify-install.sh" --version
+check "coolify: unknown flag exits 2"      2 "unknown flag"   "$ROOT/commands/coolify-install.sh" --nope
+if [ "$(id -u)" -ne 0 ]; then
+  check "coolify: refuses non-root"        1 "must run as root" "$ROOT/commands/coolify-install.sh" --version 4.1.2
+else
+  echo "skip: coolify non-root refusal (running as root)"
+fi
+
 echo "---"
 echo "$PASS passed, $FAIL failed"
 [ "$FAIL" -eq 0 ]
