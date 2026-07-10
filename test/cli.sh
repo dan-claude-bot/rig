@@ -31,6 +31,17 @@ check "help exits 0"                     0 "usage:" "$ROOT/bin/deployor" help
 check "unknown command exits 2"          2 "unknown command" "$ROOT/bin/deployor" frobnicate
 check "bare coolify shows usage, exit 2" 2 "usage:" "$ROOT/bin/deployor" coolify
 
+check "bootstrap: role required, exit 2"   2 "role required"  "$ROOT/commands/bootstrap.sh"
+check "bootstrap: --help exits 0"          0 "usage:"         "$ROOT/commands/bootstrap.sh" --help
+check "bootstrap: unknown role exits 2"    2 "unknown role"   "$ROOT/commands/bootstrap.sh" potato
+check "bootstrap: unknown flag exits 2"    2 "unknown flag"   "$ROOT/commands/bootstrap.sh" workload --nope
+check "bootstrap: hostname needs value"    2 "needs a value"  "$ROOT/commands/bootstrap.sh" workload --hostname
+if [ "$(id -u)" -ne 0 ]; then
+  check "bootstrap: refuses non-root"      1 "must run as root" env TS_AUTHKEY=x "$ROOT/commands/bootstrap.sh" workload
+else
+  echo "skip: bootstrap non-root refusal (running as root)"
+fi
+
 echo "---"
 echo "$PASS passed, $FAIL failed"
 [ "$FAIL" -eq 0 ]
