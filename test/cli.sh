@@ -52,6 +52,20 @@ else
   echo "skip: coolify non-root refusal (running as root)"
 fi
 
+check "bare runner shows usage, exit 2"  2 "usage:"          "$ROOT/bin/rig" runner
+check "runner: --help exits 0"           0 "usage:"          "$ROOT/commands/runner-install.sh" --help
+check "runner: repo required, exit 2"    2 "--repo"          "$ROOT/commands/runner-install.sh" --version 2.335.1
+check "runner: version required, exit 2" 2 "--version"       "$ROOT/commands/runner-install.sh" --repo acme/widgets
+check "runner: repo needs value"         2 "needs a value"   "$ROOT/commands/runner-install.sh" --repo
+check "runner: rejects bad repo slug"    2 "owner/repo"      "$ROOT/commands/runner-install.sh" --repo not-a-slug --version 2.335.1
+check "runner: refuses --user root"      2 "must not be root" "$ROOT/commands/runner-install.sh" --repo acme/widgets --version 2.335.1 --user root
+check "runner: unknown flag exits 2"     2 "unknown flag"    "$ROOT/commands/runner-install.sh" --nope
+if [ "$(id -u)" -ne 0 ]; then
+  check "runner: refuses non-root"       1 "must run as root" env RUNNER_TOKEN=x "$ROOT/commands/runner-install.sh" --repo acme/widgets --version 2.335.1
+else
+  echo "skip: runner non-root refusal (running as root)"
+fi
+
 echo "---"
 echo "$PASS passed, $FAIL failed"
 [ "$FAIL" -eq 0 ]

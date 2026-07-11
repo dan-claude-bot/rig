@@ -14,6 +14,10 @@ commands:
       (TS_AUTHKEY env overrides the prompt). Run as root.
   coolify install --version <pin>
       Pinned Coolify install (AUTOUPDATE=false). Control-plane box only.
+  runner install --repo <owner/repo> --version <pin> [options]
+      GitHub Actions runner as a systemd service under an unprivileged
+      user — outbound-only, no Docker. Prompts for the short-lived
+      registration token (RUNNER_TOKEN env overrides). Run as root.
 
 install/upgrade:
   curl -fsSL https://raw.githubusercontent.com/heavy-duty/rig/main/install.sh | bash
@@ -35,6 +39,16 @@ case "$cmd" in
     fi
     shift
     exec "$ROOT/commands/coolify-install.sh" "$@"
+    ;;
+  runner)
+    shift
+    sub="${1:-}"
+    if [ "$sub" != "install" ]; then
+      usage >&2
+      exit 2
+    fi
+    shift
+    exec "$ROOT/commands/runner-install.sh" "$@"
     ;;
   -h|--help|help)
     usage

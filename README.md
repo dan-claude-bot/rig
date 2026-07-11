@@ -53,6 +53,45 @@ Control-plane box only. Installs Coolify at exactly the pinned version with
 the platform must never move underneath it on its own. Upgrading is an
 explicit re-run with a new pin. The pin is required; there is no default.
 
+### `rig runner install --repo <owner/repo> --version <pin>`
+
+Workload box only, run after `rig bootstrap workload`:
+
+```sh
+rig bootstrap workload --hostname my-ci-box --ts-tag tag:ci
+rig runner install --repo acme/widgets --version 2.335.1
+```
+
+Installs GitHub's official `actions/runner` as a systemd service under an
+unprivileged user (default `github-runner`, created if absent, never root, no
+supplementary groups). The runner is an agent, not a server: it long-polls
+GitHub outbound and receives jobs down that already-established connection,
+so it needs **zero inbound ports** and works fine behind a deny-all
+firewall — it can even trigger deploys on hosts only it can reach, like a
+tailnet-only control plane.
+
+No Docker, deliberately: the Docker socket is a root API and `docker` group
+membership is root-equivalent, which is a gratuitous path to root on a box
+whose whole point is a narrow blast radius. Add Docker only once a job
+genuinely needs it, and rethink the isolation model then.
+
+- `--name <name>` — runner name (default: this host's hostname)
+- `--labels <csv>` — runner labels, replacing the `ci-runner` default — keep
+  any label your workflows' `runs-on` needs (GitHub adds `self-hosted` itself)
+- `--user <name>` — the unprivileged service user (default: `github-runner`)
+
+**The registration token:** provide it via the `RUNNER_TOKEN` env var or type
+it at the interactive prompt. It's short-lived, consumed at registration, and
+never written to disk by rig.
+
+The version pin is required, same as `coolify install` — but unlike Coolify,
+the installed runner **self-updates**: GitHub refuses jobs from stale
+runners, so freezing the version would just make it silently stop taking
+work. The pin states what you install today; GitHub owns the treadmill after
+that.
+
+Convergent — safe to re-run; an already-registered runner is left alone.
+
 ## What rig deliberately does NOT do
 
 - **Provider firewalls** — Docker publishes ports past host firewalls, so
