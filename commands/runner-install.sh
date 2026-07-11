@@ -10,11 +10,14 @@ die()  { printf 'rig-runner: ERROR: %s\n' "$1" >&2; exit "${2:-1}"; }
 
 usage() {
   cat <<'EOF'
-usage: rig runner install --repo <owner/repo> --version <pin> [options]
+usage: rig runner install --repo <owner/repo> [options]
 
   --repo <owner/repo>   GitHub repository the runner registers to (required)
   --version <pin>       actions/runner release to install, e.g. 2.335.1
-                        (required; no default — you state what you install)
+                        (default: the latest release, resolved at install
+                        time — safe here because the runner self-updates
+                        regardless; pin it when you need a deterministic,
+                        auditable install)
   --name <name>         runner name (default: this host's hostname)
   --labels <csv>        runner labels; replaces the default (default: ci-runner)
   --user <name>         unprivileged service user (default: github-runner;
@@ -66,7 +69,6 @@ done
 if ! printf '%s' "$REPO" | grep -qE '^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$'; then
   die "--repo must be owner/repo" 2
 fi
-[ -n "$VERSION" ] || die "--version <pin> is required" 2
 VERSION="${VERSION#v}"
 [ "$RUNNER_USER" != "root" ] || die "runner user must not be root" 2
 
@@ -123,6 +125,20 @@ else
     aarch64) ARCH="arm64" ;;
     *) die "unsupported arch: $(uname -m)" ;;
   esac
+  if [ -z "$VERSION" ]; then
+    # No pin given: resolve the latest release by following the redirect on
+    # the /releases/latest page — no API call, no rate limit, no JSON to
+    # parse on a dependency-free box.
+    LATEST_URL="$(curl -fsSLI -o /dev/null -w '%{url_effective}' \
+      https://github.com/actions/runner/releases/latest)" \
+      || die "could not resolve the latest actions/runner release"
+    VERSION="${LATEST_URL##*/}"
+    VERSION="${VERSION#v}"
+    case "$VERSION" in
+      ""|*[!0-9.]*) die "could not parse a version from ${LATEST_URL}" ;;
+    esac
+    log "resolved latest actions/runner: ${VERSION}"
+  fi
   URL="https://github.com/actions/runner/releases/download/v${VERSION}/actions-runner-linux-${ARCH}-${VERSION}.tar.gz"
   WORKDIR="$(mktemp -d)"
   cleanup() { rm -rf "$WORKDIR"; }

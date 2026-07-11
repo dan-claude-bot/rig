@@ -274,6 +274,27 @@ git commit -m "docs: README section for runner install"
 
 ---
 
+## Addendum (2026-07-11, operator-requested, post final review)
+
+A third bootstrap role, `runner`, joins `control-plane|workload` — requested
+for CLI consistency (each follow-up command applies to exactly one role) and
+because it closes a real footgun mechanically: the role defaults `--ts-tag`
+to `tag:ci` and **refuses `tag:server`** (exit 2, validated before the root
+check). Forgetting the tag flag previously joined the CI box with the default
+server tag — the exact misconfiguration the runner posture exists to prevent.
+Everything else about bootstrap is unchanged; `runner install`'s contract is
+untouched. Tests: +2 (`runner refuses tag:server`, `runner role parses /
+refuses non-root`) → 27 non-root.
+
+Second amendment (same day): `runner install --version` becomes **optional**
+— omitted, rig resolves the latest release at install time by following the
+`releases/latest` redirect (no API, no rate limit, no JSON parsing; validated
+against a digits-and-dots pattern before use). Safe here, and only here,
+because the runner self-updates regardless of what you install; `coolify
+install` keeps its mandatory pin — Coolify never self-updates, so its version
+is a verified contract, not a starting point. The `version required` test is
+replaced by a `--version needs a value` test → still 27 non-root.
+
 ## Integration (orchestrator, after final review — not an SDD task)
 
 1. Push the branch to the fork and open the PR **against upstream**:
