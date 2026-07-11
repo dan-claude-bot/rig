@@ -61,14 +61,14 @@ Control-plane box only. Installs Coolify at exactly the pinned version with
 the platform must never move underneath it on its own. Upgrading is an
 explicit re-run with a new pin. The pin is required; there is no default.
 
-### `rig runner install --repo <owner/repo> --version <pin>`
+### `rig runner install --repo <owner/repo>`
 
 Runner box only, run after `rig bootstrap runner` (the same two-step rhythm
 as `bootstrap control-plane` → `coolify install`):
 
 ```sh
 rig bootstrap runner --hostname my-ci-box
-rig runner install --repo acme/widgets --version 2.335.1
+rig runner install --repo acme/widgets
 ```
 
 Installs GitHub's official `actions/runner` as a systemd service under an
@@ -84,6 +84,10 @@ membership is root-equivalent, which is a gratuitous path to root on a box
 whose whole point is a narrow blast radius. Add Docker only once a job
 genuinely needs it, and rethink the isolation model then.
 
+- `--version <pin>` — actions/runner release to install (default: the
+  latest release, resolved at install time; e.g. `--version 2.335.1` —
+  the latest as of this writing). Pin it when you need a deterministic,
+  auditable install.
 - `--name <name>` — runner name (default: this host's hostname)
 - `--labels <csv>` — runner labels, replacing the `ci-runner` default — keep
   any label your workflows' `runs-on` needs (GitHub adds `self-hosted` itself)
@@ -93,11 +97,13 @@ genuinely needs it, and rethink the isolation model then.
 it at the interactive prompt. It's short-lived, consumed at registration, and
 never written to disk by rig.
 
-The version pin is required, same as `coolify install` — but unlike Coolify,
-the installed runner **self-updates**: GitHub refuses jobs from stale
-runners, so freezing the version would just make it silently stop taking
-work. The pin states what you install today; GitHub owns the treadmill after
-that.
+Why latest-by-default here when `coolify install` demands a pin: the two
+tools age differently. Coolify never self-updates (`AUTOUPDATE=false`), so
+its version is a contract your deploy tooling is verified against — stating
+it is the point. The runner **self-updates regardless**: GitHub refuses jobs
+from stale runners, so freezing it would just make it silently stop taking
+work. The install-time version is a starting point either way; `--version`
+exists for when you want that starting point deterministic and auditable.
 
 Convergent — safe to re-run; an already-registered runner is left alone.
 
