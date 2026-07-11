@@ -8,10 +8,11 @@ usage() {
 usage: rig <command> [args]
 
 commands:
-  bootstrap <control-plane|workload> [--hostname <name>] [--ts-tag <tag>]
+  bootstrap <control-plane|workload|runner> [--hostname <name>] [--ts-tag <tag>]
       OS plumbing on a pristine Debian box: hardening, unattended-upgrades,
       tailscale join. Prompts for a single-use tailnet pre-auth key
-      (TS_AUTHKEY env overrides the prompt). Run as root.
+      (TS_AUTHKEY env overrides the prompt). Run as root. Role runner
+      defaults to tag:ci and refuses tag:server.
   coolify install --version <pin>
       Pinned Coolify install (AUTOUPDATE=false). Control-plane box only.
   runner install --repo <owner/repo> --version <pin> [options]

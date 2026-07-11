@@ -20,7 +20,7 @@ PATH (`/usr/local/bin` when root). Re-run any time to upgrade.
 
 ## Commands
 
-### `rig bootstrap <control-plane|workload>`
+### `rig bootstrap <control-plane|workload|runner>`
 
 Run as root on the fresh box (over SSH). Convergent — safe to re-run; a
 second run changes nothing.
@@ -28,10 +28,13 @@ second run changes nothing.
 ```sh
 rig bootstrap control-plane --hostname my-coolify-box
 rig bootstrap workload --hostname my-prod-box
+rig bootstrap runner --hostname my-ci-box
 ```
 
 - `--hostname <name>` — tailnet hostname (default: the role name)
-- `--ts-tag <tag>` — tailnet tag to advertise (default: `tag:server`)
+- `--ts-tag <tag>` — tailnet tag to advertise (default: `tag:server`;
+  the `runner` role defaults to `tag:ci` instead, and **refuses**
+  `tag:server` outright — see below)
 
 What it does: installs `curl ca-certificates unattended-upgrades` (and
 enables periodic unattended upgrades); writes an sshd hardening drop-in
@@ -42,9 +45,14 @@ tailscale and joins your tailnet.
 the interactive prompt. Use a **single-use, tagged, short-expiry** key. It
 lives in process memory only — rig never writes a credential to disk.
 
-The two roles are identical today except the default hostname; they exist
-because control-plane and workload boxes diverge over time, and because the
-next command applies to exactly one of them.
+`control-plane` and `workload` are identical today except the default
+hostname; they exist because the boxes diverge over time, and because each
+follow-up command applies to exactly one role. `runner` is the box a CI
+agent will live on, and it differs behaviorally: it defaults `--ts-tag` to
+`tag:ci` and **refuses `tag:server`** — a runner executes repo-controlled
+code, and advertising your server tag would extend every grant your servers
+hold (SSH between them, say) to that code. The refusal turns the worst
+misconfiguration from a documentation warning into a hard error.
 
 ### `rig coolify install --version <pin>`
 
@@ -55,10 +63,11 @@ explicit re-run with a new pin. The pin is required; there is no default.
 
 ### `rig runner install --repo <owner/repo> --version <pin>`
 
-Workload box only, run after `rig bootstrap workload`:
+Runner box only, run after `rig bootstrap runner` (the same two-step rhythm
+as `bootstrap control-plane` → `coolify install`):
 
 ```sh
-rig bootstrap workload --hostname my-ci-box --ts-tag tag:ci
+rig bootstrap runner --hostname my-ci-box
 rig runner install --repo acme/widgets --version 2.335.1
 ```
 

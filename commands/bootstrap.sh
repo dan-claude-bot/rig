@@ -9,10 +9,13 @@ die()  { printf 'rig-bootstrap: ERROR: %s\n' "$1" >&2; exit "${2:-1}"; }
 
 usage() {
   cat <<'EOF'
-usage: rig bootstrap <control-plane|workload> [--hostname <name>] [--ts-tag <tag>]
+usage: rig bootstrap <control-plane|workload|runner> [--hostname <name>] [--ts-tag <tag>]
 
   --hostname  tailnet hostname (default: the role name)
-  --ts-tag    tailnet tag to advertise (default: tag:server)
+  --ts-tag    tailnet tag to advertise (default: tag:server;
+              role runner defaults to tag:ci and refuses tag:server —
+              a CI box executes repo-controlled code, and your server
+              tag's grants must never extend to it)
 
 Provide the single-use tailscale pre-auth key via the TS_AUTHKEY env var, or
 enter it at the interactive prompt. It is used once and never written to disk.
@@ -22,14 +25,18 @@ EOF
 # --- args (validated before the root check, so errors are testable) ---------
 ROLE="${1:-}"
 case "$ROLE" in
-  control-plane|workload) shift ;;
+  control-plane|workload|runner) shift ;;
   -h|--help) usage; exit 0 ;;
-  "") usage >&2; die "role required (control-plane|workload)" 2 ;;
-  *) die "unknown role: $ROLE (want control-plane|workload)" 2 ;;
+  "") usage >&2; die "role required (control-plane|workload|runner)" 2 ;;
+  *) die "unknown role: $ROLE (want control-plane|workload|runner)" 2 ;;
 esac
 
 TS_HOSTNAME="$ROLE"
-TS_TAG="tag:server"
+if [ "$ROLE" = "runner" ]; then
+  TS_TAG="tag:ci"
+else
+  TS_TAG="tag:server"
+fi
 while [ $# -gt 0 ]; do
   case "$1" in
     --hostname)
@@ -41,6 +48,12 @@ while [ $# -gt 0 ]; do
     *) die "unknown flag: $1" 2 ;;
   esac
 done
+
+# A runner executes repo-controlled code; advertising the server tag would
+# extend every grant your servers hold to that code. Refused, not warned.
+if [ "$ROLE" = "runner" ] && [ "$TS_TAG" = "tag:server" ]; then
+  die "role runner must not advertise tag:server" 2
+fi
 
 # --- guards ------------------------------------------------------------------
 [ "$(id -u)" -eq 0 ] || die "must run as root"
@@ -109,4 +122,6 @@ fi
 log "done — role ${ROLE}, hostname ${TS_HOSTNAME}"
 if [ "$ROLE" = "control-plane" ]; then
   log "next: rig coolify install --version <pin>"
+elif [ "$ROLE" = "runner" ]; then
+  log "next: rig runner install --repo <owner/repo> --version <pin>"
 fi

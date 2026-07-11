@@ -36,10 +36,12 @@ check "bootstrap: --help exits 0"          0 "usage:"         "$ROOT/commands/bo
 check "bootstrap: unknown role exits 2"    2 "unknown role"   "$ROOT/commands/bootstrap.sh" potato
 check "bootstrap: unknown flag exits 2"    2 "unknown flag"   "$ROOT/commands/bootstrap.sh" workload --nope
 check "bootstrap: hostname needs value"    2 "needs a value"  "$ROOT/commands/bootstrap.sh" workload --hostname
+check "bootstrap: runner refuses tag:server" 2 "must not advertise tag:server" "$ROOT/commands/bootstrap.sh" runner --ts-tag tag:server
 if [ "$(id -u)" -ne 0 ]; then
   check "bootstrap: refuses non-root"      1 "must run as root" env TS_AUTHKEY=x "$ROOT/commands/bootstrap.sh" workload
+  check "bootstrap: runner role parses, refuses non-root" 1 "must run as root" env TS_AUTHKEY=x "$ROOT/commands/bootstrap.sh" runner
 else
-  echo "skip: bootstrap non-root refusal (running as root)"
+  echo "skip: bootstrap non-root refusals (running as root)"
 fi
 
 check "coolify: version required, exit 2"  2 "--version"      "$ROOT/commands/coolify-install.sh"
