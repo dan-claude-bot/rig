@@ -75,11 +75,13 @@ VERSION="${VERSION#v}"
 # --- guards ----------------------------------------------------------------
 [ "$(id -u)" -eq 0 ] || die "must run as root"
 if [ -r /etc/os-release ]; then
+  # Sourced in a subshell: os-release defines VERSION (e.g. "13 (trixie)"),
+  # which would clobber this script's $VERSION.
   # shellcheck source=/dev/null
-  . /etc/os-release
-  case "${ID:-} ${ID_LIKE:-}" in
+  OS_FAMILY="$(. /etc/os-release && printf '%s %s' "${ID:-}" "${ID_LIKE:-}")"
+  case "$OS_FAMILY" in
     *debian*) ;;
-    *) warn "not a Debian-family system (ID=${ID:-unknown}); proceeding anyway" ;;
+    *) warn "not a Debian-family system (${OS_FAMILY:-unknown}); proceeding anyway" ;;
   esac
 else
   warn "cannot read /etc/os-release; proceeding anyway"

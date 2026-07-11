@@ -68,6 +68,12 @@ else
   echo "skip: runner non-root refusal (running as root)"
 fi
 
+# Regression: /etc/os-release defines VERSION (e.g. "13 (trixie)" on Debian);
+# sourcing it in the main shell clobbers a script's $VERSION and splices the
+# OS string into download URLs. It must only ever be sourced in a subshell.
+check "no main-shell os-release sourcing" 1 "" \
+  grep -rnE '^[[:space:]]*\.[[:space:]]+/etc/os-release' "$ROOT/commands"
+
 echo "---"
 echo "$PASS passed, $FAIL failed"
 [ "$FAIL" -eq 0 ]
