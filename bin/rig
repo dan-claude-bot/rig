@@ -1,0 +1,52 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+ROOT="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/.." && pwd)"
+
+usage() {
+  cat <<'EOF'
+usage: rig <command> [args]
+
+commands:
+  bootstrap <control-plane|workload> [--hostname <name>] [--ts-tag <tag>]
+      OS plumbing on a pristine Debian box: hardening, unattended-upgrades,
+      tailscale join. Prompts for a single-use tailnet pre-auth key
+      (TS_AUTHKEY env overrides the prompt). Run as root.
+  coolify install --version <pin>
+      Pinned Coolify install (AUTOUPDATE=false). Control-plane box only.
+
+install/upgrade:
+  curl -fsSL https://raw.githubusercontent.com/heavy-duty/rig/main/install.sh | bash
+EOF
+}
+
+cmd="${1:-}"
+case "$cmd" in
+  bootstrap)
+    shift
+    exec "$ROOT/commands/bootstrap.sh" "$@"
+    ;;
+  coolify)
+    shift
+    sub="${1:-}"
+    if [ "$sub" != "install" ]; then
+      usage >&2
+      exit 2
+    fi
+    shift
+    exec "$ROOT/commands/coolify-install.sh" "$@"
+    ;;
+  -h|--help|help)
+    usage
+    exit 0
+    ;;
+  "")
+    usage >&2
+    exit 2
+    ;;
+  *)
+    printf 'rig: unknown command: %s\n' "$cmd" >&2
+    usage >&2
+    exit 2
+    ;;
+esac
