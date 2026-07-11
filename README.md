@@ -76,8 +76,8 @@ whose whole point is a narrow blast radius. Add Docker only once a job
 genuinely needs it, and rethink the isolation model then.
 
 - `--name <name>` — runner name (default: this host's hostname)
-- `--labels <csv>` — extra runner labels (default: `ci-runner`; GitHub adds
-  `self-hosted` itself)
+- `--labels <csv>` — runner labels, replacing the `ci-runner` default — keep
+  any label your workflows' `runs-on` needs (GitHub adds `self-hosted` itself)
 - `--user <name>` — the unprivileged service user (default: `github-runner`)
 
 **The registration token:** provide it via the `RUNNER_TOKEN` env var or type

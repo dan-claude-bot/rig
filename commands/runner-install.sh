@@ -16,7 +16,7 @@ usage: rig runner install --repo <owner/repo> --version <pin> [options]
   --version <pin>       actions/runner release to install, e.g. 2.335.1
                         (required; no default — you state what you install)
   --name <name>         runner name (default: this host's hostname)
-  --labels <csv>        extra runner labels (default: ci-runner)
+  --labels <csv>        runner labels; replaces the default (default: ci-runner)
   --user <name>         unprivileged service user (default: github-runner;
                         created if absent; never root)
 
