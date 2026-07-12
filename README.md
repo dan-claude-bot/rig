@@ -83,6 +83,47 @@ Control-plane box only. Installs Coolify at exactly the pinned version with
 the platform must never move underneath it on its own. Upgrading is an
 explicit re-run with a new pin. The pin is required; there is no default.
 
+### `rig coolify backup install`
+
+Control-plane box only. Installs a **nightly age-encrypted dump of Coolify's own
+database** as a systemd timer.
+
+```sh
+rig coolify backup install
+rig coolify backup install --schedule '*-*-* 02:30:00 UTC' --pg-container coolify-db
+```
+
+- `--schedule <OnCalendar>` — systemd calendar expression (default: `*-*-* 04:00:00 UTC`)
+- `--pg-container` / `--pg-user` / `--pg-db` — Coolify's postgres (defaults: `coolify-db`,
+  `coolify`, `coolify`)
+
+That database holds the GitHub App private key, every registered server's SSH key,
+and every environment value for every environment the control plane manages. It is
+`pg_dump`ed straight into `age` — encrypted **client-side, on the box** — and only
+then shipped to S3. The bucket is never trusted with plaintext.
+
+It is **forensics, not a restore path.** A lost control plane is rebuilt fresh and
+reconciled from your manifest, never restored from this artifact. Which is exactly
+why the plumbing belongs in rig: there *will* be a next control-plane box, and it
+should be backed up from birth rather than depending on someone remembering a
+runbook step mid-incident.
+
+**rig installs the machinery; you supply the bindings.** rig writes
+`/etc/coolify-dump.env` **empty**, `0600`, and never reads it back — no credential
+ever passes through rig. You fill in the age recipient (a *public* key), the S3
+bucket + endpoint, and the S3 credentials. Until you do, the unit **fails loudly on
+every run**: a silent backup is worse than a missing one.
+
+rig cannot verify that the upload works — that needs your credentials. So prove it
+by hand once, rather than letting the timer discover it at 04:00:
+
+```sh
+systemctl start coolify-dump.service
+journalctl -u coolify-dump.service -n 20 --no-pager
+```
+
+A backup you have never read back is not yet a backup.
+
 ### `rig runner install --repo <owner/repo>`
 
 Runner box only, run after `rig bootstrap runner` (the same two-step rhythm

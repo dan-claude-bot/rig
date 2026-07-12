@@ -15,6 +15,11 @@ commands:
       defaults to tag:ci and refuses tag:server.
   coolify install --version <pin>
       Pinned Coolify install (AUTOUPDATE=false). Control-plane box only.
+  coolify backup install [options]
+      Nightly age-encrypted dump of the control-plane database, as a
+      systemd timer. rig installs the machinery and templates an empty
+      0600 bindings file; you fill in the age recipient and S3 details.
+      Control-plane box only. Run as root.
   runner install --repo <owner/repo> --version <pin> [options]
       GitHub Actions runner as a systemd service under an unprivileged
       user — outbound-only, no Docker. Prompts for the short-lived
@@ -34,12 +39,25 @@ case "$cmd" in
   coolify)
     shift
     sub="${1:-}"
-    if [ "$sub" != "install" ]; then
-      usage >&2
-      exit 2
-    fi
-    shift
-    exec "$ROOT/commands/coolify-install.sh" "$@"
+    case "$sub" in
+      install)
+        shift
+        exec "$ROOT/commands/coolify-install.sh" "$@"
+        ;;
+      backup)
+        shift
+        if [ "${1:-}" != "install" ]; then
+          usage >&2
+          exit 2
+        fi
+        shift
+        exec "$ROOT/commands/coolify-backup-install.sh" "$@"
+        ;;
+      *)
+        usage >&2
+        exit 2
+        ;;
+    esac
     ;;
   runner)
     shift

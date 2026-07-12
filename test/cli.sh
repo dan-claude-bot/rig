@@ -54,6 +54,18 @@ else
   echo "skip: coolify non-root refusal (running as root)"
 fi
 
+check "bare coolify backup shows usage, exit 2" 2 "usage:" "$ROOT/bin/rig" coolify backup
+check "coolify backup: bad subcommand exits 2"  2 "usage:" "$ROOT/bin/rig" coolify backup frobnicate
+check "coolify backup: --help exits 0"          0 "usage:" "$ROOT/commands/coolify-backup-install.sh" --help
+check "coolify backup: schedule needs value"    2 "needs a value" "$ROOT/commands/coolify-backup-install.sh" --schedule
+check "coolify backup: pg-container needs value" 2 "needs a value" "$ROOT/commands/coolify-backup-install.sh" --pg-container
+check "coolify backup: unknown flag exits 2"    2 "unknown flag"  "$ROOT/commands/coolify-backup-install.sh" --nope
+if [ "$(id -u)" -ne 0 ]; then
+  check "coolify backup: refuses non-root"      1 "must run as root" "$ROOT/commands/coolify-backup-install.sh"
+else
+  echo "skip: coolify backup non-root refusal (running as root)"
+fi
+
 check "bare runner shows usage, exit 2"  2 "usage:"          "$ROOT/bin/rig" runner
 check "runner: --help exits 0"           0 "usage:"          "$ROOT/commands/runner-install.sh" --help
 check "runner: repo required, exit 2"    2 "--repo"          "$ROOT/commands/runner-install.sh" --version 2.335.1

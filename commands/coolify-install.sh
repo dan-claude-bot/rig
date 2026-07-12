@@ -39,4 +39,5 @@ log "installing coolify ${VERSION} (AUTOUPDATE=false)"
 curl -fsSL https://cdn.coollabs.io/coolify/install.sh -o /tmp/coolify-install.sh
 bash /tmp/coolify-install.sh "$VERSION"
 log "coolify ${VERSION} installed with AUTOUPDATE=false"
-log "next: your bootstrap runbook (admin user, API token, GitHub App, S3 destination)"
+log "next: rig coolify backup install  (nightly control-plane dump — do this before the box holds anything)"
+log "then: your bootstrap runbook (admin user, API token, GitHub App, S3 destination)"
