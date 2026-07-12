@@ -38,8 +38,22 @@ rig bootstrap runner --hostname my-ci-box
 
 What it does: installs `curl ca-certificates unattended-upgrades` (and
 enables periodic unattended upgrades); writes an sshd hardening drop-in
-(`PermitRootLogin prohibit-password`, `PasswordAuthentication no`); installs
+(`PermitRootLogin prohibit-password`, `PasswordAuthentication no`) and
+**verifies it took effect** via `sshd -T`; sets the system hostname; installs
 tailscale and joins your tailnet.
+
+> **Why the drop-in is `00-rig.conf` and not `99-`.** `sshd_config` is
+> **first-wins** — *"for each keyword, the first obtained value will be used"*
+> (`sshd_config(5)`) — and `Include` expands its glob in lexical order. Cloud
+> images ship `/etc/ssh/sshd_config.d/50-cloud-init.conf` carrying
+> `PasswordAuthentication yes`, so a `99-` drop-in is read **second** and every
+> keyword in it is silently discarded. This is the opposite of the
+> last-wins convention most config systems use, and it shipped green here for
+> a month: rig asserted the *file existed* rather than what `sshd` actually
+> resolved, and the Incus rehearsal container has no cloud-init drop-in to
+> lose to. Every Hetzner box rig had bootstrapped was still serving
+> `passwordauthentication yes`. `bootstrap` now sweeps a stale `99-rig.conf`
+> on re-run, and refuses to claim success unless `sshd -T` agrees.
 
 **The pre-auth key:** provide it via the `TS_AUTHKEY` env var or type it at
 the interactive prompt. Use a **single-use, tagged, short-expiry** key. It
