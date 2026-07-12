@@ -42,6 +42,14 @@ enables periodic unattended upgrades); writes an sshd hardening drop-in
 **verifies it took effect** via `sshd -T`; sets the system hostname; installs
 tailscale and joins your tailnet.
 
+**`--hostname` converges both names.** On a box that has already joined,
+`bootstrap` skips `tailscale up` (so a re-run needs no pre-auth key) — but it
+still reconciles the **tailnet** hostname via `tailscale set --hostname`. Without
+that, a box which joined under the wrong name — say `--hostname` was omitted, so
+it defaulted to the *role* — stayed misnamed forever, and re-running rig, the
+documented repair, could not fix it. A machine you deliberately renamed in the
+admin console keeps that name; rig will not fight it.
+
 > **Why the drop-in is `00-rig.conf` and not `99-`.** `sshd_config` is
 > **first-wins** — *"for each keyword, the first obtained value will be used"*
 > (`sshd_config(5)`) — and `Include` expands its glob in lexical order. Cloud

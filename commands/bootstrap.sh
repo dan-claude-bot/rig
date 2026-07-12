@@ -170,6 +170,26 @@ if ! command -v tailscale >/dev/null 2>&1; then
 fi
 if tailscale status >/dev/null 2>&1; then
   log "tailnet already joined; skipping tailscale up (no pre-auth key needed)"
+  # ...but skipping `tailscale up` also skipped --hostname, so the TAILNET name
+  # never converged: a box that joined under the wrong name (e.g. --hostname
+  # omitted, so it defaulted to the ROLE) stayed misnamed forever, and re-running
+  # rig — the documented repair — could not fix it. rig is convergent by
+  # contract; this was the one field that wasn't. `tailscale set` converges it
+  # without a re-auth or a pre-auth key.
+  #
+  # Safe by construction here: Tailscale ACLs cannot bind a rule's dst to a
+  # hostname (it must be a tag, an IP, or a `hosts` alias — which is exactly why
+  # acl.hujson pins coolify-box to an IP), so a rename cannot silently void a
+  # grant. It also will NOT clobber a deliberate rename: a machine renamed in the
+  # admin console keeps that name, and the device hostname no longer overrides it.
+  current_ts_name="$(tailscale status --peers=false 2>/dev/null | awk 'NR==1 {print $2}')"
+  if [ -n "$current_ts_name" ] && [ "$current_ts_name" != "$TS_HOSTNAME" ]; then
+    log "tailnet hostname is '${current_ts_name}', want '${TS_HOSTNAME}' — converging"
+    tailscale set --hostname="$TS_HOSTNAME" \
+      || warn "tailscale set --hostname failed; rename '${current_ts_name}' -> '${TS_HOSTNAME}' in the admin console"
+  else
+    log "tailnet hostname already ${TS_HOSTNAME}"
+  fi
 else
   # env override, else prompt; never touches disk
   if [ -z "${TS_AUTHKEY:-}" ]; then
