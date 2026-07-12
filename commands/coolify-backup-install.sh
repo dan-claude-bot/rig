@@ -110,9 +110,30 @@ cat > "$SCRIPT_PATH" <<'DUMP_SCRIPT'
 # to answer "what WAS the state" and to recover a credential otherwise lost.
 set -euo pipefail
 
+die() { printf 'coolify-dump: ERROR: %s\n' "$1" >&2; exit 1; }
+
 : "${AGE_RECIPIENT:?not set — fill /etc/coolify-dump.env (age PUBLIC key)}"
 : "${S3_BUCKET:?not set — fill /etc/coolify-dump.env (e.g. s3://backups/coolify-db)}"
 : "${S3_ENDPOINT:?not set — fill /etc/coolify-dump.env (e.g. https://hel1.your-objectstorage.com)}"
+
+# Validate the bindings HERE, before spending a pg_dump on them. A bare bucket
+# name reads to `aws` as a LOCAL path, so it fails deep in the upload with
+# "Invalid argument type" and a usage dump — after the database has been read
+# and encrypted, and with nothing pointing at the actual mistake.
+case "$S3_BUCKET" in
+  s3://?*) ;;
+  *) die "S3_BUCKET must be an s3:// URI (got: '${S3_BUCKET}') — aws reads a bare bucket name as a local path" ;;
+esac
+case "$S3_ENDPOINT" in
+  http://?*|https://?*) ;;
+  *) die "S3_ENDPOINT needs a scheme (got: '${S3_ENDPOINT}') — e.g. https://hel1.your-objectstorage.com" ;;
+esac
+
+# NOTE: no check can tell you the recipient is the RIGHT key. age's X25519
+# header does not reveal who it encrypts to, so a valid-but-wrong recipient
+# (staging's key instead of prod's) produces a perfect backup nobody can open.
+# Only decrypting an artifact proves that. Do it once, from a machine that
+# holds the private key — never on this box.
 
 PG_CONTAINER="${PG_CONTAINER:-coolify-db}"
 PG_USER="${PG_USER:-coolify}"
@@ -213,14 +234,25 @@ cat <<EOF
 rig-coolify-backup: installed. The timer is live but the backup does NOT work yet —
 rig has no credentials and cannot verify an upload. Two steps remain, both yours:
 
-  1. Fill in the bindings:  \$EDITOR ${ENV_FILE}
+  1. Fill in the bindings:  nano ${ENV_FILE}
      (age recipient = a PUBLIC key; S3 bucket, endpoint, access key, secret, region)
+     S3_BUCKET must be an s3:// URI, not a bare bucket name.
 
-  2. Prove it end to end — do NOT wait for the timer to find out:
+  2. Run it once by hand — do NOT wait for the timer to find out:
        systemctl start coolify-dump.service
        journalctl -u coolify-dump.service -n 20 --no-pager
-     then confirm the object really landed and is really age ciphertext:
-       aws s3 ls "\$S3_BUCKET/" --endpoint-url "\$S3_ENDPOINT"
+
+  3. Prove you can OPEN it. A successful upload only proves the file ARRIVED.
+     If the recipient is the wrong key, every run succeeds forever and produces
+     an artifact nobody can decrypt — and you cannot tell by looking at it.
+     From a machine holding the private key (NEVER this box), stream it down
+     and decrypt; you want PostgreSQL SQL out the other end:
+
+       ssh root@$(hostname) 'set -a; . ${ENV_FILE}; set +a; \\
+         line=\$(aws s3 ls "\$S3_BUCKET/" --endpoint-url "\$S3_ENDPOINT" | sort | tail -1); \\
+         aws s3 cp "\$S3_BUCKET/\${line##* }" - --endpoint-url "\$S3_ENDPOINT"' \\
+         | age -d -i <your-key-file> | { head -5; cat >/dev/null; }
+
      A backup you have never read back is not yet a backup.
 
 Until step 1 is done the unit fails loudly on every run. That is deliberate — a

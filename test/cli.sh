@@ -80,6 +80,20 @@ else
   echo "skip: runner non-root refusal (running as root)"
 fi
 
+# The dump script ships to control-plane boxes as an embedded heredoc. A syntax
+# error in it would be invisible here and would first surface at 04:00 on a live
+# control plane. Extract it and syntax-check what actually gets written.
+DUMP_TMP="$(mktemp)"
+sed -n "/<<'DUMP_SCRIPT'/,/^DUMP_SCRIPT\$/p" "$ROOT/commands/coolify-backup-install.sh" \
+  | sed '1d;$d' > "$DUMP_TMP"
+check "embedded dump script extracted (guards the sed above)" 0 "" grep -q "pg_dump" "$DUMP_TMP"
+check "embedded dump script is valid bash"    0 ""        bash -n "$DUMP_TMP"
+check "embedded dump script rejects a bare bucket name" 1 "must be an s3:// URI" \
+  env AGE_RECIPIENT=age1x S3_BUCKET=my-bucket S3_ENDPOINT=https://s3.example.com bash "$DUMP_TMP"
+check "embedded dump script rejects a schemeless endpoint" 1 "needs a scheme" \
+  env AGE_RECIPIENT=age1x S3_BUCKET=s3://b/k S3_ENDPOINT=s3.example.com bash "$DUMP_TMP"
+rm -f "$DUMP_TMP"
+
 # Regression: /etc/os-release defines VERSION (e.g. "13 (trixie)" on Debian);
 # sourcing it in the main shell clobbers a script's $VERSION and splices the
 # OS string into download URLs. It must only ever be sourced in a subshell.
