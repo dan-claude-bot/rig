@@ -5,6 +5,8 @@
 set -euo pipefail
 
 HERE="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")" && pwd)"
+# shellcheck source=SCRIPTDIR/lib/runner-config.sh
+. "$HERE/lib/runner-config.sh"
 
 log()  { printf 'rig-runner: %s\n' "$*"; }
 warn() { printf 'rig-runner: WARNING: %s\n' "$*" >&2; }
@@ -94,11 +96,7 @@ RUNNER_DIR="$USER_HOME/actions-runner"
   || die "no runner registered in ${RUNNER_DIR} — use: rig runner install"
 
 # --- what is it registered to now? ------------------------------------------
-json_field() {
-  grep -o "\"$2\"[[:space:]]*:[[:space:]]*\"[^\"]*\"" "$1" \
-    | head -n1 | sed 's/.*:[[:space:]]*"//; s/"$//'
-}
-CURRENT_URL="$(json_field "$RUNNER_DIR/.runner" gitHubUrl)"
+CURRENT_URL="$(runner_repo_url "$RUNNER_DIR")"
 TARGET_URL="https://github.com/${REPO}"
 
 if [ "$CURRENT_URL" = "$TARGET_URL" ]; then
@@ -108,7 +106,7 @@ fi
 
 # Keep the runner's identity across the move unless told otherwise.
 if [ -z "$RUNNER_NAME" ]; then
-  RUNNER_NAME="$(json_field "$RUNNER_DIR/.runner" agentName)"
+  RUNNER_NAME="$(runner_agent_name "$RUNNER_DIR")"
   [ -n "$RUNNER_NAME" ] || die "could not read the current runner name from ${RUNNER_DIR}/.runner"
 fi
 if [ -z "$LABELS" ]; then

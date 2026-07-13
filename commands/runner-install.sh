@@ -1,8 +1,14 @@
 #!/usr/bin/env bash
 # rig runner install — GitHub Actions self-hosted runner as a systemd service
 # under an unprivileged user. Outbound-only (long-poll to GitHub), no Docker.
-# Convergent: safe to re-run; an already-registered runner is left alone.
+# Convergent toward --repo: re-running against the repo the box is already on
+# leaves it alone; a box registered to a DIFFERENT repo is refused, never
+# silently restarted on the old one (that is `repoint`'s job).
 set -euo pipefail
+
+HERE="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")" && pwd)"
+# shellcheck source=SCRIPTDIR/lib/runner-config.sh
+. "$HERE/lib/runner-config.sh"
 
 log()  { printf 'rig-runner: %s\n' "$*"; }
 warn() { printf 'rig-runner: WARNING: %s\n' "$*" >&2; }
@@ -33,6 +39,11 @@ the interactive prompt (get one from the repo's Settings > Actions >
 Runners > "New self-hosted runner", or:
   gh api -X POST repos/<owner/repo>/actions/runners/registration-token).
 It is consumed at registration and never written to disk by rig.
+
+Convergent toward --repo: re-running against the repo this box is already on
+re-uses the binary, skips registration, and never asks for a token. A box
+registered to a DIFFERENT repo is refused — moving a runner is
+`rig runner repoint --repo <owner/repo>`.
 EOF
 }
 
@@ -88,17 +99,25 @@ else
 fi
 command -v curl >/dev/null || die "curl is required (run rig bootstrap first)"
 
-# --- registration token — only when registration is actually pending -------
-# Pending unless the runner user already exists AND $RUNNER_DIR/.runner
-# exists (user absent => nothing can be registered => pending).
+# --- is this box already registered somewhere else? --------------------------
+# Before anything is prompted for, downloaded, or started: --repo must agree
+# with what is already on the box. Everything below this point treats an
+# existing .runner as "nothing to do" — which is right for the repo the box is
+# already on, and silently wrong for any other. See assert_runner_repo.
+#
+# Registration is pending unless the runner user already exists AND
+# $RUNNER_DIR/.runner exists (user absent => nothing can be registered).
 REG_PENDING=1
 if id -u "$RUNNER_USER" >/dev/null 2>&1; then
   USER_HOME="$(getent passwd "$RUNNER_USER" | cut -d: -f6)"
   RUNNER_DIR="$USER_HOME/actions-runner"
+  assert_runner_repo "$RUNNER_DIR" "$REPO" || exit 1
   if [ -e "$RUNNER_DIR/.runner" ]; then
     REG_PENDING=0
   fi
 fi
+
+# --- registration token — only when registration is actually pending -------
 if [ "$REG_PENDING" -eq 1 ]; then
   RUNNER_TOKEN="${RUNNER_TOKEN:-}"
   if [ -z "$RUNNER_TOKEN" ]; then

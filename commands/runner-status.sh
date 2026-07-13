@@ -3,6 +3,10 @@
 # Read-only: reports what is already on the box. No credential, no network call.
 set -euo pipefail
 
+HERE="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")" && pwd)"
+# shellcheck source=SCRIPTDIR/lib/runner-config.sh
+. "$HERE/lib/runner-config.sh"
+
 log() { printf 'rig-runner: %s\n' "$*"; }
 die() { printf 'rig-runner: ERROR: %s\n' "$1" >&2; exit "${2:-1}"; }
 
@@ -47,15 +51,8 @@ RUNNER_DIR="$USER_HOME/actions-runner"
   || die "no runner registered in ${RUNNER_DIR}"
 
 # --- read the runner's own config -------------------------------------------
-# .runner is JSON. Kept dependency-free on purpose: a rig-bootstrapped box has
-# no jq, and installing one to read five fields would be a poor trade.
-json_field() {
-  grep -o "\"$2\"[[:space:]]*:[[:space:]]*\"[^\"]*\"" "$1" \
-    | head -n1 | sed 's/.*:[[:space:]]*"//; s/"$//'
-}
-
-REPO_URL="$(json_field "$RUNNER_DIR/.runner" gitHubUrl)"
-RUNNER_NAME="$(json_field "$RUNNER_DIR/.runner" agentName)"
+REPO_URL="$(runner_repo_url "$RUNNER_DIR")"
+RUNNER_NAME="$(runner_agent_name "$RUNNER_DIR")"
 
 # GitHub owns the labels; the runner does not persist them locally. rig records
 # what it registered with, so a box installed before this existed reports the
