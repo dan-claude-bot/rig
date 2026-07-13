@@ -170,6 +170,84 @@ exists for when you want that starting point deterministic and auditable.
 
 Convergent — safe to re-run; an already-registered runner is left alone.
 
+### `rig runner status`
+
+```sh
+rig runner status
+```
+
+What this box's runner is registered to — repo, runner name, labels,
+install dir, systemd unit and its state. Reads the runner's own on-disk
+config; no token, no network call. Exits 1 when no runner is installed.
+
+The answer to "wait, which repo is this box wired to?" should not require
+knowing that the config lives in a dotfile under an unprivileged user's home.
+
+### `rig runner remove`
+
+```sh
+rig runner remove
+rig runner remove --local     # no token; leaves a stale entry to delete by hand
+```
+
+Stops and uninstalls the systemd service, then deregisters the runner from
+GitHub. The binary and its user stay put, so a later `rig runner install`
+re-registers without downloading anything.
+
+**The token here is a *removal* token, not a registration token** — a
+different endpoint, and mixing them up is the easy mistake:
+
+```sh
+gh api -X POST repos/<owner/repo>/actions/runners/remove-token
+```
+
+Supply it via `RUNNER_REMOVE_TOKEN` or the prompt; it never touches disk.
+
+`--local` is the escape hatch for when the registration is already gone
+server-side (or you can't mint a token): the box is cleaned, but a stale
+offline runner stays listed in the repo, for you to delete from
+Settings → Actions → Runners.
+
+The service always comes down *first*, in both paths. GitHub's own removal
+refuses to run while the service is installed ("Uninstall service first"),
+and `--local` skips that check entirely — which would otherwise leave a
+running service pointed at config that no longer exists.
+
+Convergent — a box with no runner installed exits 0.
+
+### `rig runner repoint --repo <owner/repo>`
+
+```sh
+rig runner repoint --repo acme/widgets
+```
+
+Moves an installed runner from one repository to another: deregister,
+re-register, reusing the binary already on the box. It keeps the runner's
+existing name unless you pass `--name`.
+
+This is the verb that was missing. `runner install` is convergent *by
+skipping* — it sees a registered runner and leaves it alone — so it can
+create a runner but never move one, and re-pointing a box meant hand-rolled
+`config.sh`/`svc.sh` incantations against an install path only rig knew.
+
+Two short-lived tokens, each minted from **its own** repo — `RUNNER_REMOVE_TOKEN`
+for the one it's leaving, `RUNNER_TOKEN` for the one it's joining. Both are
+collected **before** anything is torn down: a token you turn out not to have
+should fail while the runner is still registered and working, not halfway
+through the move. If re-registration fails anyway, rig says so plainly and
+prints the exact `runner install` line that finishes the job.
+
+> **Labels do not survive a move on their own.** GitHub holds them; the runner
+> does not persist them locally. rig now records what it registered with, so
+> `repoint` and `status` can read it back — but a runner installed before rig
+> did that has nothing to read, and `repoint` falls back to the `ci-runner`
+> default and warns loudly before it touches anything. Labels are what
+> `runs-on` matches, so a silent change there is a workflow that simply stops
+> finding its runner. Pass `--labels` if yours differ.
+
+Convergent — repointing to the repo it is already on changes nothing, exits 0,
+and never asks for a token.
+
 ## What rig deliberately does NOT do
 
 - **Provider firewalls** — Docker publishes ports past host firewalls, so

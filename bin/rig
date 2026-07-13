@@ -20,10 +20,22 @@ commands:
       systemd timer. rig installs the machinery and templates an empty
       0600 bindings file; you fill in the age recipient and S3 details.
       Control-plane box only. Run as root.
-  runner install --repo <owner/repo> --version <pin> [options]
+  runner install --repo <owner/repo> [options]
       GitHub Actions runner as a systemd service under an unprivileged
       user — outbound-only, no Docker. Prompts for the short-lived
       registration token (RUNNER_TOKEN env overrides). Run as root.
+  runner status [--user <name>]
+      What this box's runner is registered to: repo, name, labels, unit.
+      Reads the box only — no token, no network call. Run as root.
+  runner remove [--local] [--user <name>]
+      Take the service down and deregister the runner. Prompts for the
+      short-lived removal token (RUNNER_REMOVE_TOKEN env overrides).
+      Run as root.
+  runner repoint --repo <owner/repo> [options]
+      Move an installed runner to another repository — deregister, then
+      re-register, reusing the binary already on the box. Needs a removal
+      token for the old repo and a registration token for the new one.
+      Run as root.
 
 install/upgrade:
   curl -fsSL https://raw.githubusercontent.com/heavy-duty/rig/main/install.sh | bash
@@ -62,12 +74,28 @@ case "$cmd" in
   runner)
     shift
     sub="${1:-}"
-    if [ "$sub" != "install" ]; then
-      usage >&2
-      exit 2
-    fi
-    shift
-    exec "$ROOT/commands/runner-install.sh" "$@"
+    case "$sub" in
+      install)
+        shift
+        exec "$ROOT/commands/runner-install.sh" "$@"
+        ;;
+      status)
+        shift
+        exec "$ROOT/commands/runner-status.sh" "$@"
+        ;;
+      remove)
+        shift
+        exec "$ROOT/commands/runner-remove.sh" "$@"
+        ;;
+      repoint)
+        shift
+        exec "$ROOT/commands/runner-repoint.sh" "$@"
+        ;;
+      *)
+        usage >&2
+        exit 2
+        ;;
+    esac
     ;;
   -h|--help|help)
     usage

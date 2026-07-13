@@ -80,6 +80,38 @@ else
   echo "skip: runner non-root refusal (running as root)"
 fi
 
+check "runner: bad subcommand exits 2"   2 "usage:"           "$ROOT/bin/rig" runner frobnicate
+
+check "runner status: --help exits 0"        0 "usage:"           "$ROOT/commands/runner-status.sh" --help
+check "runner status: user needs value"      2 "needs a value"    "$ROOT/commands/runner-status.sh" --user
+check "runner status: refuses --user root"   2 "must not be root" "$ROOT/commands/runner-status.sh" --user root
+check "runner status: unknown flag exits 2"  2 "unknown flag"     "$ROOT/commands/runner-status.sh" --nope
+
+check "runner remove: --help exits 0"        0 "usage:"           "$ROOT/commands/runner-remove.sh" --help
+check "runner remove: user needs value"      2 "needs a value"    "$ROOT/commands/runner-remove.sh" --user
+check "runner remove: refuses --user root"   2 "must not be root" "$ROOT/commands/runner-remove.sh" --user root
+check "runner remove: unknown flag exits 2"  2 "unknown flag"     "$ROOT/commands/runner-remove.sh" --nope
+
+check "runner repoint: --help exits 0"       0 "usage:"           "$ROOT/commands/runner-repoint.sh" --help
+check "runner repoint: repo required"        2 "--repo"           "$ROOT/commands/runner-repoint.sh"
+check "runner repoint: repo needs value"     2 "needs a value"    "$ROOT/commands/runner-repoint.sh" --repo
+check "runner repoint: rejects bad slug"     2 "owner/repo"       "$ROOT/commands/runner-repoint.sh" --repo not-a-slug
+check "runner repoint: labels need value"    2 "needs a value"    "$ROOT/commands/runner-repoint.sh" --repo acme/widgets --labels
+check "runner repoint: refuses --user root"  2 "must not be root" "$ROOT/commands/runner-repoint.sh" --repo acme/widgets --user root
+check "runner repoint: unknown flag exits 2" 2 "unknown flag"     "$ROOT/commands/runner-repoint.sh" --nope
+if [ "$(id -u)" -ne 0 ]; then
+  check "runner status: refuses non-root"  1 "must run as root" "$ROOT/commands/runner-status.sh"
+  check "runner remove: refuses non-root"  1 "must run as root" \
+    env RUNNER_REMOVE_TOKEN=x "$ROOT/commands/runner-remove.sh"
+  # --local too: the token-free path must still not be runnable by the runner user.
+  check "runner remove: --local refuses non-root" 1 "must run as root" \
+    "$ROOT/commands/runner-remove.sh" --local
+  check "runner repoint: refuses non-root" 1 "must run as root" \
+    env RUNNER_REMOVE_TOKEN=x RUNNER_TOKEN=y "$ROOT/commands/runner-repoint.sh" --repo acme/widgets
+else
+  echo "skip: runner status/remove/repoint non-root refusals (running as root)"
+fi
+
 # The dump script ships to control-plane boxes as an embedded heredoc. A syntax
 # error in it would be invisible here and would first surface at 04:00 on a live
 # control plane. Extract it and syntax-check what actually gets written.

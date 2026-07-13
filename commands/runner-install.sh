@@ -162,6 +162,11 @@ else
   (cd "$RUNNER_DIR" && runuser -u "$RUNNER_USER" -- env HOME="$USER_HOME" \
     ./config.sh --url "https://github.com/${REPO}" --token "$RUNNER_TOKEN" \
     --name "$RUNNER_NAME" --labels "$LABELS" --unattended --replace)
+  # GitHub owns the labels and the runner does not persist them locally, so
+  # `runner status` and `runner repoint` would have nothing to read. Record
+  # what we registered with — box-local metadata, never a credential.
+  printf '%s\n' "$LABELS" > "$RUNNER_DIR/.rig-labels"
+  chown "$RUNNER_USER:$RUNNER_USER" "$RUNNER_DIR/.rig-labels"
 fi
 
 # --- service -------------------------------------------------------------
