@@ -82,6 +82,51 @@ fi
 
 check "runner: bad subcommand exits 2"   2 "usage:"           "$ROOT/bin/rig" runner frobnicate
 
+# --- runner install: --repo must agree with what the box is already on -------
+# The bug: `install --repo B` on a box registered to repo A skipped configure,
+# restarted the service on A, and reported success — --repo accepted, validated,
+# then ignored. The guard is exercised here through the shared lib, against a
+# fixture .runner: reaching it via the CLI needs root AND a really-registered
+# runner, neither of which this harness can fabricate.
+guard() { # guard <runner_dir> <owner/repo>
+  bash -c 'set -euo pipefail
+    . "$1/commands/lib/runner-config.sh"
+    assert_runner_repo "$2" "$3"' _ "$ROOT" "$1" "$2"
+}
+REG_DIR="$(mktemp -d)"    # a box registered to acme/alpha
+EMPTY_DIR="$(mktemp -d)"  # a box with no runner at all
+printf '%s\n' '{"agentId":7,"agentName":"ci-box","gitHubUrl":"https://github.com/acme/alpha","workFolder":"_work"}' \
+  > "$REG_DIR/.runner"
+
+check "runner install: refuses a repo the box is not registered to" \
+  1 "already registered to https://github.com/acme/alpha" guard "$REG_DIR" acme/beta
+check "runner install: the refusal names the repo that was asked for" \
+  1 "not https://github.com/acme/beta" guard "$REG_DIR" acme/beta
+check "runner install: the refusal points at repoint" \
+  1 "rig runner repoint --repo acme/beta" guard "$REG_DIR" acme/beta
+# Convergence is the property worth keeping: same repo stays a clean no-op.
+check "runner install: the repo it is already on is a no-op" \
+  0 "" guard "$REG_DIR" acme/alpha
+check "runner install: an unregistered box passes the guard" \
+  0 "" guard "$EMPTY_DIR" acme/beta
+# A .runner rig cannot read is not a licence to assume it matches.
+printf '%s\n' '{"agentName":"ci-box"}' > "$REG_DIR/.runner"
+check "runner install: refuses an unreadable registration" \
+  1 "names no repository" guard "$REG_DIR" acme/alpha
+rm -rf "$REG_DIR" "$EMPTY_DIR"
+
+# The guard is only worth something if it runs BEFORE the box is touched: the
+# token prompt, the download, configure and svc.sh start all come after it.
+# Ordering is the whole fix, so assert it rather than trust it.
+# Matches the CALL, not the word: the comment above it mentions assert_runner_repo
+# too, and a plain grep would keep finding that after the call itself was deleted.
+# The defaults fail closed, so a guard that is gone cannot read as one that merely
+# sits early in the file.
+guard_at="$(grep -nE '^[[:space:]]*assert_runner_repo ' "$ROOT/commands/runner-install.sh" | head -n1 | cut -d: -f1)"
+start_at="$(grep -n 'svc.sh start' "$ROOT/commands/runner-install.sh" | head -n1 | cut -d: -f1)"
+check "runner install: the repo guard precedes svc.sh start" \
+  0 "" test "${guard_at:-999999}" -lt "${start_at:-0}"
+
 check "runner status: --help exits 0"        0 "usage:"           "$ROOT/commands/runner-status.sh" --help
 check "runner status: user needs value"      2 "needs a value"    "$ROOT/commands/runner-status.sh" --user
 check "runner status: refuses --user root"   2 "must not be root" "$ROOT/commands/runner-status.sh" --user root

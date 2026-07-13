@@ -168,7 +168,14 @@ from stale runners, so freezing it would just make it silently stop taking
 work. The install-time version is a starting point either way; `--version`
 exists for when you want that starting point deterministic and auditable.
 
-Convergent — safe to re-run; an already-registered runner is left alone.
+Convergent **toward `--repo`** — re-running against the repo this box is
+already on re-uses the binary, skips registration, and never asks for a token.
+Pointed at a *different* repo it **refuses**, and names both: skipping there
+would not be convergence, it would be ignoring the argument — restarting the
+runner on the **old** repo while reporting success, leaving the repo you asked
+for with no runner and its `runs-on` jobs queued forever. Moving a runner
+between repos is a trust-boundary act; that verb is
+[`rig runner repoint`](#rig-runner-repoint---repo-ownerrepo).
 
 ### `rig runner status`
 
@@ -225,10 +232,10 @@ Moves an installed runner from one repository to another: deregister,
 re-register, reusing the binary already on the box. It keeps the runner's
 existing name unless you pass `--name`.
 
-This is the verb that was missing. `runner install` is convergent *by
-skipping* — it sees a registered runner and leaves it alone — so it can
-create a runner but never move one, and re-pointing a box meant hand-rolled
-`config.sh`/`svc.sh` incantations against an install path only rig knew.
+This is the verb that was missing. `runner install` can create a runner but
+never move one — pointed at a repo the box is not on, it fails and sends you
+here — and re-pointing a box otherwise meant hand-rolled `config.sh`/`svc.sh`
+incantations against an install path only rig knew.
 
 Two short-lived tokens, each minted from **its own** repo — `RUNNER_REMOVE_TOKEN`
 for the one it's leaving, `RUNNER_TOKEN` for the one it's joining. Both are

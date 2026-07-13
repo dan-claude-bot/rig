@@ -9,6 +9,14 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - name: shellcheck
-        run: shellcheck install.sh bin/rig commands/*.sh test/cli.sh
+        # -x follows the `source=SCRIPTDIR/...` directives into commands/lib/.
+        # globstar so a script in a new subdirectory is linted without anyone
+        # remembering to edit this list; bin/* covers the extensionless entrypoints.
+        # The file list is printed so under-coverage shows up in the log.
+        run: |
+          shopt -s globstar
+          files=(bin/* **/*.sh)
+          printf 'shellcheck: %s\n' "${files[@]}"
+          shellcheck -x "${files[@]}"
       - name: cli tests
         run: bash test/cli.sh
