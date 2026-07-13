@@ -9,6 +9,8 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - name: shellcheck
-        run: shellcheck install.sh bin/rig commands/*.sh test/cli.sh
+        # -x follows the `source=SCRIPTDIR/...` directives into commands/lib/.
+        # commands/*.sh does not glob into lib/, so list it explicitly.
+        run: shellcheck -x install.sh bin/rig commands/*.sh commands/lib/*.sh test/cli.sh
       - name: cli tests
         run: bash test/cli.sh
