@@ -415,11 +415,24 @@ holds nothing secret anyway: usernames, roles, and *public* keys.
 | `rig`   | NOPASSWD sudo for `/usr/local/bin/rig` only  | `rig`       |
 | `box`   | Incus **restricted** tier, no sudo           | `incus`     |
 
-`box` carries a refusal with it: rig never installs Incus — box's `setup-host`
-owns the daemon — so an absent `incus` group means that never ran, and apply
-dies pointing at `box setup-host` rather than conjure a group the
-(nonexistent) daemon would never consult. `incus-admin` is deliberately
-**not** a role: that group is host-root-equivalent, break-glass by hand only.
+**The honest limit of the `rig` role:** its sudo grant is binary-scoped, not
+argument-scoped — it trusts its holder with every rig verb *except* identity
+management. The `rig users` commands gate their **invoker**: run under sudo
+by anyone outside `rig-admin`, they refuse. Without that gate, `sudo rig
+users apply` against a file naming yourself admin would make the scoped grant
+silently root-equivalent through the very tool it scopes. Direct root — a
+bring-up shell, before any admin exists — proceeds.
+
+`box` binds where VMs live, and a users file is fleet-wide — its box grants
+are not. rig never installs Incus — box's `setup-host` owns the daemon — so
+when the `incus` group is absent, the `host=` trait decides: on `host=yes`
+apply dies pointing at `box setup-host` (a VM host missing Incus is a real
+problem) rather than conjure a group the (nonexistent) daemon would never
+consult; on `host=no` the box role is **skipped with a warning** and
+everything else — admins included — still converges, because one box-role
+user somewhere in the fleet must not stop apply everywhere VMs don't live.
+`incus-admin` is deliberately **not** a role: that group is
+host-root-equivalent, break-glass by hand only.
 
 **All passwords stay locked, always** — created or found. The SSH key at the
 door is the authentication, and NOPASSWD sudo does not weaken it: there was
@@ -427,14 +440,21 @@ never a password to guess or rotate.
 
 Convergence is exact. Membership in the three rig-managed groups is made to
 match the file — added *and* removed — while every other group is left alone:
-not rig's to converge. `authorized_keys` becomes exactly the file's keys. A
-user dropped from the file is found via the `/etc/rig/users` ledger and
-**locked, never deleted** — deletion frees the uid for reuse and orphans file
-ownership, so attribution would rot; home stays for the same reason. And the
-sudoers rules land in `/etc/sudoers.d/rig-roles` only after `visudo -c`
-passes on the candidate — a bad file under `/etc/sudoers.d` can take down
-*all* of sudo, locking every admin out of the very escalation path apply just
-granted.
+not rig's to converge. `authorized_keys` becomes exactly the file's keys, and
+its ownership and mode (and `.ssh`'s) are converged on **every** run, not
+just when content changes — sshd's `StrictModes` treats them as
+load-bearing, so drifted perms are a broken login that "already converged"
+would lie about. A user dropped from the file is found via the
+`/etc/rig/users` ledger and **revoked, never deleted**: the account is
+expired — the switch PAM actually enforces; a locked password alone still
+lets a pubkey in under Debian's `UsePAM` — and `authorized_keys` is renamed
+to `authorized_keys.revoked-by-rig`. Access revoked, data kept: deletion
+frees the uid for reuse and orphans file ownership, so attribution would rot;
+home stays for the same reason, and re-adding the user to the file brings
+them back, fresh keys and all. And the sudoers rules land in
+`/etc/sudoers.d/rig-roles` only after `visudo -c` passes on the candidate — a
+bad file under `/etc/sudoers.d` can take down *all* of sudo, locking every
+admin out of the very escalation path apply just granted.
 
 ### `rig users status`
 
@@ -444,8 +464,12 @@ rig users status
 
 Read-only truth: per rig-managed user, the roles derived from the groups the
 user is **actually** in — not the ledger's memory of an apply — plus the
-`authorized_keys` count and whether the account is locked or active. Reads the
-box only; no network, no writes. Run as root (shadow is read).
+`authorized_keys` count (`revoked` when only the `.revoked-by-rig` rename
+remains) and the user's state, **active** or **revoked**. The state is the
+ledger's word corroborated by the account's real expiry — the switch that
+actually revokes — and a mismatch is flagged loudly as drift: a box someone
+changed behind rig's back must never read as healthy. Reads the box only; no
+network, no writes. Run as root (shadow is read).
 
 ### `rig users close-root`
 
@@ -459,8 +483,13 @@ must say `class=human` — an absent marker refuses (never shut the root door
 blind; re-run bootstrap so the box knows what it is), and `class=server`
 refuses with no `--force`, because root there is the control plane's
 automation identity and closing it severs fleet management. Then at least one
-`rig-admin` member must hold a non-empty `authorized_keys` — never close the
-only door.
+`rig-admin` member must hold a login sshd would plausibly **accept** — a
+non-empty `authorized_keys` alone proves a file, not a door: the gate checks
+the `StrictModes` shape (home, `.ssh`, and `authorized_keys` owned by the
+user and not group/world-writable), a real login shell, and an unexpired
+account, and its refusal names which check failed, per candidate. It proves
+the door *should* open, not that it does — which is why the separate-session
+verification below stays load-bearing. Never close the only door.
 
 Before running it, prove the admin door in a **separate** session — `ssh
 <admin>@<box>` while this one stays open. Root SSH is being welded shut; the

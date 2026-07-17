@@ -314,6 +314,15 @@ printf '%s\n' 'root admin ssh-ed25519 AAAA r' > "$FIX_BAD"
 check "users parser: root is refused" 1 "not a rig-managed user" parse "$FIX_BAD"
 printf '%s\n' 'dan admin' > "$FIX_BAD"
 check "users parser: malformed line is refused" 1 "malformed" parse "$FIX_BAD"
+# Usernames are validated in the same one-pass refusal matrix: 'fo|o' would
+# corrupt the parser's own '|'-delimited stream (user 'fo', garbage keys), and
+# a leading '-' reads as a useradd flag mid-convergence. The refusal names the
+# line and the rule, like every other parser refusal.
+printf '%s\n' 'fo|o admin ssh-ed25519 AAAA x' > "$FIX_BAD"
+check "users parser: '|' in a username is refused"     1 "invalid username" parse "$FIX_BAD"
+check "users parser: the username refusal names the line" 1 "line 1"        parse "$FIX_BAD"
+printf '%s\n' '-dan admin ssh-ed25519 AAAA x' > "$FIX_BAD"
+check "users parser: leading-dash username is refused" 1 "invalid username" parse "$FIX_BAD"
 check "users parser: valid file emits dan (both keys' roles agree)" \
   0 "dan|admin,box|ssh-ed25519 AAAAC3second dan@desk" parse "$FIX_OK"
 check "users parser: valid file emits maria too" 0 "maria|rig|ssh-ed25519" parse "$FIX_OK"
@@ -347,6 +356,31 @@ sudoers_at="$(grep -nE 'install .*sudoers\.d/rig-roles' "$ROOT/commands/users-ap
 check "users apply: visudo -c precedes the sudoers install" \
   0 "" test "${visudo_at:-999999}" -lt "${sudoers_at:-0}"
 
+# The invoker gate: %rig's sudoers rule is binary-scoped (NOPASSWD for
+# /usr/local/bin/rig, any args), so without a gate `sudo rig users apply
+# --file <me-as-admin>` turns role rig root-equivalent through this very
+# command. Exercising it needs a real SUDO_USER and real groups, so grep the
+# refusal in both identity-management commands (repo precedent: the
+# staging/runner tag greps).
+check "users apply: invoker gate refusal is present" 0 "" \
+  grep -q "changes who holds root" "$ROOT/commands/users-apply.sh"
+check "users close-root: invoker gate refusal is present" 0 "" \
+  grep -q "changes who holds root" "$ROOT/commands/users-close-root.sh"
+# Offboarding must revoke SSH, not just the password: a '!'-locked password is
+# not a closed door under UsePAM — pubkey auth still works. Expiry is the
+# switch PAM actually honors, and the keys are renamed, never deleted
+# (convergence never destroys). Needs root + real accounts, so grep both moves.
+check "users apply: a dropped user's account is expired, not just locked" 0 "" \
+  grep -qF -- "usermod -L -e 1" "$ROOT/commands/users-apply.sh"
+check "users apply: revoked keys are renamed, never deleted" 0 "" \
+  grep -q "revoked-by-rig" "$ROOT/commands/users-apply.sh"
+# A fleet-wide users file must not abort apply on a host=no box just because
+# it names a box-role user somewhere in the fleet: the box role binds where
+# VMs live, so on host=no it skips (with a warning) and everything else —
+# admins included — still converges.
+check "users apply: box role skips on a host=no box" 0 "" \
+  grep -q "box role skipped" "$ROOT/commands/users-apply.sh"
+
 # --- users close-root: the human-class root-door shutter ---------------------
 check "users close-root: --help exits 0"       0 "usage:"       "$ROOT/commands/users-close-root.sh" --help
 check "users close-root: unknown flag exits 2" 2 "unknown flag" "$ROOT/commands/users-close-root.sh" --nope
@@ -367,6 +401,12 @@ sshdt_at="$(grep -nE '^[[:space:]]*if ! sshd -t' "$ROOT/commands/users-close-roo
 restart_at="$(grep -n 'systemctl restart ssh' "$ROOT/commands/users-close-root.sh" | head -n1 | cut -d: -f1)"
 check "users close-root: sshd -t precedes the ssh restart" \
   0 "" test "${sshdt_at:-999999}" -lt "${restart_at:-0}"
+# The admin-door gate must check the StrictModes SHAPE, not file existence: a
+# non-empty authorized_keys behind group/world-writable perms is a key sshd
+# rejects — closing root behind it welds the only door shut. The full gate
+# needs root + real accounts, so grep the load-bearing check's wording.
+check "users close-root: gate checks the StrictModes shape" 0 "" \
+  grep -q "group/world-writable" "$ROOT/commands/users-close-root.sh"
 # Marker-gate refusals through the sourced lib against fixture markers: the CLI
 # path sits behind the root check, so the gate is a pure lib function on
 # purpose (repo precedent: parse_users_file, assert_runner_repo). The command

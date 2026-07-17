@@ -26,8 +26,11 @@ Human class ONLY. On class=server, root SSH is the control plane's (Coolify's)
 automation identity — closing it severs fleet management — so close-root
 refuses there, with no --force. It also refuses without a role marker (re-run
 rig bootstrap; never shut the root door blind) and refuses while no rig-admin
-member holds a working authorized_keys (run rig users apply first; never close
-the only door).
+member holds a login sshd would plausibly accept — authorized_keys present
+and non-empty, home/.ssh/keys owned by the user and not group/world-writable
+(sshd's StrictModes rejects the key otherwise), a real login shell, account
+not expired. The refusal names which check failed, per candidate. Run rig
+users apply first; never close the only door.
 
 Before running, verify your admin login in a SEPARATE session — `ssh
 <admin>@<box>` while this one stays open. Root SSH is the door being welded
@@ -48,6 +51,16 @@ done
 # --- guards ------------------------------------------------------------------
 [ "$(id -u)" -eq 0 ] || die "must run as root"
 
+# Identity management gates its INVOKER, not just its uid: %rig's sudoers rule
+# is binary-scoped but not argument-scoped, so without this gate a rig-role
+# user could reshape who enters this box as whom — the scoped grant silently
+# root-equivalent through the users family. Direct root (no SUDO_USER:
+# bring-up, a root shell) proceeds.
+if [ -n "${SUDO_USER:-}" ] && [ "$SUDO_USER" != "root" ] \
+    && ! id -nG "$SUDO_USER" 2>/dev/null | tr ' ' '\n' | grep -qx rig-admin; then
+  die "the users family changes who holds root — only rig-admin members (or root itself) may run it; role rig grants operational rig use, not identity management (invoker: $SUDO_USER)"
+fi
+
 # Marker gate — the policy lives in assert_marker_human (lib) so the harness
 # can prove its refusals against fixture markers as non-root; RIG_ROLE_MARKER
 # exists for the same reason: it keeps the command's own gate pointable at
@@ -56,18 +69,69 @@ if ! WHY="$(assert_marker_human "${RIG_ROLE_MARKER:-/etc/rig/role}")"; then
   die "$WHY"
 fi
 
-# Admin-door gate — never close the only door. Root SSH goes away below, so at
-# least one rig-admin member must already hold a non-empty authorized_keys:
-# "verified in a separate session" cannot be automated, but a key at the door
-# can be, and its absence is proof enough to stop.
+# Admin-door gate — never close the only door. Root SSH goes away below, so
+# at least one rig-admin member must hold a login sshd would plausibly ACCEPT
+# — a non-empty authorized_keys alone proves a file exists, not a door:
+# StrictModes rejects keys behind wrongly-owned or group/world-writable
+# paths, a nologin shell never logs in, and an expired account fails PAM
+# before the key is read. So every candidate is checked for the StrictModes
+# shape, and the refusal names, per candidate, WHICH check failed — an
+# operator staring at a refusal must see the repair. Honestly: this proves
+# the door SHOULD open per StrictModes, not that it does — the
+# verify-in-a-separate-session advisory in --help stays load-bearing.
+today=$(( $(date +%s) / 86400 ))
+# path_strict <path> <uid> <label> — flag the two StrictModes complaints
+flag() { bad="${bad:+$bad, }$1"; }
+path_strict() {
+  local p="$1" uid="$2" l="$3" o m
+  o="$(stat -c '%u' "$p" 2>/dev/null)" || return 0
+  m="$(stat -c '%a' "$p" 2>/dev/null)"
+  if [ "$o" != "$uid" ]; then flag "$l not owned by the user"; fi
+  if [ $(( 8#$m & 8#022 )) -ne 0 ]; then flag "$l is group/world-writable (mode $m)"; fi
+}
 ADMIN_OK=0
+CANDIDATES=0
+DETAIL=""
 while IFS= read -r a; do
   [ -n "$a" ] || continue
-  h="$(getent passwd "$a" | cut -d: -f6)"
-  if [ -n "$h" ] && [ -s "$h/.ssh/authorized_keys" ]; then ADMIN_OK=1; break; fi
+  CANDIDATES=$((CANDIDATES + 1))
+  bad=""
+  uid="$(id -u "$a" 2>/dev/null)" || { DETAIL="$DETAIL; $a: no such user"; continue; }
+  ent="$(getent passwd "$a")"
+  h="$(printf '%s' "$ent" | cut -d: -f6)"
+  shell="$(printf '%s' "$ent" | cut -d: -f7)"
+  if [ ! -d "$h" ]; then
+    flag "home directory missing"
+  else
+    path_strict "$h" "$uid" "home"
+    if [ ! -d "$h/.ssh" ]; then
+      flag ".ssh directory missing"
+    else
+      path_strict "$h/.ssh" "$uid" ".ssh directory"
+      if [ ! -s "$h/.ssh/authorized_keys" ]; then
+        flag "authorized_keys missing or empty"
+      else
+        path_strict "$h/.ssh/authorized_keys" "$uid" "authorized_keys"
+      fi
+    fi
+  fi
+  case "$shell" in
+    */nologin|*/false) flag "login shell $shell never logs in" ;;
+  esac
+  # shadow field 8 is the expiry in days-since-epoch; empty means never.
+  exp="$(getent shadow "$a" 2>/dev/null | cut -d: -f8)"
+  if [ -n "$exp" ] && [ "$exp" -le "$today" ] 2>/dev/null; then
+    flag "account expired"
+  fi
+  if [ -z "$bad" ]; then ADMIN_OK=1; break; fi
+  DETAIL="$DETAIL; $a: $bad"
 done < <(getent group rig-admin | cut -d: -f4 | tr ',' '\n')
-[ "$ADMIN_OK" -eq 1 ] \
-  || die "no admin user with a key on this box — run rig users apply first; never close the only door"
+if [ "$ADMIN_OK" -ne 1 ]; then
+  if [ "$CANDIDATES" -eq 0 ]; then
+    die "no admin user with a key on this box — run rig users apply first; never close the only door"
+  fi
+  die "no rig-admin member would pass sshd's door${DETAIL} — repair, prove the login in a separate session, then re-run; never close the only door"
+fi
 
 # --- the drop-in --------------------------------------------------------------
 # The NAME is the entire mechanism: sshd_config is FIRST-wins ("for each

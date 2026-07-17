@@ -24,7 +24,9 @@
 # Refusals: unknown role (the valid set is named), differing roles across one
 # user's lines, root as username (root's keys are class policy's business, not
 # this file's), malformed line (fewer than 3 fields, or a key field that does
-# not start with an SSH key type), duplicate identical key line.
+# not start with an SSH key type), invalid username (the charset below —
+# '|' would corrupt this parser's own delimited stream, a leading '-' reads
+# as a useradd flag), duplicate identical key line.
 parse_users_file() {
   local path="$1"
   local -a errs=() out=() rlist=()
@@ -44,6 +46,14 @@ parse_users_file() {
         errs+=("line $n: malformed — key field must start with an SSH key type (ssh-..., ecdsa-...)")
         continue ;;
     esac
+    # The username feeds this parser's own '|'-delimited stream and then
+    # useradd: 'fo|o' silently becomes user 'fo' with garbage keys, and a
+    # leading '-' reads as a useradd flag mid-convergence. One safe charset
+    # refuses both by construction (and ':', which would corrupt passwd).
+    if ! [[ "$u" =~ ^[a-z_][a-z0-9_-]{0,31}$ ]]; then
+      errs+=("line $n: invalid username '$u' — must match ^[a-z_][a-z0-9_-]{0,31}\$ (lowercase letter or '_' first, then lowercase, digits, '_', '-'; max 32)")
+      continue
+    fi
     if [ "$u" = "root" ]; then
       errs+=("line $n: 'root' is not a rig-managed user — this file names operators; root SSH's fate is class policy")
       continue
