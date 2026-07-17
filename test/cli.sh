@@ -66,6 +66,52 @@ else
   echo "skip: coolify backup non-root refusal (running as root)"
 fi
 
+# --- rig db (ad-hoc dump/restore) -------------------------------------------
+check "bare db shows usage, exit 2"       2 "usage:" "$ROOT/bin/rig" db
+check "db --help exits 0"                 0 "usage:" "$ROOT/bin/rig" db --help
+check "db bad subcommand exits 2"         2 "usage:" "$ROOT/bin/rig" db frobnicate
+check "db dump: --help exits 0"           0 "usage:" "$ROOT/commands/db.sh" dump --help
+check "db dump: container required, exit 2" 2 "needs a container" "$ROOT/commands/db.sh" dump
+check "db dump: unknown flag exits 2"     2 "unknown flag" "$ROOT/commands/db.sh" dump --nope
+check "db restore: artifact required, exit 2" 2 "needs an artifact" "$ROOT/commands/db.sh" restore
+check "db restore: container required, exit 2" 2 "needs a target container" \
+  "$ROOT/commands/db.sh" restore /tmp/whatever.sql.gz
+check "db restore: unknown flag exits 2"  2 "unknown flag" "$ROOT/commands/db.sh" restore --nope
+# Artifact existence is checked BEFORE docker/root, so a fat-fingered path fails
+# clearly and cheaply — and is testable here without root or a live container.
+check "db restore: missing artifact fails before the docker/root path" \
+  1 "artifact not found" "$ROOT/commands/db.sh" restore /no/such/artifact.sql.gz somecontainer --yes
+
+# The two DB invariants live as embedded command strings (single-quoted sh -c),
+# not an extractable heredoc, so guard them directly: dropping --no-owner/--no-acl
+# breaks every cross-instance restore, and hardcoding a role instead of the
+# container's own $POSTGRES_USER/$POSTGRES_DB is wrong on Coolify's randomized
+# superuser. ON_ERROR_STOP=1 is what makes a bad restore fail instead of limp.
+check "db dump embeds --no-owner --no-acl" 0 "" \
+  grep -qF -- "--no-owner --no-acl" "$ROOT/commands/db.sh"
+# The $POSTGRES_USER below is a LITERAL we grep for in db.sh (it must read the
+# container's env, not the host's) — single quotes are the point here.
+# shellcheck disable=SC2016
+check "db dump reads the container's own \$POSTGRES_USER/\$POSTGRES_DB" 0 "" \
+  grep -qF 'pg_dump -U "$POSTGRES_USER"' "$ROOT/commands/db.sh"
+# shellcheck disable=SC2016
+check "db restore connects as the container's own \$POSTGRES_USER" 0 "" \
+  grep -qF 'psql -U "$POSTGRES_USER"' "$ROOT/commands/db.sh"
+check "db restore uses ON_ERROR_STOP=1" 0 "" \
+  grep -qF "ON_ERROR_STOP=1" "$ROOT/commands/db.sh"
+if [ "$(id -u)" -ne 0 ]; then
+  # Valid args, so validation passes and we reach the root guard.
+  check "db dump: refuses non-root"       1 "must run as root" "$ROOT/commands/db.sh" dump somecontainer
+  # Restore needs a real, non-empty artifact to get PAST the artifact check and
+  # reach the root guard; --yes skips the confirm prompt so the check is exit-clean.
+  DB_ART="$(mktemp)"; printf 'SELECT 1;\n' > "$DB_ART"
+  check "db restore: refuses non-root"    1 "must run as root" \
+    "$ROOT/commands/db.sh" restore "$DB_ART" somecontainer --yes
+  rm -f "$DB_ART"
+else
+  echo "skip: db non-root refusals (running as root)"
+fi
+
 check "bare runner shows usage, exit 2"  2 "usage:"          "$ROOT/bin/rig" runner
 check "runner: --help exits 0"           0 "usage:"          "$ROOT/commands/runner-install.sh" --help
 check "runner: repo required, exit 2"    2 "--repo"          "$ROOT/commands/runner-install.sh" --version 2.335.1

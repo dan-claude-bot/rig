@@ -124,6 +124,69 @@ journalctl -u coolify-dump.service -n 20 --no-pager
 
 A backup you have never read back is not yet a backup.
 
+### `rig db <dump|restore>`
+
+Ad-hoc PostgreSQL dump/restore for a container running on this box. Run as
+root.
+
+```sh
+rig db dump coolify-db                          # -> coolify-db-20260717T041500Z.sql.gz
+rig db dump my-app-db /srv/snapshots/pre-migrate.sql.gz
+rig db restore pre-migrate.sql.gz my-app-db     # prompts before overwriting
+rig db restore umami.sql.gz shared-pg umami --yes
+```
+
+This is **imperative on-box tooling** — the "give me a copy of that database
+right now", "put this artifact back" verbs you reach for by hand. It is the
+counterpart to [`rig coolify backup install`](#rig-coolify-backup-install),
+which is the *scheduled, declarative, forensics-only* path; `db` is
+interactive, targets any container, and (on restore) overwrites live data
+behind a confirm gate. Declarative convergence lives elsewhere by design — this
+verb exists precisely for the moments that are not convergent.
+
+**`dump`** pipes `pg_dump` straight into `gzip`:
+
+```sh
+docker exec <container> sh -c \
+  'pg_dump -U "$POSTGRES_USER" --clean --if-exists --no-owner --no-acl "$POSTGRES_DB"' | gzip
+```
+
+- **`--no-owner --no-acl` is mandatory, not cosmetic.** A cross-instance restore
+  runs as the *target's* superuser, and Coolify randomizes that role per
+  database — so the source's `ALTER OWNER`/`GRANT` statements name a role that
+  does not exist on the target and, under `ON_ERROR_STOP=1`, abort the whole
+  restore on the first one. Stripping ownership and ACLs makes the dump describe
+  *data and schema*, portable onto any instance.
+- **`$POSTGRES_USER` / `$POSTGRES_DB` are read inside the container** — that is
+  why the command is a *single-quoted* `sh -c`: it evaluates the container's own
+  environment, never the host's. The host never hardcodes `postgres`; on the
+  next container that role name is simply wrong.
+- With no `[outfile]`, it writes `<container>-<UTC-timestamp>.sql.gz` in the
+  current directory (same timestamp shape as the nightly dump). `pipefail` is
+  load-bearing: without it a failing `pg_dump` still exits 0 through the pipe and
+  `gzip` compresses the truncated output into a valid `.gz` that looks exactly
+  like a good backup. rig dumps to a sibling temp, promotes it only on success,
+  and refuses to keep an empty artifact.
+
+**`restore <artifact> <container> [db]`** streams the artifact back in:
+
+```sh
+gunzip -c <artifact> | docker exec -i <container> sh -c \
+  'psql -U "$POSTGRES_USER" -d "${db:-$POSTGRES_DB}" -v ON_ERROR_STOP=1'
+```
+
+- It connects as the container's **own superuser** (`$POSTGRES_USER`), again
+  never a hardcoded role, and runs with `ON_ERROR_STOP=1` so a bad restore fails
+  loudly instead of limping to a half-applied state and reporting success.
+- **`[db]` targets a named database in a shared container** — e.g. a `umami`
+  database living in a Postgres that also hosts other apps. Omit it to restore
+  into the container's default `$POSTGRES_DB`. rig passes the name *into* the
+  container as an env var rather than splicing it into the command string.
+- **Restore overwrites the target**, so it prompts `y/N` first. `--yes` (or
+  `--force`) is the automation bypass. The artifact is checked for existence and
+  non-emptiness *before* the prompt and before anything touches the database, so
+  a fat-fingered path fails cheaply.
+
 ### `rig runner install --repo <owner/repo>`
 
 Runner box only, run after `rig bootstrap runner` (the same two-step rhythm
