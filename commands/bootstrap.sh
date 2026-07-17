@@ -3,19 +3,25 @@
 # Convergent: safe to re-run; a second run changes nothing.
 set -euo pipefail
 
+HERE="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")" && pwd)"
+# shellcheck source=SCRIPTDIR/lib/runner-config.sh
+. "$HERE/lib/runner-config.sh"   # json_field / json_string_array read the netmap
+
 log()  { printf 'rig-bootstrap: %s\n' "$*"; }
 warn() { printf 'rig-bootstrap: WARNING: %s\n' "$*" >&2; }
 die()  { printf 'rig-bootstrap: ERROR: %s\n' "$1" >&2; exit "${2:-1}"; }
 
 usage() {
   cat <<'EOF'
-usage: rig bootstrap <control-plane|workload|runner> [--hostname <name>] [--ts-tag <tag>]
+usage: rig bootstrap <control-plane|workload|runner> [--hostname <name>]
 
   --hostname  system + tailnet hostname (default: the role name)
-  --ts-tag    tailnet tag to advertise (default: tag:server;
-              role runner defaults to tag:ci and refuses tag:server —
-              a CI box executes repo-controlled code, and your server
-              tag's grants must never extend to it)
+
+The tailnet tag is NOT a rig argument. A pre-auth key is minted WITH its tags,
+so the key is the single source of truth: rig no longer requests a tag it might
+disagree with. After the box joins, rig reads the tag control actually GRANTED
+(tailscale status .Self.Tags) and asserts on THAT — an untagged key is refused
+outright, and a runner may not carry tag:server. Mint a correctly-tagged key.
 
 Provide the single-use tailscale pre-auth key via the TS_AUTHKEY env var, or
 enter it at the interactive prompt. It is used once and never written to disk.
@@ -32,28 +38,24 @@ case "$ROLE" in
 esac
 
 TS_HOSTNAME="$ROLE"
-if [ "$ROLE" = "runner" ]; then
-  TS_TAG="tag:ci"
-else
-  TS_TAG="tag:server"
-fi
 while [ $# -gt 0 ]; do
   case "$1" in
     --hostname)
       [ $# -ge 2 ] || die "--hostname needs a value" 2
       TS_HOSTNAME="$2"; shift 2 ;;
     --ts-tag)
-      [ $# -ge 2 ] || die "--ts-tag needs a value" 2
-      TS_TAG="$2"; shift 2 ;;
+      # --ts-tag is GONE, but this is a deliberate death with a message, not an
+      # "unknown flag": the flag shipped for a month and scripts still pass it,
+      # so it must explain where the tag went rather than look like a typo. The
+      # tag is now the key's to state and rig's to verify after join (issue #16 —
+      # the tag was said twice and rig never checked the two agreed). Consume a
+      # following value if present so `--ts-tag tag:server` dies on the flag and
+      # its argument never lands in the *) arm as a mystery unknown flag.
+      [ $# -ge 2 ] && shift
+      die "--ts-tag is removed: the tailnet tag comes from the pre-auth key now, not rig. Mint a key with the tag you want; rig verifies the granted tag after join." 2 ;;
     *) die "unknown flag: $1" 2 ;;
   esac
 done
-
-# A runner executes repo-controlled code; advertising the server tag would
-# extend every grant your servers hold to that code. Refused, not warned.
-if [ "$ROLE" = "runner" ] && [ "$TS_TAG" = "tag:server" ]; then
-  die "role runner must not advertise tag:server" 2
-fi
 
 # --- guards ------------------------------------------------------------------
 [ "$(id -u)" -eq 0 ] || die "must run as root"
@@ -164,6 +166,59 @@ else
 fi
 
 # --- tailscale ----------------------------------------------------------------
+# verify_effective_tag — assert the tag control actually GRANTED this node, never
+# the one rig requested. This is the sshd `sshd -T` lesson wearing a tailnet hat:
+# rig used to advertise a tag and trust it took, exactly as it once trusted that
+# a drop-in FILE existing meant sshd had read it. Both M900s joined carrying
+# tag:server and had to be retagged by hand; nothing in rig noticed because
+# nothing ever read the effective tag back.
+#
+# `.Self.Tags` from `tailscale status --json` is the netmap's ground truth.
+# `tailscale debug prefs` would LIE here — it prints AdvertiseTags, i.e. what was
+# REQUESTED — which is precisely the second source of truth issue #16 deletes.
+# Tags ride in with the netmap, not synchronously out of `up`, so a single read
+# right after join can legitimately come back empty; poll until tags appear OR
+# the backend reaches Running (past which an empty Tags is real, not just early).
+verify_effective_tag() {
+  local deadline=$((SECONDS + 30)) tags="" state="" json
+  json="$(mktemp)"
+  while :; do
+    if tailscale status --json > "$json" 2>/dev/null; then
+      tags="$(json_string_array "$json" Tags)"
+      state="$(json_field "$json" BackendState)"
+      if [ -n "$tags" ] || [ "$state" = "Running" ]; then break; fi
+    fi
+    if [ "$SECONDS" -ge "$deadline" ]; then break; fi
+    sleep 2
+  done
+  rm -f "$json"
+
+  # UNTAGGED is the real hazard and it is silent: with no tags the node joined
+  # owned by the KEY CREATOR's user identity — it inherits that human's ACL
+  # grants, expires with the key, and vanishes if the account is deleted.
+  # Dropping --advertise-tags removed the accidental net that used to tag such a
+  # node anyway, so rig must now catch this out loud. A wrong tag cannot be fixed
+  # in place (`tailscale set` has no tag flag; re-tagging needs a fresh key via
+  # `up --force-reauth`), so back the node out rather than leave a half-joined,
+  # user-owned device squatting a hostname.
+  if [ -z "$tags" ]; then
+    tailscale logout >/dev/null 2>&1 \
+      || warn "tailscale logout failed — this node is joined UNTAGGED and user-owned; remove it from the tailnet by hand"
+    die "joined with NO tag: the pre-auth key was untagged, so this node is owned by the key creator's user identity, not a tag. Backed it out. Fix: mint a TAGGED pre-auth key and re-run."
+  fi
+
+  # Role policy now rides the EFFECTIVE tag — strictly stronger than the old
+  # request-time check, which only guarded the tag rig HOPED for. This guards the
+  # tag the key ACTUALLY granted to repo-controlled code: a runner carrying
+  # tag:server would extend every grant your servers hold to CI code. Refused,
+  # never warned. rig can DETECT this but cannot FIX it, so name the repair.
+  if [ "$ROLE" = "runner" ] && printf '%s\n' "$tags" | grep -qx 'tag:server'; then
+    die "role runner joined with tag:server (effective tags: $(printf '%s' "$tags" | tr '\n' ' ')). The key you used grants tag:server to repo-controlled code; that must never happen. Re-run bootstrap with a key minted for a CI tag (e.g. tag:ci)."
+  fi
+
+  log "verified effective tailnet tag(s): $(printf '%s' "$tags" | tr '\n' ' ')"
+}
+
 if ! command -v tailscale >/dev/null 2>&1; then
   log "installing tailscale"
   curl -fsSL https://tailscale.com/install.sh | sh
@@ -190,6 +245,12 @@ if tailscale status >/dev/null 2>&1; then
   else
     log "tailnet hostname already ${TS_HOSTNAME}"
   fi
+  # Verify the tag on the already-joined path too, not only on first join: this
+  # catches a box bootstrapped BEFORE rig looked at tags, or one retagged behind
+  # rig's back, on the very next ordinary re-run. Skipping `tailscale up` here is
+  # deliberate and stays — re-running an identical tagged-authkey `up` errors —
+  # but skipping the CHECK was how the M900s stayed mis-tagged unnoticed.
+  verify_effective_tag
 else
   # env override, else prompt; never touches disk
   if [ -z "${TS_AUTHKEY:-}" ]; then
@@ -197,8 +258,13 @@ else
     echo
   fi
   [ -n "${TS_AUTHKEY:-}" ] || die "empty pre-auth key"
-  log "joining tailnet as ${TS_HOSTNAME} (${TS_TAG})"
-  tailscale up --authkey="$TS_AUTHKEY" --hostname="$TS_HOSTNAME" --advertise-tags="$TS_TAG"
+  # No --advertise-tags: the key's own tags apply (documented default for a
+  # tagged key), and rig verifies them below instead of stating a second tag it
+  # cannot reconcile with the key's. A tagged key needs no flag; an untagged one
+  # cannot be rescued by one (verify_effective_tag refuses it and logs out).
+  log "joining tailnet as ${TS_HOSTNAME} (tag comes from the pre-auth key)"
+  tailscale up --authkey="$TS_AUTHKEY" --hostname="$TS_HOSTNAME"
+  verify_effective_tag
 fi
 
 log "done — role ${ROLE}, hostname ${TS_HOSTNAME}"

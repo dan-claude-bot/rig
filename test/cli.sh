@@ -36,7 +36,17 @@ check "bootstrap: --help exits 0"          0 "usage:"         "$ROOT/commands/bo
 check "bootstrap: unknown role exits 2"    2 "unknown role"   "$ROOT/commands/bootstrap.sh" potato
 check "bootstrap: unknown flag exits 2"    2 "unknown flag"   "$ROOT/commands/bootstrap.sh" workload --nope
 check "bootstrap: hostname needs value"    2 "needs a value"  "$ROOT/commands/bootstrap.sh" workload --hostname
-check "bootstrap: runner refuses tag:server" 2 "must not advertise tag:server" "$ROOT/commands/bootstrap.sh" runner --ts-tag tag:server
+# --ts-tag is REMOVED, not demoted: the tag now comes from the pre-auth key and
+# rig verifies the GRANTED tag after join. The old runner-refuses-tag:server test
+# asserted the request-time refusal THROUGH this flag; that policy now lives on
+# the EFFECTIVE tag and needs a real tailnet, so it belongs to the rehearsal, not
+# here. What this harness CAN prove is that the flag dies with a message pointing
+# at the key (exit 2, a usage error), rather than an "unknown flag" that would
+# leave an operator guessing where the tag went — value present or absent.
+check "bootstrap: --ts-tag is removed (with value), exit 2" 2 "comes from the pre-auth key" \
+  "$ROOT/commands/bootstrap.sh" runner --ts-tag tag:server
+check "bootstrap: --ts-tag is removed (no value), exit 2"   2 "comes from the pre-auth key" \
+  "$ROOT/commands/bootstrap.sh" runner --ts-tag
 if [ "$(id -u)" -ne 0 ]; then
   check "bootstrap: refuses non-root"      1 "must run as root" env TS_AUTHKEY=x "$ROOT/commands/bootstrap.sh" workload
   check "bootstrap: runner role parses, refuses non-root" 1 "must run as root" env TS_AUTHKEY=x "$ROOT/commands/bootstrap.sh" runner
@@ -114,6 +124,66 @@ printf '%s\n' '{"agentName":"ci-box"}' > "$REG_DIR/.runner"
 check "runner install: refuses an unreadable registration" \
   1 "names no repository" guard "$REG_DIR" acme/alpha
 rm -rf "$REG_DIR" "$EMPTY_DIR"
+
+# --- json_string_array: json_field's array-aware sibling ---------------------
+# bootstrap reads `.Self.Tags` (a JSON array) out of `tailscale status --json` to
+# assert the tag control GRANTED the node — and a rig box has no jq. Exercise the
+# reader against fixture netmaps here, the same shared-lib way the guard above is:
+# the bootstrap path that calls it needs a real tailnet this harness cannot fake.
+tags() { # tags <file> — prints one tag per line, exactly like the reader
+  bash -c 'set -euo pipefail
+    . "$1/commands/lib/runner-config.sh"
+    json_string_array "$2" Tags' _ "$ROOT" "$1"
+}
+tags_count() { # tags_count <file> — prints how many tags were read (0 if none)
+  bash -c 'set -euo pipefail
+    . "$1/commands/lib/runner-config.sh"
+    json_string_array "$2" Tags | grep -c . || true' _ "$ROOT" "$1"
+}
+tags_empty() { # tags_empty <file> — exit 0 iff the reader prints NOTHING
+  bash -c 'set -euo pipefail
+    . "$1/commands/lib/runner-config.sh"
+    [ -z "$(json_string_array "$2" Tags)" ]' _ "$ROOT" "$1"
+}
+FIX_TAGGED="$(mktemp)"    # Self carries two tags; a peer carries a third
+FIX_UNTAGGED="$(mktemp)"  # Self has no Tags key at all — the untagged hazard
+cat > "$FIX_TAGGED" <<'JSON'
+{
+  "BackendState": "Running",
+  "Self": {
+    "HostName": "ci-box",
+    "Tags": [
+      "tag:ci",
+      "tag:build"
+    ]
+  },
+  "Peer": {
+    "nodekey:abc": {
+      "HostName": "coolify-box",
+      "Tags": [
+        "tag:server"
+      ]
+    }
+  }
+}
+JSON
+cat > "$FIX_UNTAGGED" <<'JSON'
+{
+  "BackendState": "Running",
+  "Self": {
+    "HostName": "user-owned-box"
+  }
+}
+JSON
+check "json_string_array: reads the first array element" 0 "tag:ci"    tags "$FIX_TAGGED"
+check "json_string_array: reads a later array element"   0 "tag:build" tags "$FIX_TAGGED"
+# Self precedes Peer in the netmap, so the FIRST "Tags" is the node's own: exactly
+# two elements read proves the peer's tag:server did not leak into Self's tags.
+check "json_string_array: reads Self's array, not a peer's" 0 "2" tags_count "$FIX_TAGGED"
+# An absent key omits itself (Go omitempty), never emits []: empty is the signal
+# bootstrap turns into a hard untagged-key refusal, so it must read as empty here.
+check "json_string_array: absent Tags key prints nothing" 0 "" tags_empty "$FIX_UNTAGGED"
+rm -f "$FIX_TAGGED" "$FIX_UNTAGGED"
 
 # The guard is only worth something if it runs BEFORE the box is touched: the
 # token prompt, the download, configure and svc.sh start all come after it.

@@ -32,15 +32,19 @@ rig bootstrap runner --hostname my-ci-box
 ```
 
 - `--hostname <name>` — tailnet hostname (default: the role name)
-- `--ts-tag <tag>` — tailnet tag to advertise (default: `tag:server`;
-  the `runner` role defaults to `tag:ci` instead, and **refuses**
-  `tag:server` outright — see below)
+
+There is **no `--ts-tag` flag**. A pre-auth key is minted *with* its tags, so
+the key is the single source of truth for the tailnet tag — rig no longer states
+a second one it might disagree with. It **verifies** the tag control actually
+granted after join instead (see below). Passing `--ts-tag` now exits 2 with a
+message pointing you at the key.
 
 What it does: installs `curl ca-certificates unattended-upgrades` (and
 enables periodic unattended upgrades); writes an sshd hardening drop-in
 (`PermitRootLogin prohibit-password`, `PasswordAuthentication no`) and
 **verifies it took effect** via `sshd -T`; sets the system hostname; installs
-tailscale and joins your tailnet.
+tailscale and joins your tailnet — then **verifies the tag the key granted**
+(see *The tag comes from the key* below).
 
 **`--hostname` converges both names.** On a box that has already joined,
 `bootstrap` skips `tailscale up` (so a re-run needs no pre-auth key) — but it
@@ -64,17 +68,43 @@ admin console keeps that name; rig will not fight it.
 > on re-run, and refuses to claim success unless `sshd -T` agrees.
 
 **The pre-auth key:** provide it via the `TS_AUTHKEY` env var or type it at
-the interactive prompt. Use a **single-use, tagged, short-expiry** key. It
-lives in process memory only — rig never writes a credential to disk.
+the interactive prompt. Use a **single-use, tagged, short-expiry** key — the
+**tagged** part is now load-bearing, not advice (see below). It lives in process
+memory only — rig never writes a credential to disk.
+
+**The tag comes from the key, and rig verifies the one control granted.** rig
+used to pass `--ts-tag` to `tailscale up --advertise-tags`, stating the tag a
+*second* time — with no way to know whether its request and the key's own tags
+agreed. It asserted the tag it **requested**, never the tag control **granted**;
+this is the same shape as the sshd first-wins bug above, and it left the same
+scar (both M900s joined carrying `tag:server` and had to be retagged by hand,
+because nothing in rig ever read the effective tag back). So rig stops
+overriding the key: `tailscale up` carries no `--advertise-tags`, the key's tags
+apply, and after join rig polls `tailscale status --json` for `.Self.Tags` — the
+netmap's ground truth, not `tailscale debug prefs`, which prints what was
+*requested* — and asserts on that, on **first join and on every re-run** (which
+catches a box bootstrapped before this change, or retagged behind rig's back).
+
+> **An untagged key is a hard refusal.** Drop `--advertise-tags` and you also
+> drop the accidental net that used to tag an untagged key's node anyway. An
+> untagged node joins owned by the *key creator's user identity* — it inherits
+> that human's ACL grants, expires with the key, and vanishes if the account is
+> deleted. That is a fleet-shaped mistake, not a warning: rig runs `tailscale
+> logout` to back the half-joined node out and dies telling you to mint a tagged
+> key. A wrong tag **cannot** be fixed in place either — `tailscale set` has no
+> tag flag, re-tagging needs a fresh key via `up --force-reauth` — so rig detects
+> and refuses, and never claims a convergence it cannot perform.
 
 `control-plane` and `workload` are identical today except the default
 hostname; they exist because the boxes diverge over time, and because each
-follow-up command applies to exactly one role. `runner` is the box a CI
-agent will live on, and it differs behaviorally: it defaults `--ts-tag` to
-`tag:ci` and **refuses `tag:server`** — a runner executes repo-controlled
-code, and advertising your server tag would extend every grant your servers
-hold (SSH between them, say) to that code. The refusal turns the worst
-misconfiguration from a documentation warning into a hard error.
+follow-up command applies to exactly one role. `runner` is the box a CI agent
+will live on, and it differs behaviorally: it **refuses `tag:server`**. That
+refusal moved onto the *effective* tag and is strictly stronger for it — it is
+no longer "don't advertise `tag:server`" but "the key you actually used must not
+grant `tag:server` to repo-controlled code." A runner executes that code, and
+`tag:server`'s grants (SSH between your servers, say) must never extend to it;
+the check turns the worst misconfiguration from a documentation warning into a
+hard, post-join error.
 
 ### `rig coolify install --version <pin>`
 

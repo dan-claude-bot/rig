@@ -14,6 +14,34 @@ json_field() {
     | head -n1 | sed 's/.*:[[:space:]]*"//; s/"$//' || true
 }
 
+# json_string_array <file> <key> — the elements of the FIRST array named <key>,
+# one per line, empty when the key is absent or the array is empty.
+#
+# json_field's sibling for the one shape it cannot read: `.Self.Tags` from
+# `tailscale status --json` is a JSON array, and bootstrap must assert on it to
+# learn the tag control actually GRANTED the node (the netmap's ground truth),
+# not the tag rig requested. Same grep/sed spirit, same jq-free reason: a
+# rig-bootstrapped box has no jq and we will not install one to read one field.
+#
+# `tr -d '\n'` first, because tailscale pretty-prints its JSON and an array
+# spans lines — grep is line-oriented and would never see `[ ... ]` whole
+# otherwise. `\[[^]]*\]` then captures the first flat array body for <key>
+# (tag strings never contain `]`, so this is safe); the inner `grep -o` pulls
+# every quoted token out of it, and `sed 1d` drops the key's own name — which
+# `"key":[...]` leads with — leaving just the elements.
+#
+# FIRST array wins by design, and the caller leans on it: `tailscale status
+# --json` emits Self before Peer (Go struct field order, stable), so the first
+# "Tags" is the node's OWN, never a peer's. An absent key omits itself entirely
+# (Go's omitempty) rather than emitting `[]` — which is exactly the untagged,
+# user-owned node bootstrap must catch. Never fails under `set -e`+pipefail: a
+# non-match is a fact to test for, like json_field, not a reason to die.
+json_string_array() {
+  tr -d '\n' < "$1" 2>/dev/null \
+    | grep -o "\"$2\"[[:space:]]*:[[:space:]]*\[[^]]*\]" \
+    | head -n1 | grep -o '"[^"]*"' | sed '1d; s/^"//; s/"$//' || true
+}
+
 # runner_repo_url <runner_dir> — the repository this box's runner is registered
 # to, empty when nothing is registered there.
 runner_repo_url() {
