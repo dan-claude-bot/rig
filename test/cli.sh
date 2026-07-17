@@ -47,9 +47,19 @@ check "bootstrap: --ts-tag is removed (with value), exit 2" 2 "comes from the pr
   "$ROOT/commands/bootstrap.sh" runner --ts-tag tag:server
 check "bootstrap: --ts-tag is removed (no value), exit 2"   2 "comes from the pre-auth key" \
   "$ROOT/commands/bootstrap.sh" runner --ts-tag
+check "bootstrap: staging + removed --ts-tag exits 2" 2 "comes from the pre-auth key" \
+  "$ROOT/commands/bootstrap.sh" staging --ts-tag tag:server
+# The staging tag:server refusal rides the EFFECTIVE tag, inside
+# verify_effective_tag — a path that needs a real tailnet, so it belongs to the
+# rehearsal. What the harness CAN prove is that the refusal exists in the
+# shipped script: grep the die message, so a deleted guard cannot ship green
+# (the same reason the runner-install repo guard is grepped below).
+check "bootstrap: staging effective-tag refusal is present" 0 "" \
+  grep -q "role staging joined with tag:server" "$ROOT/commands/bootstrap.sh"
 if [ "$(id -u)" -ne 0 ]; then
   check "bootstrap: refuses non-root"      1 "must run as root" env TS_AUTHKEY=x "$ROOT/commands/bootstrap.sh" workload
   check "bootstrap: runner role parses, refuses non-root" 1 "must run as root" env TS_AUTHKEY=x "$ROOT/commands/bootstrap.sh" runner
+  check "bootstrap: staging role parses, refuses non-root" 1 "must run as root" env TS_AUTHKEY=x "$ROOT/commands/bootstrap.sh" staging
 else
   echo "skip: bootstrap non-root refusals (running as root)"
 fi

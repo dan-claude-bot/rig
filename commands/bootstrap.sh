@@ -13,9 +13,14 @@ die()  { printf 'rig-bootstrap: ERROR: %s\n' "$1" >&2; exit "${2:-1}"; }
 
 usage() {
   cat <<'EOF'
-usage: rig bootstrap <control-plane|workload|runner> [--hostname <name>]
+usage: rig bootstrap <control-plane|workload|runner|staging> [--hostname <name>]
 
   --hostname  system + tailnet hostname (default: the role name)
+
+Role staging is the host for box-minted staging VMs (Incus guests converged
+from inside with `rig bootstrap workload`). Mint its key with tag:local: the
+host is never managed by the control plane — its guest VMs are — so a staging
+host may not carry tag:server.
 
 The tailnet tag is NOT a rig argument. A pre-auth key is minted WITH its tags,
 so the key is the single source of truth: rig no longer requests a tag it might
@@ -31,10 +36,10 @@ EOF
 # --- args (validated before the root check, so errors are testable) ---------
 ROLE="${1:-}"
 case "$ROLE" in
-  control-plane|workload|runner) shift ;;
+  control-plane|workload|runner|staging) shift ;;
   -h|--help) usage; exit 0 ;;
-  "") usage >&2; die "role required (control-plane|workload|runner)" 2 ;;
-  *) die "unknown role: $ROLE (want control-plane|workload|runner)" 2 ;;
+  "") usage >&2; die "role required (control-plane|workload|runner|staging)" 2 ;;
+  *) die "unknown role: $ROLE (want control-plane|workload|runner|staging)" 2 ;;
 esac
 
 TS_HOSTNAME="$ROLE"
@@ -70,6 +75,12 @@ if [ -r /etc/os-release ]; then
   esac
 else
   warn "cannot read /etc/os-release; proceeding anyway"
+fi
+# A staging host exists to run VMs, so no /dev/kvm deserves a loud note — but
+# only a note: the role is rehearsed in containers, where /dev/kvm is
+# legitimately absent, and rig cannot tell a rehearsal from a misconfigured box.
+if [ "$ROLE" = "staging" ] && [ ! -e /dev/kvm ]; then
+  warn "/dev/kvm is absent — a staging host is expected to run VMs. Harmless in a container rehearsal; on real hardware, enable virtualization (VT-x/AMD-V) in firmware."
 fi
 
 # The pre-auth key is acquired LATER, in the tailscale block — and only if the
@@ -216,6 +227,15 @@ verify_effective_tag() {
     die "role runner joined with tag:server (effective tags: $(printf '%s' "$tags" | tr '\n' ' ')). The key you used grants tag:server to repo-controlled code; that must never happen. Re-run bootstrap with a key minted for a CI tag (e.g. tag:ci)."
   fi
 
+  # Same policy, staging flavor: a staging HOST is never managed by the control
+  # plane — its guest VMs are, each registered there as its own server. The
+  # fleet has already been bitten by a host wrongly carrying tag:server, which
+  # extends every server grant to a box the control plane does not even know.
+  # Refused, never warned; rig can DETECT this but not FIX it, so name the repair.
+  if [ "$ROLE" = "staging" ] && printf '%s\n' "$tags" | grep -qx 'tag:server'; then
+    die "role staging joined with tag:server (effective tags: $(printf '%s' "$tags" | tr '\n' ' ')). A staging host is never managed by the control plane — its guest VMs are. Re-run bootstrap with a key minted for tag:local."
+  fi
+
   log "verified effective tailnet tag(s): $(printf '%s' "$tags" | tr '\n' ' ')"
 }
 
@@ -272,4 +292,6 @@ if [ "$ROLE" = "control-plane" ]; then
   log "next: rig coolify install --version <pin>"
 elif [ "$ROLE" = "runner" ]; then
   log "next: rig runner install --repo <owner/repo> --version <pin>"
+elif [ "$ROLE" = "staging" ]; then
+  log "next: install the box CLI and run 'box setup-host' to prepare Incus, then mint staging boxes with 'box new --template staging'"
 fi
