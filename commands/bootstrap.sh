@@ -13,41 +13,99 @@ die()  { printf 'rig-bootstrap: ERROR: %s\n' "$1" >&2; exit "${2:-1}"; }
 
 usage() {
   cat <<'EOF'
-usage: rig bootstrap <control-plane|workload|runner|staging> [--hostname <name>]
+usage: rig bootstrap <control-plane|workload|runner|staging|dev|workstation|custom>
+                     [--hostname <name>] [--class <human|server>]
+                     [--host <yes|no>] [--join <authkey|login>]
 
-  --hostname  system + tailnet hostname (default: the role name)
+  --hostname  system + tailnet hostname (default: the role name; custom has
+              no default and requires it)
+  --class     who lives here — human|server. Decides root SSH's fate after
+              `rig users apply`: human closes it, server keeps it as the
+              control plane's automation door.
+  --host      does this box host VMs (box/Incus) — yes|no
+  --join      how it enters the tailnet — authkey|login
 
-Role staging is the host for box-minted staging VMs (Incus guests converged
-from inside with `rig bootstrap workload`). Mint its key with tag:local: the
-host is never managed by the control plane — its guest VMs are — so a staging
-host may not carry tag:server.
+Roles are presets over the three traits; any flag overrides its trait.
+custom presets nothing and requires --hostname plus all three traits.
+
+  role            class   host  join
+  control-plane   server  no    authkey
+  workload        server  no    authkey
+  runner          server  no    authkey
+  staging         server  yes   authkey
+  dev             human   yes   authkey
+  workstation     human   yes   login
 
 The tailnet tag is NOT a rig argument. A pre-auth key is minted WITH its tags,
 so the key is the single source of truth: rig no longer requests a tag it might
 disagree with. After the box joins, rig reads the tag control actually GRANTED
 (tailscale status .Self.Tags) and asserts on THAT — an untagged key is refused
-outright, and a runner may not carry tag:server. Mint a correctly-tagged key.
+outright, and only control-plane and workload may carry tag:server (they are
+the only shapes the control plane manages). Mint a correctly-tagged key.
 
-Provide the single-use tailscale pre-auth key via the TS_AUTHKEY env var, or
-enter it at the interactive prompt. It is used once and never written to disk.
+join=authkey: provide the single-use tailscale pre-auth key via the TS_AUTHKEY
+env var, or enter it at the interactive prompt. Used once, never written to disk.
+
+join=login: no pre-auth key — `tailscale up` prints a login URL and the human
+at the keyboard is the credential, so the node comes up user-owned and
+UNTAGGED (a tag here is refused and backed out). A set TS_AUTHKEY is a usage
+error: unset it, or pass --join authkey.
 EOF
 }
 
 # --- args (validated before the root check, so errors are testable) ---------
 ROLE="${1:-}"
 case "$ROLE" in
-  control-plane|workload|runner|staging) shift ;;
+  control-plane|workload|runner|staging|dev|workstation|custom) shift ;;
   -h|--help) usage; exit 0 ;;
-  "") usage >&2; die "role required (control-plane|workload|runner|staging)" 2 ;;
-  *) die "unknown role: $ROLE (want control-plane|workload|runner|staging)" 2 ;;
+  "") usage >&2; die "role required (control-plane|workload|runner|staging|dev|workstation|custom)" 2 ;;
+  *) die "unknown role: $ROLE (want control-plane|workload|runner|staging|dev|workstation|custom)" 2 ;;
 esac
 
+# Role→traits map — the single place a role's shape is declared (issue #26).
+# Roles are presets, nothing more: every behavior below keys off the traits,
+# so a flag override changes behavior without a new role, and custom exists
+# for the shape nobody foresaw — it declares nothing and must state all three.
+CLASS="" HOST="" JOIN=""
+case "$ROLE" in
+  control-plane) CLASS=server HOST=no  JOIN=authkey ;;
+  workload)      CLASS=server HOST=no  JOIN=authkey ;;
+  runner)        CLASS=server HOST=no  JOIN=authkey ;;
+  staging)       CLASS=server HOST=yes JOIN=authkey ;;
+  dev)           CLASS=human  HOST=yes JOIN=authkey ;;
+  workstation)   CLASS=human  HOST=yes JOIN=login   ;;
+  custom)        ;;
+esac
+
+# custom has no hostname default: a made-up name on a made-up shape helps nobody.
 TS_HOSTNAME="$ROLE"
+[ "$ROLE" = "custom" ] && TS_HOSTNAME=""
 while [ $# -gt 0 ]; do
   case "$1" in
     --hostname)
       [ $# -ge 2 ] || die "--hostname needs a value" 2
       TS_HOSTNAME="$2"; shift 2 ;;
+    --class)
+      [ $# -ge 2 ] || die "--class needs a value" 2
+      case "$2" in
+        human|server) CLASS="$2" ;;
+        *) die "bad --class: $2 (want human|server)" 2 ;;
+      esac
+      shift 2 ;;
+    --host)
+      [ $# -ge 2 ] || die "--host needs a value" 2
+      case "$2" in
+        yes|no) HOST="$2" ;;
+        *) die "bad --host: $2 (want yes|no)" 2 ;;
+      esac
+      shift 2 ;;
+    --join)
+      [ $# -ge 2 ] || die "--join needs a value" 2
+      case "$2" in
+        authkey|login) JOIN="$2" ;;
+        *) die "bad --join: $2 (want authkey|login)" 2 ;;
+      esac
+      shift 2 ;;
     --ts-tag)
       # --ts-tag is GONE, but this is a deliberate death with a message, not an
       # "unknown flag": the flag shipped for a month and scripts still pass it,
@@ -61,6 +119,24 @@ while [ $# -gt 0 ]; do
     *) die "unknown flag: $1" 2 ;;
   esac
 done
+
+# custom must state its whole shape — collect every gap and report them at once,
+# so the operator fixes the command line in one round trip, not four.
+if [ "$ROLE" = "custom" ]; then
+  MISSING=""
+  [ -n "$TS_HOSTNAME" ] || MISSING="$MISSING --hostname"
+  [ -n "$CLASS" ]       || MISSING="$MISSING --class"
+  [ -n "$HOST" ]        || MISSING="$MISSING --host"
+  [ -n "$JOIN" ]        || MISSING="$MISSING --join"
+  [ -z "$MISSING" ] || die "role custom has no presets; missing:$MISSING" 2
+fi
+
+# A set TS_AUTHKEY on a login join is a usage error, caught before the root
+# check: the operator plainly expected the key to be spent, and silently
+# ignoring a credential is how the wrong join path ships unnoticed.
+if [ "$JOIN" = "login" ] && [ -n "${TS_AUTHKEY:-}" ]; then
+  die "join=login is interactive: unset TS_AUTHKEY or pass --join authkey" 2
+fi
 
 # --- guards ------------------------------------------------------------------
 [ "$(id -u)" -eq 0 ] || die "must run as root"
@@ -76,11 +152,11 @@ if [ -r /etc/os-release ]; then
 else
   warn "cannot read /etc/os-release; proceeding anyway"
 fi
-# A staging host exists to run VMs, so no /dev/kvm deserves a loud note — but
-# only a note: the role is rehearsed in containers, where /dev/kvm is
+# A host=yes box exists to run VMs, so no /dev/kvm deserves a loud note — but
+# only a note: the shape is rehearsed in containers, where /dev/kvm is
 # legitimately absent, and rig cannot tell a rehearsal from a misconfigured box.
-if [ "$ROLE" = "staging" ] && [ ! -e /dev/kvm ]; then
-  warn "/dev/kvm is absent — a staging host is expected to run VMs. Harmless in a container rehearsal; on real hardware, enable virtualization (VT-x/AMD-V) in firmware."
+if [ "$HOST" = "yes" ] && [ ! -e /dev/kvm ]; then
+  warn "/dev/kvm is absent — a host=yes box is expected to run VMs. Harmless in a container rehearsal; on real hardware, enable virtualization (VT-x/AMD-V) in firmware."
 fi
 
 # The pre-auth key is acquired LATER, in the tailscale block — and only if the
@@ -218,25 +294,63 @@ verify_effective_tag() {
     die "joined with NO tag: the pre-auth key was untagged, so this node is owned by the key creator's user identity, not a tag. Backed it out. Fix: mint a TAGGED pre-auth key and re-run."
   fi
 
-  # Role policy now rides the EFFECTIVE tag — strictly stronger than the old
-  # request-time check, which only guarded the tag rig HOPED for. This guards the
-  # tag the key ACTUALLY granted to repo-controlled code: a runner carrying
-  # tag:server would extend every grant your servers hold to CI code. Refused,
-  # never warned. rig can DETECT this but cannot FIX it, so name the repair.
-  if [ "$ROLE" = "runner" ] && printf '%s\n' "$tags" | grep -qx 'tag:server'; then
-    die "role runner joined with tag:server (effective tags: $(printf '%s' "$tags" | tr '\n' ' ')). The key you used grants tag:server to repo-controlled code; that must never happen. Re-run bootstrap with a key minted for a CI tag (e.g. tag:ci)."
-  fi
-
-  # Same policy, staging flavor: a staging HOST is never managed by the control
-  # plane — its guest VMs are, each registered there as its own server. The
-  # fleet has already been bitten by a host wrongly carrying tag:server, which
-  # extends every server grant to a box the control plane does not even know.
-  # Refused, never warned; rig can DETECT this but not FIX it, so name the repair.
-  if [ "$ROLE" = "staging" ] && printf '%s\n' "$tags" | grep -qx 'tag:server'; then
-    die "role staging joined with tag:server (effective tags: $(printf '%s' "$tags" | tr '\n' ' ')). A staging host is never managed by the control plane — its guest VMs are. Re-run bootstrap with a key minted for tag:local."
+  # tag:server policy is DERIVED, not a trait: it means "the control plane
+  # manages this box", and only control-plane and workload are shapes the
+  # control plane manages. Everything else refuses it on the EFFECTIVE tag —
+  # strictly stronger than the old request-time check, which only guarded the
+  # tag rig HOPED for. The fleet has been bitten both ways: a runner carrying
+  # tag:server extends every server grant to repo-controlled code, and a
+  # staging host carrying it extends them to a box the control plane does not
+  # even know. Refused, never warned; rig can DETECT this but cannot FIX it,
+  # so each refusal names its repair.
+  if printf '%s\n' "$tags" | grep -qx 'tag:server'; then
+    case "$ROLE" in
+      control-plane|workload) ;;
+      runner)
+        die "role runner joined with tag:server (effective tags: $(printf '%s' "$tags" | tr '\n' ' ')). The key you used grants tag:server to repo-controlled code; that must never happen. Re-run bootstrap with a key minted for a CI tag (e.g. tag:ci)." ;;
+      staging)
+        die "role staging joined with tag:server (effective tags: $(printf '%s' "$tags" | tr '\n' ' ')). A staging host is never managed by the control plane — its guest VMs are. Re-run bootstrap with a key minted for tag:local." ;;
+      *)
+        die "role $ROLE joined with tag:server (effective tags: $(printf '%s' "$tags" | tr '\n' ' ')). Only control-plane and workload are managed by the control plane; tag:server on this box extends every server grant to it. Re-run bootstrap with a key minted for a non-server tag (e.g. tag:local)." ;;
+    esac
   fi
 
   log "verified effective tailnet tag(s): $(printf '%s' "$tags" | tr '\n' ' ')"
+}
+
+# verify_user_owned <back-out|keep> — join=login INVERTS the tag assertion:
+# the whole point of a login join is a user-owned, untagged node, so here a tag
+# is the hazard (control granted this device fleet identity) and untagged is
+# the success case. Same poll as verify_effective_tag — tags ride the netmap —
+# but the empty read is what we WANT once the backend reaches Running.
+# back-out: first join, so a refusal logs the node out (mirror of the
+# untagged-key back-out on the authkey path). keep: the box was already joined
+# before this run — never back out state rig did not create; detect, refuse,
+# and name the by-hand repair instead.
+verify_user_owned() {
+  local mode="$1" deadline=$((SECONDS + 30)) tags="" state="" json shown
+  json="$(mktemp)"
+  while :; do
+    if tailscale status --json > "$json" 2>/dev/null; then
+      tags="$(json_string_array "$json" Tags)"
+      state="$(json_field "$json" BackendState)"
+      if [ -n "$tags" ] || [ "$state" = "Running" ]; then break; fi
+    fi
+    if [ "$SECONDS" -ge "$deadline" ]; then break; fi
+    sleep 2
+  done
+  rm -f "$json"
+
+  if [ -n "$tags" ]; then
+    shown="$(printf '%s' "$tags" | tr '\n' ' ')"
+    if [ "$mode" = "back-out" ]; then
+      tailscale logout >/dev/null 2>&1 \
+        || warn "tailscale logout failed — this node is joined TAGGED; remove it from the tailnet by hand"
+      die "joined TAGGED (${shown}) but join=login expects a user-owned, untagged node — a tag here means control granted this device fleet identity; use a pre-auth key path (--join authkey) for fleet machines. Backed it out."
+    fi
+    die "this node is TAGGED (${shown}) but join=login expects a user-owned, untagged node — a tag here means control granted this device fleet identity. It was joined before this run, so nothing was backed out: run 'tailscale logout' and re-run bootstrap, or re-run with --join authkey."
+  fi
+  log "user-owned join verified (untagged)"
 }
 
 if ! command -v tailscale >/dev/null 2>&1; then
@@ -270,7 +384,19 @@ if tailscale status >/dev/null 2>&1; then
   # rig's back, on the very next ordinary re-run. Skipping `tailscale up` here is
   # deliberate and stays — re-running an identical tagged-authkey `up` errors —
   # but skipping the CHECK was how the M900s stayed mis-tagged unnoticed.
-  verify_effective_tag
+  # The check the traits demand: authkey wants the granted tag, login wants none
+  # (`keep`: never back out a join this run did not perform).
+  if [ "$JOIN" = "login" ]; then
+    verify_user_owned keep
+  else
+    verify_effective_tag
+  fi
+elif [ "$JOIN" = "login" ]; then
+  # No pre-auth key on this path — the human at the keyboard is the credential.
+  # `tailscale up` prints a login URL and blocks until the browser login lands.
+  log "joining tailnet as ${TS_HOSTNAME} (interactive login; follow the URL tailscale prints)"
+  tailscale up --hostname="$TS_HOSTNAME"
+  verify_user_owned back-out
 else
   # env override, else prompt; never touches disk
   if [ -z "${TS_AUTHKEY:-}" ]; then
@@ -287,11 +413,37 @@ else
   verify_effective_tag
 fi
 
+# --- role marker --------------------------------------------------------------
+# /etc/rig/role is the traits' ground truth for later rig commands (`rig users`
+# reads class from it to decide root SSH's fate). Written only AFTER the tag
+# verification, so a marker never describes a box that failed to become what it
+# claims — and cmp-guarded like every file rig converges.
+MARKER=/etc/rig/role
+MARKER_TMP="$(mktemp)"
+printf 'role=%s class=%s host=%s join=%s\n' "$ROLE" "$CLASS" "$HOST" "$JOIN" > "$MARKER_TMP"
+if ! cmp -s "$MARKER_TMP" "$MARKER" 2>/dev/null; then
+  mkdir -p /etc/rig
+  install -m 0644 "$MARKER_TMP" "$MARKER"
+  log "role marker written: role=$ROLE class=$CLASS host=$HOST join=$JOIN"
+else
+  log "role marker already current"
+fi
+rm -f "$MARKER_TMP"
+
 log "done — role ${ROLE}, hostname ${TS_HOSTNAME}"
 if [ "$ROLE" = "control-plane" ]; then
   log "next: rig coolify install --version <pin>"
 elif [ "$ROLE" = "runner" ]; then
   log "next: rig runner install --repo <owner/repo> --version <pin>"
-elif [ "$ROLE" = "staging" ]; then
-  log "next: install the box CLI and run 'box setup-host' to prepare Incus, then mint staging boxes with 'box new --template staging'"
+fi
+if [ "$HOST" = "yes" ]; then
+  log "next: install the box CLI and run 'box setup-host' to prepare Incus for guest boxes"
+fi
+# Every class gets operators: humans always enter as themselves and elevate via
+# sudo — a shared root login is unattributable. What differs by class is root
+# SSH's fate once named users exist.
+if [ "$CLASS" = "human" ]; then
+  log "next: rig users apply --file <users-file>, then 'rig users close-root' once your admin key works"
+else
+  log "next: rig users apply --file <users-file> for named operator logins; root SSH stays — it is the control plane's automation door"
 fi

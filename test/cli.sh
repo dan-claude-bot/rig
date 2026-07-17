@@ -56,10 +56,39 @@ check "bootstrap: staging + removed --ts-tag exits 2" 2 "comes from the pre-auth
 # (the same reason the runner-install repo guard is grepped below).
 check "bootstrap: staging effective-tag refusal is present" 0 "" \
   grep -q "role staging joined with tag:server" "$ROOT/commands/bootstrap.sh"
+# --- traits: roles are presets, every trait individually settable (#26) -----
+check "bootstrap: unknown role still exits 2"    2 "unknown role" "$ROOT/commands/bootstrap.sh" potato
+check "bootstrap: bad --class value exits 2"     2 "human|server" "$ROOT/commands/bootstrap.sh" workload --class potato
+check "bootstrap: bad --host value exits 2"      2 "yes|no"       "$ROOT/commands/bootstrap.sh" workload --host maybe
+check "bootstrap: bad --join value exits 2"      2 "authkey|login" "$ROOT/commands/bootstrap.sh" workload --join carrier-pigeon
+check "bootstrap: custom without --hostname exits 2" 2 "--hostname" \
+  "$ROOT/commands/bootstrap.sh" custom --class server --host no --join authkey
+check "bootstrap: custom without traits exits 2" 2 "--class" "$ROOT/commands/bootstrap.sh" custom --hostname box1
+# workstation is join=login by preset: a set TS_AUTHKEY is a usage error, and it
+# must die BEFORE the root check — provable non-root, which also proves the
+# preset actually landed.
+check "bootstrap: workstation + TS_AUTHKEY exits 2" 2 "unset TS_AUTHKEY" \
+  env TS_AUTHKEY=x "$ROOT/commands/bootstrap.sh" workstation
+# A trait override changes derived behavior, provable non-root: dev is
+# join=authkey (TS_AUTHKEY fine → falls through to the root check), but
+# --join login flips it into the TS_AUTHKEY refusal.
+check "bootstrap: dev --join login + TS_AUTHKEY exits 2" 2 "unset TS_AUTHKEY" \
+  env TS_AUTHKEY=x "$ROOT/commands/bootstrap.sh" dev --join login
+# The login-path inverted assertion needs a real tailnet; grep the refusal so a
+# deleted guard cannot ship green (repo precedent: staging/runner tag greps).
+check "bootstrap: login-path tagged refusal is present" 0 "" \
+  grep -q "join=login expects a user-owned, untagged node" "$ROOT/commands/bootstrap.sh"
+# The marker is the traits' ground truth for rig users; assert the write exists.
+check "bootstrap: role marker write is present" 0 "" \
+  grep -q "/etc/rig/role" "$ROOT/commands/bootstrap.sh"
 if [ "$(id -u)" -ne 0 ]; then
   check "bootstrap: refuses non-root"      1 "must run as root" env TS_AUTHKEY=x "$ROOT/commands/bootstrap.sh" workload
   check "bootstrap: runner role parses, refuses non-root" 1 "must run as root" env TS_AUTHKEY=x "$ROOT/commands/bootstrap.sh" runner
   check "bootstrap: staging role parses, refuses non-root" 1 "must run as root" env TS_AUTHKEY=x "$ROOT/commands/bootstrap.sh" staging
+  check "bootstrap: dev role parses, refuses non-root" 1 "must run as root" env TS_AUTHKEY=x "$ROOT/commands/bootstrap.sh" dev
+  check "bootstrap: workstation parses, refuses non-root" 1 "must run as root" env -u TS_AUTHKEY "$ROOT/commands/bootstrap.sh" workstation
+  check "bootstrap: custom parses, refuses non-root" 1 "must run as root" \
+    env TS_AUTHKEY=x "$ROOT/commands/bootstrap.sh" custom --hostname b --class server --host no --join authkey
 else
   echo "skip: bootstrap non-root refusals (running as root)"
 fi

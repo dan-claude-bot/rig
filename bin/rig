@@ -8,12 +8,17 @@ usage() {
 usage: rig <command> [args]
 
 commands:
-  bootstrap <control-plane|workload|runner|staging> [--hostname <name>]
+  bootstrap <control-plane|workload|runner|staging|dev|workstation|custom>
+            [--hostname <name>] [--class <human|server>] [--host <yes|no>]
+            [--join <authkey|login>]
       OS plumbing on a pristine Debian box: hardening, unattended-upgrades,
-      tailscale join. Prompts for a single-use TAGGED tailnet pre-auth key
-      (TS_AUTHKEY env overrides the prompt); the key's tags are the tailnet
-      tag, verified after join. Run as root. Roles runner and staging
-      refuse tag:server.
+      tailscale join. Roles are presets over the three traits; any flag
+      overrides its trait, and custom states all of them. Prompts for a
+      single-use TAGGED tailnet pre-auth key (TS_AUTHKEY env overrides the
+      prompt); the key's tags are the tailnet tag, verified after join —
+      only control-plane and workload may carry tag:server. join=login
+      (workstation) needs no key: interactive login, node must come up
+      untagged. Run as root.
   coolify install --version <pin>
       Pinned Coolify install (AUTOUPDATE=false). Control-plane box only.
   coolify backup install [options]
