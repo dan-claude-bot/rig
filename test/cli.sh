@@ -401,6 +401,19 @@ sshdt_at="$(grep -nE '^[[:space:]]*if ! sshd -t' "$ROOT/commands/users-close-roo
 restart_at="$(grep -n 'systemctl restart ssh' "$ROOT/commands/users-close-root.sh" | head -n1 | cut -d: -f1)"
 check "users close-root: sshd -t precedes the ssh restart" \
   0 "" test "${sshdt_at:-999999}" -lt "${restart_at:-0}"
+# Convergence is a claim about the DOOR, not the file. Matching bytes can hide
+# an earlier-sorting override (first-wins) or a daemon that died between
+# install and restart and never read the file — so the no-op message may only
+# be spoken after the effective-config assertion (`sshd -T`), and the no-op
+# branch may only be TAKEN when the daemon provably started after the last
+# change to sshd's config inputs. Pin both: the assert-before-claim ordering,
+# and the daemon-start-vs-config-mtime proof's presence.
+efft_at="$(grep -n 'sshd -T' "$ROOT/commands/users-close-root.sh" | grep -v '^[0-9]*:#' | head -n1 | cut -d: -f1)"
+noop_at="$(grep -n 'nothing to do' "$ROOT/commands/users-close-root.sh" | tail -n1 | cut -d: -f1)"
+check "users close-root: no-op claim sits after the effective-config assert" \
+  0 "" test "${efft_at:-999999}" -lt "${noop_at:-0}"
+check "users close-root: no-op needs a daemon start newer than the config" 0 "" \
+  grep -q "ExecMainStartTimestamp" "$ROOT/commands/users-close-root.sh"
 # The admin-door gate must check the StrictModes SHAPE, not file existence: a
 # non-empty authorized_keys behind group/world-writable perms is a key sshd
 # rejects — closing root behind it welds the only door shut. The full gate

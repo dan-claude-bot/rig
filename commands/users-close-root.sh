@@ -143,34 +143,64 @@ fi
 DROPIN=/etc/ssh/sshd_config.d/00-rig-users.conf
 TMP="$(mktemp)"
 printf 'PermitRootLogin no\n' > "$TMP"
-if cmp -s "$TMP" "$DROPIN" 2>/dev/null; then
-  rm -f "$TMP"
-  log "root already closed; nothing to do"
-  exit 0
-fi
 
+# Convergence needs two proofs, and matching bytes are only half of one. The
+# file can be right while the DOOR is still open: a prior run that died
+# between install and restart leaves a daemon that never read this file, and
+# `sshd -T` cannot tell — it re-parses disk, it does not interrogate the
+# running daemon. The only proof the running sshd carries this config is a
+# (re)start AFTER the last change to anything sshd reads: the main config,
+# the drop-in dir itself (creates/deletes/renames inside touch its mtime, so
+# a since-removed override is caught), and every drop-in. So the no-op is
+# taken only when the bytes match AND systemd says sshd started strictly
+# after the newest of those mtimes; anything less restarts, and the
+# effective-config assertion at the bottom runs on EVERY path — claiming
+# "already closed" from file bytes is exactly what let bootstrap's
+# first-wins bug ship green.
+RESTART=1
 BACKUP=""
-[ -e "$DROPIN" ] && { BACKUP="$(mktemp)"; cp -a "$DROPIN" "$BACKUP"; }
-install -m 0644 "$TMP" "$DROPIN"
+INSTALLED=0
+if cmp -s "$TMP" "$DROPIN" 2>/dev/null; then
+  newest="$(stat -c '%Y' /etc/ssh/sshd_config /etc/ssh/sshd_config.d /etc/ssh/sshd_config.d/*.conf 2>/dev/null | sort -rn | head -n1)"
+  started="$(systemctl show ssh -p ExecMainStartTimestamp --value 2>/dev/null)" || started=""
+  if [ -n "$started" ] && started_s="$(date -d "$started" +%s 2>/dev/null)" \
+      && [ -n "$newest" ] && [ "$started_s" -gt "$newest" ]; then
+    RESTART=0
+  fi
+else
+  [ -e "$DROPIN" ] && { BACKUP="$(mktemp)"; cp -a "$DROPIN" "$BACKUP"; }
+  install -m 0644 "$TMP" "$DROPIN"
+  INSTALLED=1
+fi
 rm -f "$TMP"
 
-# Validate the MERGED config BEFORE bouncing the daemon (the bootstrap shape):
-# on a box whose only door is SSH — exactly what this box is about to become —
-# restarting into a config the daemon refuses to parse leaves no listener and
-# no way back in. Roll back and stop rather than shut the door on a maybe.
-if ! sshd -t 2>/dev/null; then
-  if [ -n "$BACKUP" ]; then cp -a "$BACKUP" "$DROPIN"; else rm -f "$DROPIN"; fi
+if [ "$RESTART" -eq 1 ]; then
+  # Validate the MERGED config BEFORE bouncing the daemon (the bootstrap
+  # shape): on a box whose only door is SSH — exactly what this box is about
+  # to become — restarting into a config the daemon refuses to parse leaves
+  # no listener and no way back in. Roll back (when we installed anything)
+  # and stop rather than shut the door on a maybe.
+  if ! sshd -t 2>/dev/null; then
+    if [ "$INSTALLED" -eq 1 ]; then
+      if [ -n "$BACKUP" ]; then cp -a "$BACKUP" "$DROPIN"; else rm -f "$DROPIN"; fi
+      rm -f "$BACKUP"
+      die "sshd rejects the merged config; drop-in rolled back, daemon untouched. Run 'sshd -t' to see which file is bad."
+    fi
+    die "sshd rejects the current config; daemon untouched. Run 'sshd -t' to see which file is bad."
+  fi
   rm -f "$BACKUP"
-  die "sshd rejects the merged config; drop-in rolled back, daemon untouched. Run 'sshd -t' to see which file is bad."
+  systemctl restart ssh
 fi
-rm -f "$BACKUP"
-
-systemctl restart ssh
 
 # Assert the EFFECTIVE config, not the file's existence — a drop-in sorting
 # even earlier would win the first-wins fight silently. `sshd -T` is what the
-# daemon actually resolved.
+# daemon actually resolved, and it gates the no-op claim too: "already
+# closed" is a statement about the door, never about the file.
 eff="$(sshd -T 2>/dev/null)" || die "sshd -T failed; refusing to claim root is closed"
 echo "$eff" | grep -qx 'permitrootlogin no' \
   || die "sshd still resolves permitrootlogin != no — a drop-in is beating ${DROPIN}; check ls /etc/ssh/sshd_config.d/"
-log "root door closed (sshd -T resolves permitrootlogin no); humans enter as themselves now"
+if [ "$RESTART" -eq 0 ]; then
+  log "root already closed (sshd -T resolves permitrootlogin no); nothing to do"
+else
+  log "root door closed (sshd -T resolves permitrootlogin no); humans enter as themselves now"
+fi
