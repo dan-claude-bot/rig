@@ -37,9 +37,26 @@ check "bootstrap: unknown role exits 2"    2 "unknown role"   "$ROOT/commands/bo
 check "bootstrap: unknown flag exits 2"    2 "unknown flag"   "$ROOT/commands/bootstrap.sh" workload --nope
 check "bootstrap: hostname needs value"    2 "needs a value"  "$ROOT/commands/bootstrap.sh" workload --hostname
 check "bootstrap: runner refuses tag:server" 2 "must not advertise tag:server" "$ROOT/commands/bootstrap.sh" runner --ts-tag tag:server
+# --- admin user + role-aware root policy (all validated before the root check) --
+# Runtime provisioning and the lock-root reachability verification are
+# rehearsal-only (need a live box); everything the ARG SURFACE decides is here.
+check "bootstrap: --admin-user refuses root"     2 "must not be root" "$ROOT/commands/bootstrap.sh" workload --admin-user root
+check "bootstrap: --admin-user needs a value"    2 "needs a value"    "$ROOT/commands/bootstrap.sh" workload --admin-user
+check "bootstrap: --admin-key needs a value"     2 "needs a value"    "$ROOT/commands/bootstrap.sh" workload --admin-key
+# --lock-root is a fleet outage on the two Coolify roles → hard refusal, exit 2.
+check "bootstrap: --lock-root refused on control-plane" 2 "must not --lock-root" "$ROOT/commands/bootstrap.sh" control-plane --lock-root
+check "bootstrap: control-plane lock-root names the self-SSH reason" 2 "reaches its OWN host" "$ROOT/commands/bootstrap.sh" control-plane --lock-root
+check "bootstrap: --lock-root refused on workload"      2 "must not --lock-root" "$ROOT/commands/bootstrap.sh" workload --lock-root
+check "bootstrap: workload lock-root names non-root mode" 2 "non-root mode" "$ROOT/commands/bootstrap.sh" workload --lock-root
 if [ "$(id -u)" -ne 0 ]; then
   check "bootstrap: refuses non-root"      1 "must run as root" env TS_AUTHKEY=x "$ROOT/commands/bootstrap.sh" workload
   check "bootstrap: runner role parses, refuses non-root" 1 "must run as root" env TS_AUTHKEY=x "$ROOT/commands/bootstrap.sh" runner
+  # --lock-root on runner PARSES the policy gate (runner is permitted) and
+  # falls through to the non-root refusal — proof the gate lets runner past.
+  check "bootstrap: --lock-root on runner parses, refuses non-root" 1 "must run as root" \
+    env TS_AUTHKEY=x "$ROOT/commands/bootstrap.sh" runner --lock-root
+  check "bootstrap: --admin-user parses, refuses non-root" 1 "must run as root" \
+    env TS_AUTHKEY=x "$ROOT/commands/bootstrap.sh" workload --admin-user ops
 else
   echo "skip: bootstrap non-root refusals (running as root)"
 fi
