@@ -20,6 +20,11 @@ commands:
       systemd timer. rig installs the machinery and templates an empty
       0600 bindings file; you fill in the age recipient and S3 details.
       Control-plane box only. Run as root.
+  db <dump|restore> ...
+      Ad-hoc PostgreSQL dump/restore for a container on this box. `dump`
+      writes a gzipped SQL artifact (--no-owner --no-acl, so it restores
+      onto a different instance); `restore` loads one back, connecting as
+      the container's own superuser, behind a confirm gate. Run as root.
   runner install --repo <owner/repo> [options]
       GitHub Actions runner as a systemd service under an unprivileged
       user — outbound-only, no Docker. Prompts for the short-lived
@@ -64,6 +69,18 @@ case "$cmd" in
         fi
         shift
         exec "$ROOT/commands/coolify-backup-install.sh" "$@"
+        ;;
+      *)
+        usage >&2
+        exit 2
+        ;;
+    esac
+    ;;
+  db)
+    shift
+    case "${1:-}" in
+      dump|restore|-h|--help)
+        exec "$ROOT/commands/db.sh" "$@"
         ;;
       *)
         usage >&2
