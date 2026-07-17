@@ -20,7 +20,7 @@ PATH (`/usr/local/bin` when root). Re-run any time to upgrade.
 
 ## Commands
 
-### `rig bootstrap <control-plane|workload|runner>`
+### `rig bootstrap <control-plane|workload|runner|staging>`
 
 Run as root on the fresh box (over SSH). Convergent — safe to re-run; a
 second run changes nothing.
@@ -29,6 +29,7 @@ second run changes nothing.
 rig bootstrap control-plane --hostname my-coolify-box
 rig bootstrap workload --hostname my-prod-box
 rig bootstrap runner --hostname my-ci-box
+rig bootstrap staging --hostname my-vm-host
 ```
 
 - `--hostname <name>` — tailnet hostname (default: the role name)
@@ -105,6 +106,19 @@ grant `tag:server` to repo-controlled code." A runner executes that code, and
 `tag:server`'s grants (SSH between your servers, say) must never extend to it;
 the check turns the worst misconfiguration from a documentation warning into a
 hard, post-join error.
+
+`staging` is the box that *hosts* staging boxes — Incus VMs minted by the
+[`box`](https://github.com/heavy-duty/box) CLI, each converged from inside with
+`rig bootstrap workload` and registered in the control plane as its own server.
+Mint its key with `tag:local`: the host and its guests sit on opposite sides of
+a trust boundary, and the *host* is never managed by the control plane — so the
+role **refuses an effective `tag:server`**, same mechanism as `runner`. rig
+deliberately installs no Incus and no box here — box's own `setup-host` is the
+single owner of the Incus daemon's configuration, and two tools converging one
+daemon is drift by construction. The closing log points you at it: install box,
+run `box setup-host`, then `box new --template staging`. If `/dev/kvm` is
+absent, rig warns (a host that exists to run VMs should have it) but does not
+fail — the role is rehearsed in containers, which legitimately lack it.
 
 ### `rig coolify install --version <pin>`
 
