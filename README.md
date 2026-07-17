@@ -51,7 +51,7 @@ presets nothing and requires `--hostname` plus all three traits.
 | trait   | values             | what it drives |
 |---------|--------------------|----------------|
 | `class` | `human`, `server`  | root SSH's fate once operators exist — human closes it, server keeps it as the control plane's automation door |
-| `host`  | `yes`, `no`        | whether the box exists to run VMs — the `/dev/kvm` advisory and the `box setup-host` pointer |
+| `host`  | `yes`, `no`        | whether the box exists to run VMs — the `/dev/kvm` advisory and, on `yes`, installing the `box` CLI + running box's `setup-host` |
 | `join`  | `authkey`, `login` | tagged pre-auth key (fleet identity) vs interactive browser login (user-owned device) |
 
 | role            | class  | host | join    | tailnet tag |
@@ -167,18 +167,32 @@ It is `class=server`: an unattended VM appliance — operators converge it and
 leave; nobody lives there. Mint its key with `tag:local`: the host and its
 guests sit on opposite sides of a trust boundary, and the *host* is never
 managed by the control plane — so the role **refuses an effective
-`tag:server`**, same mechanism as `runner`. rig deliberately installs no Incus
-and no box here — box's own `setup-host` is the single owner of the Incus
-daemon's configuration, and two tools converging one daemon is drift by
-construction. The closing log points you at it: install box, run
-`box setup-host`, then `box new --template staging`. If `/dev/kvm` is absent,
-rig warns (a host that exists to run VMs should have it) but does not fail —
-the shape is rehearsed in containers, which legitimately lack it.
+`tag:server`**, same mechanism as `runner`.
+
+On a host-class box (`host=yes`), bootstrap finishes the job instead of leaving
+a to-do: after the role marker is written it **installs the `box` CLI globally
+and runs box's own `setup-host`**, so the Incus stack is ready for
+`box new --template staging` when bootstrap returns. rig **delegates to box; it
+never touches Incus itself** — it does not `apt-get install incus`, does not
+configure the daemon, does not create the `incus` group. It runs box's global
+installer (`curl … | BOX_YES=1 bash`) as root, and box installs Incus via its
+`setup-host`; two tools converging one daemon is drift by construction, and box
+is the single owner. The step is **convergent** (box's installer is a no-op once
+box is present) and **opt-out** (`RIG_SKIP_BOX_INSTALL=1`, plus a graceful skip
+with a manual-command pointer when curl or the network is missing — box is the
+host *extra*, so a failed box install never aborts a bootstrap that otherwise
+succeeded). Source is pinnable with `BOX_REPO` / `BOX_REF` (default
+`heavy-duty/box@main`). If `/dev/kvm` is absent, rig warns (a host that exists to
+run VMs should have it) but does not fail — the shape is rehearsed in containers,
+which legitimately lack it. (The world-readable global install path — box under
+`/opt/box` readable by every non-root user — depends on box PR #71; until that
+merges box's root install lands in `/root`.)
 
 `dev` is `staging`'s human-class sibling — the same VM-hosting, `tag:local`
-shape with a person living on it — and `workstation` is the machine at the
-keyboard end of all the SSH connections: human-class, `join=login`, entering
-the tailnet as *your* device rather than the fleet's.
+shape with a person living on it, box CLI installed the same way — and
+`workstation` is the machine at the keyboard end of all the SSH connections:
+human-class, `join=login`, entering the tailnet as *your* device rather than the
+fleet's.
 
 ### The identity model
 

@@ -93,6 +93,49 @@ check "bootstrap: login verify fails closed on a stalled backend" 0 "" \
 # The marker is the traits' ground truth for rig users; assert the write exists.
 check "bootstrap: role marker write is present" 0 "" \
   grep -q "/etc/rig/role" "$ROOT/commands/bootstrap.sh"
+# --- host-class box install (issues #12, #25) --------------------------------
+# A host=yes box finishes the job: bootstrap installs the box CLI globally and
+# lets box's own setup-host build the Incus stack. The install itself runs as
+# root, over the network, against a real host — none of which this harness can
+# fabricate — so, exactly like the tag refusals and the runner repo guard, prove
+# the shipped script by grepping its load-bearing pieces.
+# The step is guarded on host=yes: the exact guard line (no `&&`, unlike the
+# /dev/kvm advisory) belongs to the box block alone. The `\$HOST` is a literal
+# we grep for in the script — single quotes are the point, as in the db checks.
+# shellcheck disable=SC2016
+check "bootstrap: box install is guarded on host=yes" 0 "" \
+  grep -qxE 'if \[ "\$HOST" = "yes" \]; then' "$ROOT/commands/bootstrap.sh"
+# It runs box's OWN global installer with BOX_YES=1 (non-interactive AND keeps
+# setup-host, so box builds Incus rather than only dropping the CLI on PATH).
+check "bootstrap: box install runs box's installer non-interactively" 0 "" \
+  grep -q "BOX_YES=1 bash" "$ROOT/commands/bootstrap.sh"
+# Pin points: BOX_REPO / BOX_REF override the source, default heavy-duty/box@main.
+check "bootstrap: box source is pinnable, defaults to heavy-duty/box@main" 0 "" \
+  grep -qF 'BOX_REPO:-heavy-duty/box' "$ROOT/commands/bootstrap.sh"
+# Opt-out for rehearsals / offline / hand-managed hosts.
+check "bootstrap: box install honors RIG_SKIP_BOX_INSTALL opt-out" 0 "" \
+  grep -q "RIG_SKIP_BOX_INSTALL" "$ROOT/commands/bootstrap.sh"
+# The DESIGN LAW rig users apply also enforces: rig NEVER apt-installs Incus —
+# box's setup-host is the single owner of the daemon and its group. A grep that
+# finds nothing (exit 1) is the pass; a stray `apt-get install ... incus` would
+# make it exit 0 and fail the check, so the law cannot silently erode.
+check "bootstrap: rig never apt-installs incus (box owns the daemon)" 1 "" \
+  grep -nE 'apt-get install.* incus' "$ROOT/commands/bootstrap.sh"
+# Ordering is the safety property: box must be installed only AFTER the role
+# marker is written, so a box that failed to become what it claims (tag refused,
+# join backed out — all of which die above) never installs box on a half-built
+# host. Compare line numbers, same idiom as the visudo/sshd -t ordering asserts.
+# Defaults fail closed (marker missing -> huge, box missing -> 0 -> fails).
+# $MARKER_TMP is a literal we grep for in the script — single quotes intended.
+# shellcheck disable=SC2016
+box_marker_at="$(grep -n 'install -m 0644 "$MARKER_TMP"' "$ROOT/commands/bootstrap.sh" | head -n1 | cut -d: -f1)"
+box_install_at="$(grep -n 'BOX_YES=1 bash' "$ROOT/commands/bootstrap.sh" | grep -v 'BOX_MANUAL=' | tail -n1 | cut -d: -f1)"
+check "bootstrap: box install runs after the role marker write" \
+  0 "" test "${box_marker_at:-999999}" -lt "${box_install_at:-0}"
+# On the skip/failure paths, keep pointing operators at the manual command so a
+# host whose box did not install is never left without the next move.
+check "bootstrap: box skip/failure keeps a pointer to the manual install" 0 "" \
+  grep -q "prepare Incus" "$ROOT/commands/bootstrap.sh"
 if [ "$(id -u)" -ne 0 ]; then
   check "bootstrap: refuses non-root"      1 "must run as root" env TS_AUTHKEY=x "$ROOT/commands/bootstrap.sh" workload
   check "bootstrap: runner role parses, refuses non-root" 1 "must run as root" env TS_AUTHKEY=x "$ROOT/commands/bootstrap.sh" runner
