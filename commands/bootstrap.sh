@@ -229,7 +229,11 @@ rm -f "$TMP"
 eff="$(sshd -T 2>/dev/null)" || die "sshd -T failed; refusing to claim a hardened box"
 echo "$eff" | grep -qx 'passwordauthentication no' \
   || die "sshd still resolves passwordauthentication=yes — a drop-in is beating ${DROPIN}; check ls /etc/ssh/sshd_config.d/"
-echo "$eff" | grep -qxE 'permitrootlogin (prohibit-password|without-password)' \
+# `no` is accepted because it is the post-`rig users close-root` state —
+# strictly harder than the prohibit-password this script installs. Bootstrap
+# must never read a closed door as a broken one, and it cannot reopen one
+# either: by first-wins its own drop-in loses to 00-rig-users.conf.
+echo "$eff" | grep -qxE 'permitrootlogin (no|prohibit-password|without-password)' \
   || die "sshd still permits root password login — check ls /etc/ssh/sshd_config.d/"
 log "sshd hardening verified (sshd -T: passwordauthentication no)"
 

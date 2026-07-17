@@ -79,8 +79,36 @@ parse_users_file() {
 # read_role_marker <path> — the marker line bootstrap wrote
 # (`role=... class=... host=... join=...`), or nothing when absent. NO policy
 # here: what an absent marker or a given class MEANS is each caller's call
-# (apply notes it, close-root refuses on it) — the lib only reads.
+# (apply notes it, close-root refuses on it) — this reader only reads.
 read_role_marker() {
   [ -r "$1" ] || return 0
   head -n1 "$1"
+}
+
+# assert_marker_human <marker_path> — close-root's marker gate: return 0,
+# silently, only when the marker says class=human; otherwise print the refusal
+# reason on stdout and return 1 (the caller wraps it in its own die). The
+# policy is a pure lib function on purpose: the CLI path sits behind the root
+# check, so the harness proves every refusal HERE, against fixture markers,
+# non-root (repo precedent: parse_users_file, assert_runner_repo).
+assert_marker_human() {
+  local marker
+  marker="$(read_role_marker "$1")"
+  if [ -z "$marker" ]; then
+    # No marker means rig cannot know whether root here is a human's bad habit
+    # or the control plane's automation door — refuse to shut it blind.
+    printf '%s\n' "no /etc/rig/role marker: re-run rig bootstrap so this box knows what it is; refusing to shut the root door blind"
+    return 1
+  fi
+  case "$marker" in
+    *class=human*) return 0 ;;
+    *class=server*)
+      # Root SSH on a server IS the control plane's (Coolify's) automation
+      # identity — closing it severs fleet management. No --force exists.
+      printf '%s\n' "class=server: root here is the control plane's automation identity — closing it severs fleet management"
+      return 1 ;;
+    *)
+      printf '%s\n' "marker names no class (${marker}): re-run rig bootstrap; refusing to shut the root door blind"
+      return 1 ;;
+  esac
 }

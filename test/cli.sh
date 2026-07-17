@@ -335,6 +335,57 @@ sudoers_at="$(grep -nE 'install .*sudoers\.d/rig-roles' "$ROOT/commands/users-ap
 check "users apply: visudo -c precedes the sudoers install" \
   0 "" test "${visudo_at:-999999}" -lt "${sudoers_at:-0}"
 
+# --- users close-root: the human-class root-door shutter ---------------------
+check "users close-root: --help exits 0"       0 "usage:"       "$ROOT/commands/users-close-root.sh" --help
+check "users close-root: unknown flag exits 2" 2 "unknown flag" "$ROOT/commands/users-close-root.sh" --nope
+# The whole command rests on first-wins + lexical include order: '-' (0x2D)
+# sorts before '.' (0x2E), so 00-rig-users.conf is read before bootstrap's
+# 00-rig.conf and its PermitRootLogin wins. Assert the actual comparison the
+# glob makes, so a renamed drop-in cannot silently lose the fight.
+check "users close-root: drop-in name sorts before bootstrap's" 0 "" \
+  bash -c '[ "00-rig-users.conf" \< "00-rig.conf" ]'
+check "users close-root: drop-in name is the load-bearing one" 0 "" \
+  grep -q "00-rig-users.conf" "$ROOT/commands/users-close-root.sh"
+# Validate-then-apply: `sshd -t` on the merged config must precede the restart —
+# on a box whose only door is SSH (exactly what this box is about to become),
+# bouncing the daemon into a config it refuses to parse leaves no way back in.
+# Match the call, not the word (repo precedent: the repo-guard ordering check);
+# defaults fail closed.
+sshdt_at="$(grep -nE '^[[:space:]]*if ! sshd -t' "$ROOT/commands/users-close-root.sh" | head -n1 | cut -d: -f1)"
+restart_at="$(grep -n 'systemctl restart ssh' "$ROOT/commands/users-close-root.sh" | head -n1 | cut -d: -f1)"
+check "users close-root: sshd -t precedes the ssh restart" \
+  0 "" test "${sshdt_at:-999999}" -lt "${restart_at:-0}"
+# Marker-gate refusals through the sourced lib against fixture markers: the CLI
+# path sits behind the root check, so the gate is a pure lib function on
+# purpose (repo precedent: parse_users_file, assert_runner_repo). The command
+# reads the marker path from RIG_ROLE_MARKER for the same reason — so the gate
+# stays pointable at fixtures.
+marker_gate() { # marker_gate <marker_path>
+  bash -c 'set -euo pipefail
+    . "$1/commands/lib/users-config.sh"
+    assert_marker_human "$2"' _ "$ROOT" "$1"
+}
+MARKER_DIR="$(mktemp -d)"
+printf 'role=workload class=server host=no join=authkey\n' > "$MARKER_DIR/server"
+printf 'role=dev class=human host=yes join=authkey\n'      > "$MARKER_DIR/human"
+check "users close-root: absent marker refuses, names bootstrap as the repair" \
+  1 "no /etc/rig/role marker" marker_gate "$MARKER_DIR/absent"
+check "users close-root: class=server refuses, names the control plane" \
+  1 "control plane" marker_gate "$MARKER_DIR/server"
+check "users close-root: class=human passes the gate" \
+  0 "" marker_gate "$MARKER_DIR/human"
+rm -rf "$MARKER_DIR"
+if [ "$(id -u)" -ne 0 ]; then
+  check "users close-root: refuses non-root" 1 "must run as root" "$ROOT/commands/users-close-root.sh"
+else
+  echo "skip: users close-root non-root refusal (running as root)"
+fi
+# Bootstrap must read the closed door as hardened, not broken: `no` is the
+# post-close-root state, strictly harder than what bootstrap installs. Byte-grep
+# the widened assertion so a revert cannot ship green.
+check "bootstrap: permitrootlogin assertion accepts the closed state" 0 "" \
+  grep -qF "permitrootlogin (no|prohibit-password|without-password)" "$ROOT/commands/bootstrap.sh"
+
 # The dump script ships to control-plane boxes as an embedded heredoc. A syntax
 # error in it would be invisible here and would first surface at 04:00 on a live
 # control plane. Extract it and syntax-check what actually gets written.
