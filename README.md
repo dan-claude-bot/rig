@@ -20,7 +20,7 @@ PATH (`/usr/local/bin` when root). Re-run any time to upgrade.
 
 ## Commands
 
-### `rig bootstrap <control-plane|workload|runner>`
+### `rig bootstrap <control-plane|workload|runner|staging|dev|workstation|custom>`
 
 Run as root on the fresh box (over SSH). Convergent — safe to re-run; a
 second run changes nothing.
@@ -29,9 +29,62 @@ second run changes nothing.
 rig bootstrap control-plane --hostname my-coolify-box
 rig bootstrap workload --hostname my-prod-box
 rig bootstrap runner --hostname my-ci-box
+rig bootstrap staging --hostname my-vm-host
+rig bootstrap dev --hostname my-dev-box
+rig bootstrap workstation --hostname my-laptop
+rig bootstrap custom --hostname odd-duck --class server --host yes --join authkey
 ```
 
-- `--hostname <name>` — tailnet hostname (default: the role name)
+- `--hostname <name>` — system + tailnet hostname (default: the role name;
+  `custom` has no default and requires it)
+- `--class <human|server>` — who lives here; decides root SSH's fate after
+  `rig users apply` (see *The identity model* below)
+- `--host <yes|no>` — does this box host VMs (box/Incus)
+- `--join <authkey|login>` — how it enters the tailnet
+
+**Roles are presets over three orthogonal traits**, nothing more — every
+per-role behavior keys off a trait, so any flag overrides its trait without
+needing a new role (`rig bootstrap workstation --host no` for a laptop that
+will never run VMs), and `custom` exists for the shape nobody foresaw: it
+presets nothing and requires `--hostname` plus all three traits.
+
+| trait   | values             | what it drives |
+|---------|--------------------|----------------|
+| `class` | `human`, `server`  | root SSH's fate once operators exist — human closes it, server keeps it as the control plane's automation door |
+| `host`  | `yes`, `no`        | whether the box exists to run VMs — the `/dev/kvm` advisory and the `box setup-host` pointer |
+| `join`  | `authkey`, `login` | tagged pre-auth key (fleet identity) vs interactive browser login (user-owned device) |
+
+| role            | class  | host | join    | tailnet tag |
+|-----------------|--------|------|---------|-------------|
+| `control-plane` | server | no   | authkey | `tag:server` |
+| `workload`      | server | no   | authkey | `tag:server` |
+| `runner`        | server | no   | authkey | `tag:ci` — refuses `tag:server` |
+| `staging`       | server | yes  | authkey | `tag:local` — refuses `tag:server` |
+| `dev`           | human  | yes  | authkey | `tag:local` — refuses `tag:server` |
+| `workstation`   | human  | yes  | login   | untagged — any tag refused |
+
+The tag column is **derived policy, not a fourth trait**: `tag:server` means
+"the control plane manages this box", and `control-plane` and `workload` are
+the only shapes it manages — every other role refuses an effective
+`tag:server` after join, one rule instead of per-role exceptions.
+
+After the tag verification passes, bootstrap writes `/etc/rig/role` — one
+line, `role=… class=… host=… join=…` — recording the **effective** traits,
+overrides and all, so an overridden role never lies to the commands that read
+the marker later (`rig users` keys root policy off `class=`). Written
+post-join and cmp-guarded, so a marker never describes a box that failed to
+become what it claims.
+
+**`join=login` inverts the tag assertion.** A workstation joins as a
+user-owned device: there is no pre-auth key — a set `TS_AUTHKEY` is a loud
+usage error (exit 2; unset it, or pass `--join authkey`) — `tailscale up`
+prints a login URL, and the human at the keyboard is the credential. After
+join the assertion flips: **untagged** is what rig asserts, and any effective
+tag is the refusal — a tag here means control granted this device fleet
+identity, and on a first join the half-joined node is backed out with
+`tailscale logout` (a box that was already joined is refused without backout;
+rig never unwinds state it did not create). Same principle as the authkey
+path, mirrored: verify what control **granted**, never what was requested.
 
 There is **no `--ts-tag` flag**. A pre-auth key is minted *with* its tags, so
 the key is the single source of truth for the tailnet tag — rig no longer states
@@ -67,7 +120,8 @@ admin console keeps that name; rig will not fight it.
 > `passwordauthentication yes`. `bootstrap` now sweeps a stale `99-rig.conf`
 > on re-run, and refuses to claim success unless `sshd -T` agrees.
 
-**The pre-auth key:** provide it via the `TS_AUTHKEY` env var or type it at
+**The pre-auth key** (`join=authkey` roles — everything but `workstation`):
+provide it via the `TS_AUTHKEY` env var or type it at
 the interactive prompt. Use a **single-use, tagged, short-expiry** key — the
 **tagged** part is now load-bearing, not advice (see below). It lives in process
 memory only — rig never writes a credential to disk.
@@ -105,6 +159,50 @@ grant `tag:server` to repo-controlled code." A runner executes that code, and
 `tag:server`'s grants (SSH between your servers, say) must never extend to it;
 the check turns the worst misconfiguration from a documentation warning into a
 hard, post-join error.
+
+`staging` is the box that *hosts* staging boxes — Incus VMs minted by the
+[`box`](https://github.com/heavy-duty/box) CLI, each converged from inside with
+`rig bootstrap workload` and registered in the control plane as its own server.
+It is `class=server`: an unattended VM appliance — operators converge it and
+leave; nobody lives there. Mint its key with `tag:local`: the host and its
+guests sit on opposite sides of a trust boundary, and the *host* is never
+managed by the control plane — so the role **refuses an effective
+`tag:server`**, same mechanism as `runner`. rig deliberately installs no Incus
+and no box here — box's own `setup-host` is the single owner of the Incus
+daemon's configuration, and two tools converging one daemon is drift by
+construction. The closing log points you at it: install box, run
+`box setup-host`, then `box new --template staging`. If `/dev/kvm` is absent,
+rig warns (a host that exists to run VMs should have it) but does not fail —
+the shape is rehearsed in containers, which legitimately lack it.
+
+`dev` is `staging`'s human-class sibling — the same VM-hosting, `tag:local`
+shape with a person living on it — and `workstation` is the machine at the
+keyboard end of all the SSH connections: human-class, `join=login`, entering
+the tailnet as *your* device rather than the fleet's.
+
+### The identity model
+
+**Named operators exist on every class, and humans never enter as root.** The
+tailnet is network-only — no Tailscale SSH — so there is no identity broker at
+the door: whoever holds a key to an account *is* that account, and a shared
+root login is unattributable by construction. `rig users apply` puts named
+operators on every box, server-class included; a human always enters as
+themself and elevates via sudo.
+
+**`class` decides root SSH's fate — after `rig users apply`, never before.**
+On `class=human`, root SSH closes entirely (`rig users close-root`, below).
+On `class=server` it stays open — key-only, as bootstrap left it — because
+root there is the **automation** identity the control plane (Coolify) SSHes
+in as. It is a machine door, never a human one.
+
+**The detection side benefit:** once humans never use root, any root login
+that is not the control plane is anomalous *by definition* — a cheap,
+high-signal alert that a shared root identity makes impossible to write.
+
+**The honest caveat:** on a Docker-running box this buys attribution, not
+privilege reduction — an operator with sudo is root-equivalent anyway.
+Attribution is the goal: *who did what* survives, even where *what they could
+do* is everything.
 
 ### `rig coolify install --version <pin>`
 
@@ -386,6 +484,141 @@ prints the exact `runner install` line that finishes the job.
 Convergent — repointing to the repo it is already on changes nothing, exits 0,
 and never asks for a token.
 
+### `rig users apply --file <path>`
+
+Converges named operator accounts from a declarative users file — on **every**
+class (see *The identity model*). Run as root. Convergent: a second identical
+run says "already converged; no changes".
+
+```
+# user   roles       ssh public key
+dan      admin,box   ssh-ed25519 AAAA... dan@laptop
+dan      admin,box   ssh-ed25519 AAAA... dan@desktop
+maria    rig,box     ssh-ed25519 AAAA... maria@mac
+```
+
+One line per key — user, comma-joined roles, then the SSH public key (the rest
+of the line). The format is bash-parseable on purpose: a rig box has no YAML
+parser and no jq, and gets neither for this. Repeated username lines add
+authorized keys, and the roles must be identical on each — a repeated line
+always means "another key", never a quiet role edit hiding mid-file. `root` is
+refused as a username: this file names operators; root's fate is class policy.
+`--file -` reads stdin. A bad file exits 2 with **every** error listed at
+once, before anything changes — one fix cycle, not one round-trip per line.
+
+**Public tool, private state, here too.** The users file lives in *your*
+private infra repo and is passed per invocation — rig never persists it. It
+holds nothing secret anyway: usernames, roles, and *public* keys.
+
+| role    | grants                                       | via group   |
+|---------|----------------------------------------------|-------------|
+| `admin` | full NOPASSWD sudo                           | `rig-admin` |
+| `rig`   | NOPASSWD sudo for `/usr/local/bin/rig` only  | `rig`       |
+| `box`   | Incus **restricted** tier, no sudo           | `incus`     |
+
+**The honest limit of the `rig` role:** its sudo grant is binary-scoped, not
+argument-scoped — it trusts its holder with every rig verb *except* identity
+management. The `rig users` commands gate their **invoker**: run under sudo
+by anyone outside `rig-admin`, they refuse. Without that gate, `sudo rig
+users apply` against a file naming yourself admin would make the scoped grant
+silently root-equivalent through the very tool it scopes. Direct root — a
+bring-up shell, before any admin exists — proceeds.
+
+`box` binds where VMs live, and a users file is fleet-wide — its box grants
+are not. rig never installs Incus — box's `setup-host` owns the daemon — so
+when the `incus` group is absent, the `host=` trait decides: on `host=yes`
+apply dies pointing at `box setup-host` (a VM host missing Incus is a real
+problem) rather than conjure a group the (nonexistent) daemon would never
+consult; on `host=no` the box role is **skipped with a warning** and
+everything else — admins included — still converges, because one box-role
+user somewhere in the fleet must not stop apply everywhere VMs don't live.
+`incus-admin` is deliberately **not** a role: that group is
+host-root-equivalent, break-glass by hand only.
+
+**All passwords stay locked, always** — created or found. The SSH key at the
+door is the authentication, and NOPASSWD sudo does not weaken it: there was
+never a password to guess or rotate.
+
+Convergence is exact. Membership in the three rig-managed groups is made to
+match the file — added *and* removed — while every other group is left alone:
+not rig's to converge. `authorized_keys` becomes exactly the file's keys, and
+its ownership and mode (and `.ssh`'s) are converged on **every** run, not
+just when content changes — sshd's `StrictModes` treats them as
+load-bearing, so drifted perms are a broken login that "already converged"
+would lie about. A user dropped from the file is found via the
+`/etc/rig/users` ledger and **revoked, never deleted**: the account is
+expired — the switch PAM actually enforces; a locked password alone still
+lets a pubkey in under Debian's `UsePAM` — and `authorized_keys` is renamed
+to `authorized_keys.revoked-by-rig`. Access revoked, data kept: deletion
+frees the uid for reuse and orphans file ownership, so attribution would rot;
+home stays for the same reason, and re-adding the user to the file brings
+them back, fresh keys and all. And the sudoers rules land in
+`/etc/sudoers.d/rig-roles` only after `visudo -c` passes on the candidate — a
+bad file under `/etc/sudoers.d` can take down *all* of sudo, locking every
+admin out of the very escalation path apply just granted.
+
+### `rig users status`
+
+```sh
+rig users status
+```
+
+Read-only truth: per rig-managed user, the roles derived from the groups the
+user is **actually** in — not the ledger's memory of an apply — plus the
+`authorized_keys` count (`revoked` when only the `.revoked-by-rig` rename
+remains) and the user's state, **active** or **revoked**. The state is the
+ledger's word corroborated by the account's real expiry — the switch that
+actually revokes — and a mismatch is flagged loudly as drift: a box someone
+changed behind rig's back must never read as healthy. Reads the box only; no
+network, no writes. Run as root (shadow is read).
+
+### `rig users close-root`
+
+```sh
+rig users close-root
+```
+
+Shuts the root SSH door — `class=human` boxes only, and only once a named
+admin can already get in. The gates run in order: the `/etc/rig/role` marker
+must say `class=human` — an absent marker refuses (never shut the root door
+blind; re-run bootstrap so the box knows what it is), and `class=server`
+refuses with no `--force`, because root there is the control plane's
+automation identity and closing it severs fleet management. Then at least one
+`rig-admin` member must hold a login sshd would plausibly **accept** — a
+non-empty `authorized_keys` alone proves a file, not a door: the gate checks
+the `StrictModes` shape (home, `.ssh`, and `authorized_keys` owned by the
+user and not group/world-writable), a real login shell, and an unexpired
+account, and its refusal names which check failed, per candidate. It proves
+the door *should* open, not that it does — which is why the separate-session
+verification below stays load-bearing. Never close the only door.
+
+Before running it, prove the admin door in a **separate** session — `ssh
+<admin>@<box>` while this one stays open. Root SSH is being welded shut; the
+admin login must be proven, not presumed.
+
+> **The drop-in's name is the entire mechanism.** close-root installs
+> `/etc/ssh/sshd_config.d/00-rig-users.conf` carrying exactly
+> `PermitRootLogin no`. sshd_config is first-wins, `Include` expands its glob
+> lexically, and `-` (0x2D) sorts before `.` (0x2E) — so `00-rig-users.conf`
+> is read *before* bootstrap's `00-rig.conf` and beats its
+> `prohibit-password`. Bootstrap's effective-config assertion accepts the
+> closed state (`no` is strictly harder than what it installs), and by the
+> same first-wins order its own drop-in can never reopen it — a bootstrap
+> re-run on a closed box leaves it closed. Validate-then-apply as everywhere:
+> `sshd -t` before the restart, rollback on failure, and success is only
+> claimed once `sshd -T` resolves `permitrootlogin no`.
+
+Convergent — once root is closed, a re-run says "root already closed; nothing
+to do" and exits 0.
+
+> **On `class=server`, root stays — so lock its key instead.** This is README
+> guidance, deliberately not automation: prefix Coolify's line in root's
+> `authorized_keys` with a `from="<control-plane-addr>"` clause, so the
+> automation identity only opens from the one address supposed to use it. rig
+> will not write that file — Coolify owns its key material on the servers it
+> registers, and two tools converging one file is drift by construction (the
+> same argument that keeps rig's hands off Incus).
+
 ## What rig deliberately does NOT do
 
 - **Provider firewalls** — Docker publishes ports past host firewalls, so
@@ -400,7 +633,10 @@ and never asks for a token.
 ## Testing
 
 `bash test/cli.sh` (dependency-free assertions) + shellcheck run in CI. The
-end-to-end rehearsal is a throwaway VM/container: pristine Debian → install →
-`bootstrap workload` with a real single-use key → assert the sshd drop-in,
-tailnet join, and a no-op second run → destroy, remove the node from the
-tailnet.
+`rig users` family is covered the same way: the harness drives its refusal
+matrix — users-file parsing, the marker gates, the lexical drop-in-name
+assertion, the validate-then-apply ordering — through the sourced lib
+functions, non-root and network-free. The end-to-end rehearsal is a throwaway
+VM/container: pristine Debian → install → `bootstrap workload` with a real
+single-use key → assert the sshd drop-in, tailnet join, and a no-op second
+run → destroy, remove the node from the tailnet.

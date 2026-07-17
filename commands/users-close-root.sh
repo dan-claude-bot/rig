@@ -1,0 +1,206 @@
+#!/usr/bin/env bash
+# rig users close-root — shut the human-class root SSH door, once and only
+# once a named admin can already get in. class decides root SSH's fate (#26):
+# on class=human a root login is unattributable noise, so it goes; on
+# class=server root IS the control plane's automation identity, so closing it
+# would sever fleet management — this command refuses there, and no --force
+# exists. Convergent: a second run is a no-op and says so.
+set -euo pipefail
+
+HERE="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")" && pwd)"
+# shellcheck source=SCRIPTDIR/lib/users-config.sh
+. "$HERE/lib/users-config.sh"
+
+log()  { printf 'rig-users: %s\n' "$*"; }
+die()  { printf 'rig-users: ERROR: %s\n' "$1" >&2; exit "${2:-1}"; }
+
+usage() {
+  cat <<'EOF'
+usage: rig users close-root
+
+Shuts the root SSH door: installs /etc/ssh/sshd_config.d/00-rig-users.conf
+carrying exactly `PermitRootLogin no`, which beats bootstrap's drop-in by
+first-wins include order.
+
+Human class ONLY. On class=server, root SSH is the control plane's (Coolify's)
+automation identity — closing it severs fleet management — so close-root
+refuses there, with no --force. It also refuses without a role marker (re-run
+rig bootstrap; never shut the root door blind) and refuses while no rig-admin
+member holds a login sshd would plausibly accept — authorized_keys present
+and non-empty, home/.ssh/keys owned by the user and not group/world-writable
+(sshd's StrictModes rejects the key otherwise), a real login shell, account
+not expired. The refusal names which check failed, per candidate. Run rig
+users apply first; never close the only door.
+
+Before running, verify your admin login in a SEPARATE session — `ssh
+<admin>@<box>` while this one stays open. Root SSH is the door being welded
+shut; the admin door must be proven, not presumed.
+
+Run as root. Convergent: once root is closed, a re-run is a clean no-op.
+EOF
+}
+
+# --- args (validated before the root check, so errors are testable) ---------
+while [ $# -gt 0 ]; do
+  case "$1" in
+    -h|--help) usage; exit 0 ;;
+    *) die "unknown flag: $1" 2 ;;
+  esac
+done
+
+# --- guards ------------------------------------------------------------------
+[ "$(id -u)" -eq 0 ] || die "must run as root"
+
+# Identity management gates its INVOKER, not just its uid: %rig's sudoers rule
+# is binary-scoped but not argument-scoped, so without this gate a rig-role
+# user could reshape who enters this box as whom — the scoped grant silently
+# root-equivalent through the users family. Direct root (no SUDO_USER:
+# bring-up, a root shell) proceeds.
+if [ -n "${SUDO_USER:-}" ] && [ "$SUDO_USER" != "root" ] \
+    && ! id -nG "$SUDO_USER" 2>/dev/null | tr ' ' '\n' | grep -qx rig-admin; then
+  die "the users family changes who holds root — only rig-admin members (or root itself) may run it; role rig grants operational rig use, not identity management (invoker: $SUDO_USER)"
+fi
+
+# Marker gate — the policy lives in assert_marker_human (lib) so the harness
+# can prove its refusals against fixture markers as non-root; RIG_ROLE_MARKER
+# exists for the same reason: it keeps the command's own gate pointable at
+# fixtures instead of only at the real /etc/rig/role.
+if ! WHY="$(assert_marker_human "${RIG_ROLE_MARKER:-/etc/rig/role}")"; then
+  die "$WHY"
+fi
+
+# Admin-door gate — never close the only door. Root SSH goes away below, so
+# at least one rig-admin member must hold a login sshd would plausibly ACCEPT
+# — a non-empty authorized_keys alone proves a file exists, not a door:
+# StrictModes rejects keys behind wrongly-owned or group/world-writable
+# paths, a nologin shell never logs in, and an expired account fails PAM
+# before the key is read. So every candidate is checked for the StrictModes
+# shape, and the refusal names, per candidate, WHICH check failed — an
+# operator staring at a refusal must see the repair. Honestly: this proves
+# the door SHOULD open per StrictModes, not that it does — the
+# verify-in-a-separate-session advisory in --help stays load-bearing.
+today=$(( $(date +%s) / 86400 ))
+# path_strict <path> <uid> <label> — flag the two StrictModes complaints
+flag() { bad="${bad:+$bad, }$1"; }
+path_strict() {
+  local p="$1" uid="$2" l="$3" o m
+  o="$(stat -c '%u' "$p" 2>/dev/null)" || return 0
+  m="$(stat -c '%a' "$p" 2>/dev/null)"
+  if [ "$o" != "$uid" ]; then flag "$l not owned by the user"; fi
+  if [ $(( 8#$m & 8#022 )) -ne 0 ]; then flag "$l is group/world-writable (mode $m)"; fi
+}
+ADMIN_OK=0
+CANDIDATES=0
+DETAIL=""
+while IFS= read -r a; do
+  [ -n "$a" ] || continue
+  CANDIDATES=$((CANDIDATES + 1))
+  bad=""
+  uid="$(id -u "$a" 2>/dev/null)" || { DETAIL="$DETAIL; $a: no such user"; continue; }
+  ent="$(getent passwd "$a")"
+  h="$(printf '%s' "$ent" | cut -d: -f6)"
+  shell="$(printf '%s' "$ent" | cut -d: -f7)"
+  if [ ! -d "$h" ]; then
+    flag "home directory missing"
+  else
+    path_strict "$h" "$uid" "home"
+    if [ ! -d "$h/.ssh" ]; then
+      flag ".ssh directory missing"
+    else
+      path_strict "$h/.ssh" "$uid" ".ssh directory"
+      if [ ! -s "$h/.ssh/authorized_keys" ]; then
+        flag "authorized_keys missing or empty"
+      else
+        path_strict "$h/.ssh/authorized_keys" "$uid" "authorized_keys"
+      fi
+    fi
+  fi
+  case "$shell" in
+    */nologin|*/false) flag "login shell $shell never logs in" ;;
+  esac
+  # shadow field 8 is the expiry in days-since-epoch; empty means never.
+  exp="$(getent shadow "$a" 2>/dev/null | cut -d: -f8)"
+  if [ -n "$exp" ] && [ "$exp" -le "$today" ] 2>/dev/null; then
+    flag "account expired"
+  fi
+  if [ -z "$bad" ]; then ADMIN_OK=1; break; fi
+  DETAIL="$DETAIL; $a: $bad"
+done < <(getent group rig-admin | cut -d: -f4 | tr ',' '\n')
+if [ "$ADMIN_OK" -ne 1 ]; then
+  if [ "$CANDIDATES" -eq 0 ]; then
+    die "no admin user with a key on this box — run rig users apply first; never close the only door"
+  fi
+  die "no rig-admin member would pass sshd's door${DETAIL} — repair, prove the login in a separate session, then re-run; never close the only door"
+fi
+
+# --- the drop-in --------------------------------------------------------------
+# The NAME is the entire mechanism: sshd_config is FIRST-wins ("for each
+# keyword, the first obtained value will be used" — sshd_config(5)), Include
+# expands its glob in lexical order, and '-' (0x2D) sorts before '.' (0x2E),
+# so 00-rig-users.conf is read BEFORE bootstrap's 00-rig.conf and this
+# PermitRootLogin beats its prohibit-password. Rename the file and it silently
+# loses that fight — the harness asserts the comparison the glob makes.
+DROPIN=/etc/ssh/sshd_config.d/00-rig-users.conf
+TMP="$(mktemp)"
+printf 'PermitRootLogin no\n' > "$TMP"
+
+# Convergence needs two proofs, and matching bytes are only half of one. The
+# file can be right while the DOOR is still open: a prior run that died
+# between install and restart leaves a daemon that never read this file, and
+# `sshd -T` cannot tell — it re-parses disk, it does not interrogate the
+# running daemon. The only proof the running sshd carries this config is a
+# (re)start AFTER the last change to anything sshd reads: the main config,
+# the drop-in dir itself (creates/deletes/renames inside touch its mtime, so
+# a since-removed override is caught), and every drop-in. So the no-op is
+# taken only when the bytes match AND systemd says sshd started strictly
+# after the newest of those mtimes; anything less restarts, and the
+# effective-config assertion at the bottom runs on EVERY path — claiming
+# "already closed" from file bytes is exactly what let bootstrap's
+# first-wins bug ship green.
+RESTART=1
+BACKUP=""
+INSTALLED=0
+if cmp -s "$TMP" "$DROPIN" 2>/dev/null; then
+  newest="$(stat -c '%Y' /etc/ssh/sshd_config /etc/ssh/sshd_config.d /etc/ssh/sshd_config.d/*.conf 2>/dev/null | sort -rn | head -n1)"
+  started="$(systemctl show ssh -p ExecMainStartTimestamp --value 2>/dev/null)" || started=""
+  if [ -n "$started" ] && started_s="$(date -d "$started" +%s 2>/dev/null)" \
+      && [ -n "$newest" ] && [ "$started_s" -gt "$newest" ]; then
+    RESTART=0
+  fi
+else
+  [ -e "$DROPIN" ] && { BACKUP="$(mktemp)"; cp -a "$DROPIN" "$BACKUP"; }
+  install -m 0644 "$TMP" "$DROPIN"
+  INSTALLED=1
+fi
+rm -f "$TMP"
+
+if [ "$RESTART" -eq 1 ]; then
+  # Validate the MERGED config BEFORE bouncing the daemon (the bootstrap
+  # shape): on a box whose only door is SSH — exactly what this box is about
+  # to become — restarting into a config the daemon refuses to parse leaves
+  # no listener and no way back in. Roll back (when we installed anything)
+  # and stop rather than shut the door on a maybe.
+  if ! sshd -t 2>/dev/null; then
+    if [ "$INSTALLED" -eq 1 ]; then
+      if [ -n "$BACKUP" ]; then cp -a "$BACKUP" "$DROPIN"; else rm -f "$DROPIN"; fi
+      rm -f "$BACKUP"
+      die "sshd rejects the merged config; drop-in rolled back, daemon untouched. Run 'sshd -t' to see which file is bad."
+    fi
+    die "sshd rejects the current config; daemon untouched. Run 'sshd -t' to see which file is bad."
+  fi
+  rm -f "$BACKUP"
+  systemctl restart ssh
+fi
+
+# Assert the EFFECTIVE config, not the file's existence — a drop-in sorting
+# even earlier would win the first-wins fight silently. `sshd -T` is what the
+# daemon actually resolved, and it gates the no-op claim too: "already
+# closed" is a statement about the door, never about the file.
+eff="$(sshd -T 2>/dev/null)" || die "sshd -T failed; refusing to claim root is closed"
+echo "$eff" | grep -qx 'permitrootlogin no' \
+  || die "sshd still resolves permitrootlogin != no — a drop-in is beating ${DROPIN}; check ls /etc/ssh/sshd_config.d/"
+if [ "$RESTART" -eq 0 ]; then
+  log "root already closed (sshd -T resolves permitrootlogin no); nothing to do"
+else
+  log "root door closed (sshd -T resolves permitrootlogin no); humans enter as themselves now"
+fi

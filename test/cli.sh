@@ -47,9 +47,60 @@ check "bootstrap: --ts-tag is removed (with value), exit 2" 2 "comes from the pr
   "$ROOT/commands/bootstrap.sh" runner --ts-tag tag:server
 check "bootstrap: --ts-tag is removed (no value), exit 2"   2 "comes from the pre-auth key" \
   "$ROOT/commands/bootstrap.sh" runner --ts-tag
+check "bootstrap: staging + removed --ts-tag exits 2" 2 "comes from the pre-auth key" \
+  "$ROOT/commands/bootstrap.sh" staging --ts-tag tag:server
+# The staging tag:server refusal rides the EFFECTIVE tag, inside
+# verify_effective_tag — a path that needs a real tailnet, so it belongs to the
+# rehearsal. What the harness CAN prove is that the refusal exists in the
+# shipped script: grep the die message, so a deleted guard cannot ship green
+# (the same reason the runner-install repo guard is grepped below).
+check "bootstrap: staging effective-tag refusal is present" 0 "" \
+  grep -q "role staging joined with tag:server" "$ROOT/commands/bootstrap.sh"
+# --- traits: roles are presets, every trait individually settable (#26) -----
+check "bootstrap: unknown role still exits 2"    2 "unknown role" "$ROOT/commands/bootstrap.sh" potato
+check "bootstrap: bad --class value exits 2"     2 "human|server" "$ROOT/commands/bootstrap.sh" workload --class potato
+check "bootstrap: bad --host value exits 2"      2 "yes|no"       "$ROOT/commands/bootstrap.sh" workload --host maybe
+check "bootstrap: bad --join value exits 2"      2 "authkey|login" "$ROOT/commands/bootstrap.sh" workload --join carrier-pigeon
+check "bootstrap: custom without --hostname exits 2" 2 "--hostname" \
+  "$ROOT/commands/bootstrap.sh" custom --class server --host no --join authkey
+check "bootstrap: custom without traits exits 2" 2 "--class" "$ROOT/commands/bootstrap.sh" custom --hostname box1
+# workstation is join=login by preset: a set TS_AUTHKEY is a usage error, and it
+# must die BEFORE the root check — provable non-root, which also proves the
+# preset actually landed.
+check "bootstrap: workstation + TS_AUTHKEY exits 2" 2 "unset TS_AUTHKEY" \
+  env TS_AUTHKEY=x "$ROOT/commands/bootstrap.sh" workstation
+# A trait override changes derived behavior, provable non-root: dev is
+# join=authkey (TS_AUTHKEY fine → falls through to the root check), but
+# --join login flips it into the TS_AUTHKEY refusal.
+check "bootstrap: dev --join login + TS_AUTHKEY exits 2" 2 "unset TS_AUTHKEY" \
+  env TS_AUTHKEY=x "$ROOT/commands/bootstrap.sh" dev --join login
+# The login-path inverted assertion needs a real tailnet; grep the refusal so a
+# deleted guard cannot ship green (repo precedent: staging/runner tag greps).
+check "bootstrap: login-path tagged refusal is present" 0 "" \
+  grep -q "join=login expects a user-owned, untagged node" "$ROOT/commands/bootstrap.sh"
+# Re-running with join=authkey on a box that was legitimately login-joined
+# (untagged BY DESIGN) lands in verify_effective_tag's untagged branch. Backing
+# out a join this run did not perform would tear down a user-owned workstation;
+# the already-joined path must refuse WITHOUT logout and name both repairs.
+# Needs a real tailnet to exercise, so grep the keep-mode die instead.
+check "bootstrap: already-joined untagged refusal keeps the join" 0 "" \
+  grep -q "joined but UNTAGGED" "$ROOT/commands/bootstrap.sh"
+# verify_user_owned must fail CLOSED on a stalled backend: empty tags is its
+# SUCCESS signal, so a 30s poll that never saw Running would wave a tagged node
+# through as user-owned. Grep the timeout die (same real-tailnet excuse).
+check "bootstrap: login verify fails closed on a stalled backend" 0 "" \
+  grep -q "could not verify the join is user-owned" "$ROOT/commands/bootstrap.sh"
+# The marker is the traits' ground truth for rig users; assert the write exists.
+check "bootstrap: role marker write is present" 0 "" \
+  grep -q "/etc/rig/role" "$ROOT/commands/bootstrap.sh"
 if [ "$(id -u)" -ne 0 ]; then
   check "bootstrap: refuses non-root"      1 "must run as root" env TS_AUTHKEY=x "$ROOT/commands/bootstrap.sh" workload
   check "bootstrap: runner role parses, refuses non-root" 1 "must run as root" env TS_AUTHKEY=x "$ROOT/commands/bootstrap.sh" runner
+  check "bootstrap: staging role parses, refuses non-root" 1 "must run as root" env TS_AUTHKEY=x "$ROOT/commands/bootstrap.sh" staging
+  check "bootstrap: dev role parses, refuses non-root" 1 "must run as root" env TS_AUTHKEY=x "$ROOT/commands/bootstrap.sh" dev
+  check "bootstrap: workstation parses, refuses non-root" 1 "must run as root" env -u TS_AUTHKEY "$ROOT/commands/bootstrap.sh" workstation
+  check "bootstrap: custom parses, refuses non-root" 1 "must run as root" \
+    env TS_AUTHKEY=x "$ROOT/commands/bootstrap.sh" custom --hostname b --class server --host no --join authkey
 else
   echo "skip: bootstrap non-root refusals (running as root)"
 fi
@@ -272,6 +323,186 @@ if [ "$(id -u)" -ne 0 ]; then
 else
   echo "skip: runner status/remove/repoint non-root refusals (running as root)"
 fi
+
+check "bare users shows usage, exit 2"    2 "usage:"        "$ROOT/bin/rig" users
+check "users: bad subcommand exits 2"     2 "usage:"        "$ROOT/bin/rig" users frobnicate
+
+check "users apply: --help exits 0"       0 "usage:"        "$ROOT/commands/users-apply.sh" --help
+check "users apply: --file required"      2 "--file"        "$ROOT/commands/users-apply.sh"
+check "users apply: --file needs value"   2 "needs a value" "$ROOT/commands/users-apply.sh" --file
+check "users apply: missing file exits 2" 2 "cannot read"   "$ROOT/commands/users-apply.sh" --file /nonexistent/users
+check "users apply: unknown flag exits 2" 2 "unknown flag"  "$ROOT/commands/users-apply.sh" --nope
+check "users status: --help exits 0"      0 "usage:"        "$ROOT/commands/users-status.sh" --help
+
+# --- users file refusal matrix, through the sourced parser -------------------
+# Reaching the parser via the CLI stops at the root check; it is pure and
+# sourceable on purpose (repo precedent: assert_runner_repo, json_string_array),
+# so the refusals are proven here against fixtures, non-root and network-free.
+parse() { # parse <file> — the users-file parser, exactly as apply runs it
+  bash -c 'set -euo pipefail
+    . "$1/commands/lib/users-config.sh"
+    parse_users_file "$2"' _ "$ROOT" "$1"
+}
+FIX_OK="$(mktemp)"   # two operators; dan carries a second key on a repeat line
+FIX_BAD="$(mktemp)"  # rewritten per refusal below
+cat > "$FIX_OK" <<'USERS'
+# fleet operators
+dan      admin,box      ssh-ed25519 AAAAC3fixture dan@laptop
+dan      admin,box      ssh-ed25519 AAAAC3second dan@desk
+
+maria    rig            ssh-ed25519 AAAAC3fixture maria@mac
+USERS
+printf '%s\n' 'maria ops ssh-ed25519 AAAA maria@mac' > "$FIX_BAD"
+check "users parser: unknown role names the valid set" 1 "valid roles: admin rig box" parse "$FIX_BAD"
+printf '%s\n' 'dan admin ssh-ed25519 AAAA a' 'dan admin,box ssh-ed25519 BBBB b' > "$FIX_BAD"
+check "users parser: differing roles across one user's lines" 1 "roles must be identical" parse "$FIX_BAD"
+printf '%s\n' 'root admin ssh-ed25519 AAAA r' > "$FIX_BAD"
+check "users parser: root is refused" 1 "not a rig-managed user" parse "$FIX_BAD"
+printf '%s\n' 'dan admin' > "$FIX_BAD"
+check "users parser: malformed line is refused" 1 "malformed" parse "$FIX_BAD"
+# Usernames are validated in the same one-pass refusal matrix: 'fo|o' would
+# corrupt the parser's own '|'-delimited stream (user 'fo', garbage keys), and
+# a leading '-' reads as a useradd flag mid-convergence. The refusal names the
+# line and the rule, like every other parser refusal.
+printf '%s\n' 'fo|o admin ssh-ed25519 AAAA x' > "$FIX_BAD"
+check "users parser: '|' in a username is refused"     1 "invalid username" parse "$FIX_BAD"
+check "users parser: the username refusal names the line" 1 "line 1"        parse "$FIX_BAD"
+printf '%s\n' '-dan admin ssh-ed25519 AAAA x' > "$FIX_BAD"
+check "users parser: leading-dash username is refused" 1 "invalid username" parse "$FIX_BAD"
+check "users parser: valid file emits dan (both keys' roles agree)" \
+  0 "dan|admin,box|ssh-ed25519 AAAAC3second dan@desk" parse "$FIX_OK"
+check "users parser: valid file emits maria too" 0 "maria|rig|ssh-ed25519" parse "$FIX_OK"
+# ALL errors in ONE pass: a bad file costs one fix cycle, not one per error.
+# A single invocation, both messages asserted from its one stderr.
+printf '%s\n' 'root admin ssh-ed25519 AAAA r' 'maria ops ssh-ed25519 AAAA m' > "$FIX_BAD"
+MULTI_ERRS="$(mktemp)"
+parse "$FIX_BAD" 2> "$MULTI_ERRS"; multi_rc=$?
+check "users parser: multi-error file exits 1"       0 "" test "$multi_rc" -eq 1
+check "users parser: one run reports the root line"  0 "" grep -q "not a rig-managed user" "$MULTI_ERRS"
+check "users parser: same run reports the bad role"  0 "" grep -q "unknown role" "$MULTI_ERRS"
+rm -f "$MULTI_ERRS"
+
+if [ "$(id -u)" -ne 0 ]; then
+  # A VALID fixture proves the whole file-validation pass sits before the
+  # root check — a parse failure here would exit 2, not 1.
+  check "users apply: refuses non-root"  1 "must run as root" "$ROOT/commands/users-apply.sh" --file "$FIX_OK"
+  check "users status: refuses non-root" 1 "must run as root" "$ROOT/commands/users-status.sh"
+else
+  echo "skip: users non-root refusals (running as root)"
+fi
+rm -f "$FIX_OK" "$FIX_BAD"
+
+# Validate-then-apply: `visudo -c` must pass before anything lands in
+# /etc/sudoers.d — a bad drop-in takes down ALL of sudo, locking every admin
+# out of the escalation path apply just granted. Assert the order in the file,
+# matching the calls rather than comments (repo precedent: the runner-install
+# repo-guard ordering check). Defaults fail closed.
+visudo_at="$(grep -n 'visudo -c' "$ROOT/commands/users-apply.sh" | head -n1 | cut -d: -f1)"
+sudoers_at="$(grep -nE 'install .*sudoers\.d/rig-roles' "$ROOT/commands/users-apply.sh" | head -n1 | cut -d: -f1)"
+check "users apply: visudo -c precedes the sudoers install" \
+  0 "" test "${visudo_at:-999999}" -lt "${sudoers_at:-0}"
+
+# The invoker gate: %rig's sudoers rule is binary-scoped (NOPASSWD for
+# /usr/local/bin/rig, any args), so without a gate `sudo rig users apply
+# --file <me-as-admin>` turns role rig root-equivalent through this very
+# command. Exercising it needs a real SUDO_USER and real groups, so grep the
+# refusal in both identity-management commands (repo precedent: the
+# staging/runner tag greps).
+check "users apply: invoker gate refusal is present" 0 "" \
+  grep -q "changes who holds root" "$ROOT/commands/users-apply.sh"
+check "users close-root: invoker gate refusal is present" 0 "" \
+  grep -q "changes who holds root" "$ROOT/commands/users-close-root.sh"
+# Offboarding must revoke SSH, not just the password: a '!'-locked password is
+# not a closed door under UsePAM — pubkey auth still works. Expiry is the
+# switch PAM actually honors, and the keys are renamed, never deleted
+# (convergence never destroys). Needs root + real accounts, so grep both moves.
+check "users apply: a dropped user's account is expired, not just locked" 0 "" \
+  grep -qF -- "usermod -L -e 1" "$ROOT/commands/users-apply.sh"
+check "users apply: revoked keys are renamed, never deleted" 0 "" \
+  grep -q "revoked-by-rig" "$ROOT/commands/users-apply.sh"
+# A fleet-wide users file must not abort apply on a host=no box just because
+# it names a box-role user somewhere in the fleet: the box role binds where
+# VMs live, so on host=no it skips (with a warning) and everything else —
+# admins included — still converges.
+check "users apply: box role skips on a host=no box" 0 "" \
+  grep -q "box role skipped" "$ROOT/commands/users-apply.sh"
+
+# --- users close-root: the human-class root-door shutter ---------------------
+check "users close-root: --help exits 0"       0 "usage:"       "$ROOT/commands/users-close-root.sh" --help
+check "users close-root: unknown flag exits 2" 2 "unknown flag" "$ROOT/commands/users-close-root.sh" --nope
+# The whole command rests on first-wins + lexical include order: '-' (0x2D)
+# sorts before '.' (0x2E), so 00-rig-users.conf is read before bootstrap's
+# 00-rig.conf and its PermitRootLogin wins. Assert the actual comparison the
+# glob makes, so a renamed drop-in cannot silently lose the fight.
+check "users close-root: drop-in name sorts before bootstrap's" 0 "" \
+  bash -c '[ "00-rig-users.conf" \< "00-rig.conf" ]'
+check "users close-root: drop-in name is the load-bearing one" 0 "" \
+  grep -q "00-rig-users.conf" "$ROOT/commands/users-close-root.sh"
+# Validate-then-apply: `sshd -t` on the merged config must precede the restart —
+# on a box whose only door is SSH (exactly what this box is about to become),
+# bouncing the daemon into a config it refuses to parse leaves no way back in.
+# Match the call, not the word (repo precedent: the repo-guard ordering check);
+# defaults fail closed.
+sshdt_at="$(grep -nE '^[[:space:]]*if ! sshd -t' "$ROOT/commands/users-close-root.sh" | head -n1 | cut -d: -f1)"
+restart_at="$(grep -n 'systemctl restart ssh' "$ROOT/commands/users-close-root.sh" | head -n1 | cut -d: -f1)"
+check "users close-root: sshd -t precedes the ssh restart" \
+  0 "" test "${sshdt_at:-999999}" -lt "${restart_at:-0}"
+# Convergence is a claim about the DOOR, not the file. Matching bytes can hide
+# an earlier-sorting override (first-wins) or a daemon that died between
+# install and restart and never read the file — so the no-op message may only
+# be spoken after the effective-config assertion (`sshd -T`), and the no-op
+# branch may only be TAKEN when the daemon provably started after the last
+# change to sshd's config inputs. Pin both: the assert-before-claim ordering,
+# and the daemon-start-vs-config-mtime proof's presence.
+efft_at="$(grep -n 'sshd -T' "$ROOT/commands/users-close-root.sh" | grep -v '^[0-9]*:#' | head -n1 | cut -d: -f1)"
+noop_at="$(grep -n 'nothing to do' "$ROOT/commands/users-close-root.sh" | tail -n1 | cut -d: -f1)"
+check "users close-root: no-op claim sits after the effective-config assert" \
+  0 "" test "${efft_at:-999999}" -lt "${noop_at:-0}"
+check "users close-root: no-op needs a daemon start newer than the config" 0 "" \
+  grep -q "ExecMainStartTimestamp" "$ROOT/commands/users-close-root.sh"
+# The admin-door gate must check the StrictModes SHAPE, not file existence: a
+# non-empty authorized_keys behind group/world-writable perms is a key sshd
+# rejects — closing root behind it welds the only door shut. The full gate
+# needs root + real accounts, so grep the load-bearing check's wording.
+check "users close-root: gate checks the StrictModes shape" 0 "" \
+  grep -q "group/world-writable" "$ROOT/commands/users-close-root.sh"
+# Marker-gate refusals through the sourced lib against fixture markers: the CLI
+# path sits behind the root check, so the gate is a pure lib function on
+# purpose (repo precedent: parse_users_file, assert_runner_repo). The command
+# reads the marker path from RIG_ROLE_MARKER for the same reason — so the gate
+# stays pointable at fixtures.
+marker_gate() { # marker_gate <marker_path>
+  bash -c 'set -euo pipefail
+    . "$1/commands/lib/users-config.sh"
+    assert_marker_human "$2"' _ "$ROOT" "$1"
+}
+MARKER_DIR="$(mktemp -d)"
+printf 'role=workload class=server host=no join=authkey\n' > "$MARKER_DIR/server"
+printf 'role=dev class=human host=yes join=authkey\n'      > "$MARKER_DIR/human"
+check "users close-root: absent marker refuses, names bootstrap as the repair" \
+  1 "no /etc/rig/role marker" marker_gate "$MARKER_DIR/absent"
+check "users close-root: class=server refuses, names the control plane" \
+  1 "control plane" marker_gate "$MARKER_DIR/server"
+check "users close-root: class=human passes the gate" \
+  0 "" marker_gate "$MARKER_DIR/human"
+rm -rf "$MARKER_DIR"
+if [ "$(id -u)" -ne 0 ]; then
+  check "users close-root: refuses non-root" 1 "must run as root" "$ROOT/commands/users-close-root.sh"
+else
+  echo "skip: users close-root non-root refusal (running as root)"
+fi
+# Bootstrap must read the closed door as hardened, not broken: `no` is the
+# post-close-root state, strictly harder than what bootstrap installs. Byte-grep
+# the widened assertion so a revert cannot ship green.
+check "bootstrap: permitrootlogin assertion accepts the closed state" 0 "" \
+  grep -qF "permitrootlogin (no|prohibit-password|without-password)" "$ROOT/commands/bootstrap.sh"
+# ...but only for class=human. On class=server a closed root door is a BROKEN
+# box — root SSH is the control plane's automation door — and the usual cause
+# is a 00-rig-users.conf left over from a former class=human life. The refusal
+# must name that drop-in or the operator greps sshd configs blind; the path
+# needs root + a doctored sshd, so grep the die message (repo precedent above).
+check "bootstrap: class=server refusal names the stale close-root drop-in" 0 "" \
+  grep -q "leftover /etc/ssh/sshd_config.d/00-rig-users.conf" "$ROOT/commands/bootstrap.sh"
 
 # The dump script ships to control-plane boxes as an embedded heredoc. A syntax
 # error in it would be invisible here and would first surface at 04:00 on a live

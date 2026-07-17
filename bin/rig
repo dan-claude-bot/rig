@@ -8,11 +8,17 @@ usage() {
 usage: rig <command> [args]
 
 commands:
-  bootstrap <control-plane|workload|runner> [--hostname <name>] [--ts-tag <tag>]
+  bootstrap <control-plane|workload|runner|staging|dev|workstation|custom>
+            [--hostname <name>] [--class <human|server>] [--host <yes|no>]
+            [--join <authkey|login>]
       OS plumbing on a pristine Debian box: hardening, unattended-upgrades,
-      tailscale join. Prompts for a single-use tailnet pre-auth key
-      (TS_AUTHKEY env overrides the prompt). Run as root. Role runner
-      defaults to tag:ci and refuses tag:server.
+      tailscale join. Roles are presets over the three traits; any flag
+      overrides its trait, and custom states all of them. Prompts for a
+      single-use TAGGED tailnet pre-auth key (TS_AUTHKEY env overrides the
+      prompt); the key's tags are the tailnet tag, verified after join —
+      only control-plane and workload may carry tag:server. join=login
+      (workstation) needs no key: interactive login, node must come up
+      untagged. Run as root.
   coolify install --version <pin>
       Pinned Coolify install (AUTOUPDATE=false). Control-plane box only.
   coolify backup install [options]
@@ -41,6 +47,18 @@ commands:
       re-register, reusing the binary already on the box. Needs a removal
       token for the old repo and a registration token for the new one.
       Run as root.
+  users apply --file <path>
+      Converge named operator accounts from a declarative users file, on
+      every class: groups by role (admin/rig/box), passwords locked always,
+      authorized_keys made exact, visudo-gated sudoers rules. Users dropped
+      from the file are locked, never deleted. '-' reads stdin. Run as root.
+  users status
+      Roles (derived from actual group membership), key counts and lock
+      state for the rig-managed users. Reads the box only. Run as root.
+  users close-root
+      Shut root SSH on a class=human box once an admin key works. Refuses
+      on class=server — root there is the control plane's automation door —
+      and while no admin holds a key. Run as root.
 
 install/upgrade:
   curl -fsSL https://raw.githubusercontent.com/heavy-duty/rig/main/install.sh | bash
@@ -107,6 +125,28 @@ case "$cmd" in
       repoint)
         shift
         exec "$ROOT/commands/runner-repoint.sh" "$@"
+        ;;
+      *)
+        usage >&2
+        exit 2
+        ;;
+    esac
+    ;;
+  users)
+    shift
+    sub="${1:-}"
+    case "$sub" in
+      apply)
+        shift
+        exec "$ROOT/commands/users-apply.sh" "$@"
+        ;;
+      status)
+        shift
+        exec "$ROOT/commands/users-status.sh" "$@"
+        ;;
+      close-root)
+        shift
+        exec "$ROOT/commands/users-close-root.sh" "$@"
         ;;
       *)
         usage >&2
