@@ -78,6 +78,18 @@ check "bootstrap: dev --join login + TS_AUTHKEY exits 2" 2 "unset TS_AUTHKEY" \
 # deleted guard cannot ship green (repo precedent: staging/runner tag greps).
 check "bootstrap: login-path tagged refusal is present" 0 "" \
   grep -q "join=login expects a user-owned, untagged node" "$ROOT/commands/bootstrap.sh"
+# Re-running with join=authkey on a box that was legitimately login-joined
+# (untagged BY DESIGN) lands in verify_effective_tag's untagged branch. Backing
+# out a join this run did not perform would tear down a user-owned workstation;
+# the already-joined path must refuse WITHOUT logout and name both repairs.
+# Needs a real tailnet to exercise, so grep the keep-mode die instead.
+check "bootstrap: already-joined untagged refusal keeps the join" 0 "" \
+  grep -q "joined but UNTAGGED" "$ROOT/commands/bootstrap.sh"
+# verify_user_owned must fail CLOSED on a stalled backend: empty tags is its
+# SUCCESS signal, so a 30s poll that never saw Running would wave a tagged node
+# through as user-owned. Grep the timeout die (same real-tailnet excuse).
+check "bootstrap: login verify fails closed on a stalled backend" 0 "" \
+  grep -q "could not verify the join is user-owned" "$ROOT/commands/bootstrap.sh"
 # The marker is the traits' ground truth for rig users; assert the write exists.
 check "bootstrap: role marker write is present" 0 "" \
   grep -q "/etc/rig/role" "$ROOT/commands/bootstrap.sh"
@@ -385,6 +397,13 @@ fi
 # the widened assertion so a revert cannot ship green.
 check "bootstrap: permitrootlogin assertion accepts the closed state" 0 "" \
   grep -qF "permitrootlogin (no|prohibit-password|without-password)" "$ROOT/commands/bootstrap.sh"
+# ...but only for class=human. On class=server a closed root door is a BROKEN
+# box — root SSH is the control plane's automation door — and the usual cause
+# is a 00-rig-users.conf left over from a former class=human life. The refusal
+# must name that drop-in or the operator greps sshd configs blind; the path
+# needs root + a doctored sshd, so grep the die message (repo precedent above).
+check "bootstrap: class=server refusal names the stale close-root drop-in" 0 "" \
+  grep -q "leftover /etc/ssh/sshd_config.d/00-rig-users.conf" "$ROOT/commands/bootstrap.sh"
 
 # The dump script ships to control-plane boxes as an embedded heredoc. A syntax
 # error in it would be invisible here and would first surface at 04:00 on a live

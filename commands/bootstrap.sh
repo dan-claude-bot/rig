@@ -229,12 +229,26 @@ rm -f "$TMP"
 eff="$(sshd -T 2>/dev/null)" || die "sshd -T failed; refusing to claim a hardened box"
 echo "$eff" | grep -qx 'passwordauthentication no' \
   || die "sshd still resolves passwordauthentication=yes — a drop-in is beating ${DROPIN}; check ls /etc/ssh/sshd_config.d/"
-# `no` is accepted because it is the post-`rig users close-root` state —
-# strictly harder than the prohibit-password this script installs. Bootstrap
-# must never read a closed door as a broken one, and it cannot reopen one
-# either: by first-wins its own drop-in loses to 00-rig-users.conf.
-echo "$eff" | grep -qxE 'permitrootlogin (no|prohibit-password|without-password)' \
-  || die "sshd still permits root password login — check ls /etc/ssh/sshd_config.d/"
+# The permitrootlogin acceptance is CLASS-gated, because `no` means opposite
+# things on the two classes. class=human: `no` is the post-`rig users
+# close-root` state — strictly harder than the prohibit-password this script
+# installs. Bootstrap must never read a closed door as a broken one, and it
+# cannot reopen one either: by first-wins its own drop-in loses to
+# 00-rig-users.conf. class=server: root SSH is the control plane's automation
+# door (Coolify SSHes in as root), so `no` is not hardening — it is fleet
+# management silently dead, and the likely culprit is a drop-in left over from
+# a former class=human life on a repurposed box. rig can DETECT that but must
+# not FIX it: silently reopening a root door is worse than a loud stop, so —
+# same doctrine as the tag checks — detect, refuse, and name the repair.
+if [ "$CLASS" = "human" ]; then
+  echo "$eff" | grep -qxE 'permitrootlogin (no|prohibit-password|without-password)' \
+    || die "sshd still permits root password login — check ls /etc/ssh/sshd_config.d/"
+elif echo "$eff" | grep -qx 'permitrootlogin no'; then
+  die "sshd resolves permitrootlogin=no, but this is a class=server box: root SSH is the control plane's automation door, and with it shut the fleet cannot manage this box. Likely cause: a leftover /etc/ssh/sshd_config.d/00-rig-users.conf from a former class=human life ('rig users close-root' ran here once). Remove that drop-in and re-run bootstrap."
+else
+  echo "$eff" | grep -qxE 'permitrootlogin (prohibit-password|without-password)' \
+    || die "sshd still permits root password login — check ls /etc/ssh/sshd_config.d/"
+fi
 log "sshd hardening verified (sshd -T: passwordauthentication no)"
 
 # --- system hostname ----------------------------------------------------------
@@ -270,8 +284,15 @@ fi
 # Tags ride in with the netmap, not synchronously out of `up`, so a single read
 # right after join can legitimately come back empty; poll until tags appear OR
 # the backend reaches Running (past which an empty Tags is real, not just early).
+#
+# verify_effective_tag <back-out|keep> — same mode discipline as
+# verify_user_owned: back-out on first join (rig just spent the key, so an
+# untagged result is rig's own mess to undo), keep on the already-joined path
+# (never back out state rig did not create — the join there may be a
+# legitimately login-joined, user-owned workstation that someone re-ran with
+# join=authkey by mistake).
 verify_effective_tag() {
-  local deadline=$((SECONDS + 30)) tags="" state="" json
+  local mode="$1" deadline=$((SECONDS + 30)) tags="" state="" json
   json="$(mktemp)"
   while :; do
     if tailscale status --json > "$json" 2>/dev/null; then
@@ -291,11 +312,20 @@ verify_effective_tag() {
   # node anyway, so rig must now catch this out loud. A wrong tag cannot be fixed
   # in place (`tailscale set` has no tag flag; re-tagging needs a fresh key via
   # `up --force-reauth`), so back the node out rather than leave a half-joined,
-  # user-owned device squatting a hostname.
+  # user-owned device squatting a hostname. That back-out is EARNED only on the
+  # first-join path, where rig itself just performed the join; on the
+  # already-joined path an untagged node may be exactly what someone built on
+  # purpose — a login-joined workstation is untagged BY DESIGN — and tearing it
+  # off the tailnet because a re-run said join=authkey would destroy state rig
+  # did not create. keep mode refuses without touching the join and names both
+  # ways out, since rig cannot tell which one the operator meant.
   if [ -z "$tags" ]; then
-    tailscale logout >/dev/null 2>&1 \
-      || warn "tailscale logout failed — this node is joined UNTAGGED and user-owned; remove it from the tailnet by hand"
-    die "joined with NO tag: the pre-auth key was untagged, so this node is owned by the key creator's user identity, not a tag. Backed it out. Fix: mint a TAGGED pre-auth key and re-run."
+    if [ "$mode" = "back-out" ]; then
+      tailscale logout >/dev/null 2>&1 \
+        || warn "tailscale logout failed — this node is joined UNTAGGED and user-owned; remove it from the tailnet by hand"
+      die "joined with NO tag: the pre-auth key was untagged, so this node is owned by the key creator's user identity, not a tag. Backed it out. Fix: mint a TAGGED pre-auth key and re-run."
+    fi
+    die "this box is joined but UNTAGGED — possibly a login-joined (user-owned) machine re-run with join=authkey. It was joined before this run, so nothing was backed out. If it should be fleet-owned: run 'tailscale logout' and re-run with a TAGGED pre-auth key. If it is a workstation: re-run with --join login."
   fi
 
   # tag:server policy is DERIVED, not a trait: it means "the control plane
@@ -354,6 +384,17 @@ verify_user_owned() {
     fi
     die "this node is TAGGED (${shown}) but join=login expects a user-owned, untagged node — a tag here means control granted this device fleet identity. It was joined before this run, so nothing was backed out: run 'tailscale logout' and re-run bootstrap, or re-run with --join authkey."
   fi
+
+  # Fail CLOSED on a poll that never reached Running: empty tags is this
+  # function's SUCCESS signal, which makes a timeout uniquely dangerous here —
+  # a tagged node on a slow tailscaled reads as empty and would be waved
+  # through as user-owned (verify_effective_tag has the mirror problem, but
+  # there timeout-empty already lands in a refusal). Nothing was verified
+  # either way, and the join may be perfectly fine, so neither mode logs out;
+  # the only honest move is to stop and have the operator re-run the verify.
+  if [ "$state" != "Running" ]; then
+    die "tailscale backend never reached Running within 30s — could not verify the join is user-owned and untagged. Nothing was backed out; re-run bootstrap to verify once tailscaled settles."
+  fi
   log "user-owned join verified (untagged)"
 }
 
@@ -389,11 +430,11 @@ if tailscale status >/dev/null 2>&1; then
   # deliberate and stays — re-running an identical tagged-authkey `up` errors —
   # but skipping the CHECK was how the M900s stayed mis-tagged unnoticed.
   # The check the traits demand: authkey wants the granted tag, login wants none
-  # (`keep`: never back out a join this run did not perform).
+  # — both in `keep` mode: never back out a join this run did not perform.
   if [ "$JOIN" = "login" ]; then
     verify_user_owned keep
   else
-    verify_effective_tag
+    verify_effective_tag keep
   fi
 elif [ "$JOIN" = "login" ]; then
   # No pre-auth key on this path — the human at the keyboard is the credential.
@@ -414,7 +455,7 @@ else
   # cannot be rescued by one (verify_effective_tag refuses it and logs out).
   log "joining tailnet as ${TS_HOSTNAME} (tag comes from the pre-auth key)"
   tailscale up --authkey="$TS_AUTHKEY" --hostname="$TS_HOSTNAME"
-  verify_effective_tag
+  verify_effective_tag back-out
 fi
 
 # --- role marker --------------------------------------------------------------
