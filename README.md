@@ -20,7 +20,7 @@ PATH (`/usr/local/bin` when root). Re-run any time to upgrade.
 
 ## Commands
 
-### `rig bootstrap <control-plane|workload|runner>`
+### `rig bootstrap <control-plane|workload|runner|dev>`
 
 Run as root on the fresh box (over SSH). Convergent — safe to re-run; a
 second run changes nothing.
@@ -29,12 +29,13 @@ second run changes nothing.
 rig bootstrap control-plane --hostname my-coolify-box
 rig bootstrap workload --hostname my-prod-box
 rig bootstrap runner --hostname my-ci-box
+rig bootstrap dev --hostname dev-server
 ```
 
 - `--hostname <name>` — tailnet hostname (default: the role name)
 - `--ts-tag <tag>` — tailnet tag to advertise (default: `tag:server`;
-  the `runner` role defaults to `tag:ci` instead, and **refuses**
-  `tag:server` outright — see below)
+  the `runner` role defaults to `tag:ci` and the `dev` role to `tag:local`,
+  and both **refuse** `tag:server` outright — see below)
 
 What it does: installs `curl ca-certificates unattended-upgrades` (and
 enables periodic unattended upgrades); writes an sshd hardening drop-in
@@ -75,6 +76,50 @@ agent will live on, and it differs behaviorally: it defaults `--ts-tag` to
 code, and advertising your server tag would extend every grant your servers
 hold (SSH between them, say) to that code. The refusal turns the worst
 misconfiguration from a documentation warning into a hard error.
+
+### `rig bootstrap dev`
+
+The **Incus claudebox host** — the one machine class rig didn't make. Everything
+else (control planes, workloads, runners) came up rig-made and reproducible; the
+box that runs the claudeboxes was hand-built, so "every box is rig-made" had a
+hole exactly where an agent runs. `dev` closes it.
+
+```sh
+rig bootstrap dev --hostname dev-server
+```
+
+On top of the shared machinery (the `00-rig.conf` sshd drop-in **and** its
+`sshd -T` effective-config assert, hostname convergence, tailscale join), `dev`
+installs and initialises **Incus**: `incus admin init --auto` gives it a default
+storage pool, the `default` profile, and a managed bridge (`incusbr0`). Init runs
+**once** — a second `bootstrap dev` detects the existing pool + profile root disk
+and skips it, so the run is a true no-op — and rig asserts the *effective* Incus
+state (`incus profile device show default`, `incus network list`) rather than
+trusting `init`'s exit code, the same discipline that caught the sshd first-wins
+bug.
+
+Three hard constraints, each enforced rather than documented:
+
+- **`tag:local`, never `tag:server`.** The ACL grants `tag:server → :22`, so a
+  dev host wearing the server tag hands the control plane free SSH. `dev` defaults
+  `--ts-tag` to `tag:local` and **refuses `tag:server`** (exit 2) — the correct
+  tag is the *only* reachable outcome, not a flag the operator remembers. This
+  already bit us: both M900s came up `tag:server` and had to be retagged by hand.
+- **The guest claudeboxes never join the tailnet.** The **host** joins; the
+  **guests** do not. An agent-inhabited box with its own tailnet node is a
+  foothold into the control plane, so operator SSH into a claudebox goes *through*
+  the host (ProxyJump), never a tunnel of its own. rig joins the host and stops —
+  there is deliberately no "enrol the guests" step, and if one is ever added,
+  that convenience is the bug.
+- **No credentials on the host.** Claudeboxes are creds-free by design; the
+  operator adds their own interactively. rig installs, templates, and holds no
+  credential — here as everywhere.
+
+**The rehearsal must assert *effective* state, not files rig wrote.** The existing
+Incus rehearsal runs in a pristine Debian container with no cloud-init drop-in, so
+it is structurally blind to the sshd first-wins bug. A dev-role rehearsal asserts
+what actually resolved: `sshd -T`, `incus info`, and `tailscale status --json`
+showing `tag:local` — then a second `bootstrap dev` proving a clean no-op.
 
 ### `rig coolify install --version <pin>`
 

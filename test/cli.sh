@@ -37,9 +37,15 @@ check "bootstrap: unknown role exits 2"    2 "unknown role"   "$ROOT/commands/bo
 check "bootstrap: unknown flag exits 2"    2 "unknown flag"   "$ROOT/commands/bootstrap.sh" workload --nope
 check "bootstrap: hostname needs value"    2 "needs a value"  "$ROOT/commands/bootstrap.sh" workload --hostname
 check "bootstrap: runner refuses tag:server" 2 "must not advertise tag:server" "$ROOT/commands/bootstrap.sh" runner --ts-tag tag:server
+# dev is the Incus claudebox host: tag:server would grant it :22 via the ACL, so
+# it must refuse the server tag exactly as runner does (correct-tag-only, not a
+# flag to remember). The incus init + effective tag:local assertion need a real
+# host, so they live in the rehearsal, not here.
+check "bootstrap: dev refuses tag:server"    2 "must not advertise tag:server" "$ROOT/commands/bootstrap.sh" dev --ts-tag tag:server
 if [ "$(id -u)" -ne 0 ]; then
   check "bootstrap: refuses non-root"      1 "must run as root" env TS_AUTHKEY=x "$ROOT/commands/bootstrap.sh" workload
   check "bootstrap: runner role parses, refuses non-root" 1 "must run as root" env TS_AUTHKEY=x "$ROOT/commands/bootstrap.sh" runner
+  check "bootstrap: dev role parses, refuses non-root"    1 "must run as root" env TS_AUTHKEY=x "$ROOT/commands/bootstrap.sh" dev
 else
   echo "skip: bootstrap non-root refusals (running as root)"
 fi

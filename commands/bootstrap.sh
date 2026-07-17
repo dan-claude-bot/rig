@@ -9,13 +9,20 @@ die()  { printf 'rig-bootstrap: ERROR: %s\n' "$1" >&2; exit "${2:-1}"; }
 
 usage() {
   cat <<'EOF'
-usage: rig bootstrap <control-plane|workload|runner> [--hostname <name>] [--ts-tag <tag>]
+usage: rig bootstrap <control-plane|workload|runner|dev> [--hostname <name>] [--ts-tag <tag>]
 
   --hostname  system + tailnet hostname (default: the role name)
   --ts-tag    tailnet tag to advertise (default: tag:server;
               role runner defaults to tag:ci and refuses tag:server —
               a CI box executes repo-controlled code, and your server
-              tag's grants must never extend to it)
+              tag's grants must never extend to it; role dev defaults to
+              tag:local and likewise refuses tag:server — the server tag's
+              ACL grants :22, so a mis-tagged Incus host would hand the
+              control plane free SSH)
+
+Role dev also installs and initialises Incus (the claudebox host). The HOST
+joins the tailnet; the guest claudeboxes deliberately do NOT — an
+agent-inhabited box on the tailnet is a foothold into the control plane.
 
 Provide the single-use tailscale pre-auth key via the TS_AUTHKEY env var, or
 enter it at the interactive prompt. It is used once and never written to disk.
@@ -25,15 +32,21 @@ EOF
 # --- args (validated before the root check, so errors are testable) ---------
 ROLE="${1:-}"
 case "$ROLE" in
-  control-plane|workload|runner) shift ;;
+  control-plane|workload|runner|dev) shift ;;
   -h|--help) usage; exit 0 ;;
-  "") usage >&2; die "role required (control-plane|workload|runner)" 2 ;;
-  *) die "unknown role: $ROLE (want control-plane|workload|runner)" 2 ;;
+  "") usage >&2; die "role required (control-plane|workload|runner|dev)" 2 ;;
+  *) die "unknown role: $ROLE (want control-plane|workload|runner|dev)" 2 ;;
 esac
 
 TS_HOSTNAME="$ROLE"
 if [ "$ROLE" = "runner" ]; then
   TS_TAG="tag:ci"
+elif [ "$ROLE" = "dev" ]; then
+  # The Incus claudebox host. tag:server's ACL grants it :22, so a dev box
+  # carrying it hands the control plane free SSH — so dev advertises tag:local,
+  # never tag:server (refused below, not merely defaulted). This already bit us:
+  # both M900s came up tag:server and had to be retagged by hand.
+  TS_TAG="tag:local"
 else
   TS_TAG="tag:server"
 fi
@@ -53,6 +66,12 @@ done
 # extend every grant your servers hold to that code. Refused, not warned.
 if [ "$ROLE" = "runner" ] && [ "$TS_TAG" = "tag:server" ]; then
   die "role runner must not advertise tag:server" 2
+fi
+# A dev box is the Incus claudebox host. tag:server's ACL grants it :22, so a
+# dev box wearing it hands the control plane free SSH — the exact bug that made
+# the M900s retag-by-hand jobs. Correct-tag-only is enforced, not documented.
+if [ "$ROLE" = "dev" ] && [ "$TS_TAG" = "tag:server" ]; then
+  die "role dev must not advertise tag:server" 2
 fi
 
 # --- guards ------------------------------------------------------------------
@@ -201,9 +220,59 @@ else
   tailscale up --authkey="$TS_AUTHKEY" --hostname="$TS_HOSTNAME" --advertise-tags="$TS_TAG"
 fi
 
+# --- incus (dev role only) ----------------------------------------------------
+# The Incus claudebox host is the one machine class rig didn't make — it was
+# hand-built, so "every box is rig-made, reproducibly" had a hole exactly where
+# an agent runs. This block closes it: install Incus, initialise it once.
+#
+# NOTE — the guest claudeboxes deliberately do NOT join the tailnet. Only the
+# HOST joined above; an agent-inhabited box with its own tailnet node is a
+# foothold into the control plane, so operator SSH into a claudebox goes through
+# the host (ProxyJump), never a tunnel of its own. rig joins the host and stops.
+# There is intentionally no code here to enrol the guests: if bootstrap dev ever
+# grows a "join the guests too" convenience, that convenience is the bug.
+#
+# No credentials, either: claudeboxes are creds-free by design and the operator
+# adds their own interactively. rig installs, templates and holds nothing secret.
+if [ "$ROLE" = "dev" ]; then
+  if ! command -v incus >/dev/null 2>&1; then
+    log "installing incus"
+    # Debian 13 packages incus directly; keep the noninteractive frontend the
+    # base package block set, so a prompt never wedges an unattended bootstrap.
+    apt-get install -y -qq incus
+  else
+    log "incus already installed"
+  fi
+
+  # Initialise ONCE. `incus admin init --auto` is NOT idempotent — a second run
+  # errors out ("storage pool already exists"), which would break convergence.
+  # Detect a prior init by the artefacts --auto leaves behind — a storage pool
+  # AND a root disk on the default profile — and skip re-init when both exist,
+  # so a second `bootstrap dev` is a true no-op.
+  if incus storage list -f csv 2>/dev/null | grep -q . \
+     && incus profile device show default 2>/dev/null | grep -q 'type: disk'; then
+    log "incus already initialised; skipping incus admin init"
+  else
+    log "initialising incus (default storage pool, default profile, managed bridge)"
+    incus admin init --auto
+  fi
+
+  # Assert the EFFECTIVE state, not `init`'s exit code — the repo's "assert what
+  # resolved, not the action" rule (the same discipline that caught the sshd
+  # first-wins bug). A green `init` that left no root disk or no managed network
+  # is a host that cannot launch a claudebox; die here rather than at first use.
+  incus profile device show default 2>/dev/null | grep -q 'type: disk' \
+    || die "incus init did not leave a root disk on the default profile — check 'incus profile show default'"
+  incus network list -f csv 2>/dev/null | grep -q '^incusbr0,' \
+    || die "incus init did not create the managed bridge incusbr0 — check 'incus network list'"
+  log "incus initialised and verified (default profile has a root disk; incusbr0 present)"
+fi
+
 log "done — role ${ROLE}, hostname ${TS_HOSTNAME}"
 if [ "$ROLE" = "control-plane" ]; then
   log "next: rig coolify install --version <pin>"
 elif [ "$ROLE" = "runner" ]; then
   log "next: rig runner install --repo <owner/repo> --version <pin>"
+elif [ "$ROLE" = "dev" ]; then
+  log "next: launch claudeboxes on this host (guests stay off the tailnet; reach them via ProxyJump through this host)"
 fi
