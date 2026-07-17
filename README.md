@@ -187,6 +187,44 @@ gunzip -c <artifact> | docker exec -i <container> sh -c \
   non-emptiness *before* the prompt and before anything touches the database, so
   a fat-fingered path fails cheaply.
 
+#### Verifying a dump/restore actually works
+
+A `.gz` that opens without error is not proof of a good backup: a `pg_dump`
+truncated mid-stream still compresses into a perfectly valid gzip file that
+*looks* exactly like a complete one. The same ethos as the nightly dump applies
+here — **a backup you have never read back is not yet a backup.** The only
+fully-trustworthy proof is to restore the artifact and read the rows back out.
+
+On a real Coolify box you can do that **without touching prod data** by
+restoring into a fresh *scratch* database rather than over the live one:
+
+```sh
+# 1. dump the live database (read-only; harmless)
+rig db dump coolify-db /srv/snapshots/verify.sql.gz
+
+# 2. create a throwaway database as the container's OWN superuser
+docker exec coolify-db sh -c 'createdb -U "$POSTGRES_USER" rig_verify'
+
+# 3. restore the artifact INTO the scratch db (not the live one)
+rig db restore /srv/snapshots/verify.sql.gz coolify-db rig_verify --yes
+
+# 4. spot-check a table you expect to see
+docker exec coolify-db sh -c \
+  'psql -U "$POSTGRES_USER" -d rig_verify -c "\dt"'
+docker exec coolify-db sh -c \
+  'psql -U "$POSTGRES_USER" -d rig_verify -c "SELECT count(*) FROM <some-table>"'
+
+# 5. drop the scratch db — live data was never touched
+docker exec coolify-db sh -c 'dropdb -U "$POSTGRES_USER" rig_verify'
+```
+
+If the counts and tables are there, the artifact is real. This is exactly the
+round-trip `test/db-integration.sh` automates in CI (the `db-integration` job):
+it seeds a known table in a source container whose superuser is *not* the
+default, dumps it, restores into a second container whose superuser differs, and
+asserts the rows and an ordered checksum survived — the same proof, done against
+throwaway containers on every push.
+
 ### `rig runner install --repo <owner/repo>`
 
 Runner box only, run after `rig bootstrap runner` (the same two-step rhythm

@@ -20,3 +20,16 @@ jobs:
           shellcheck -x "${files[@]}"
       - name: cli tests
         run: bash test/cli.sh
+
+  # Kept SEPARATE from `check` on purpose: this job pulls a Postgres image and
+  # stands up throwaway containers, and a slow image pull must never delay the
+  # fast shellcheck + cli.sh feedback above. ubuntu-latest ships Docker running
+  # and passwordless sudo, so test/db-integration.sh EXECUTES here (it only
+  # skips where Docker is absent). It is the automated proof that dump/restore
+  # actually round-trips, not just that the args parse.
+  db-integration:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: db dump/restore round-trip
+        run: bash test/db-integration.sh
