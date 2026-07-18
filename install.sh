@@ -35,6 +35,23 @@ set -euo pipefail
 
 REPO="${RIG_REPO:-heavy-duty/rig}"
 REF="${RIG_REF:-}"   # empty = the latest release, resolved below
+
+# cloud-init's runcmd runs with NO $HOME in the environment, and under set -u
+# the expansions just below turned that into a death instead of an install —
+# found live by box#88's seed, which pins HOME=/root as its own scar (rig#39).
+# Derive it from the effective user instead: getent knows every user's home,
+# root included. (Inline error: die() is not defined this early on purpose —
+# this guard must run before any path is derived from $HOME.)
+if [ -z "${HOME:-}" ]; then
+  # '|| true': under pipefail a no-answer getent would kill the script here
+  # with ITS exit code, instead of falling through to the named refusal.
+  HOME="$(getent passwd "$(id -u)" | cut -d: -f6 || true)"; export HOME
+  if [ -z "$HOME" ]; then
+    printf "rig-install: ERROR: \$HOME is unset and getent knows no home for uid %s — set HOME and re-run\n" "$(id -u)" >&2
+    exit 1
+  fi
+fi
+
 DEST="${RIG_HOME:-$HOME/.local/share/rig}"
 if [ "$(id -u)" -eq 0 ]; then
   BINDIR="${RIG_BIN:-/usr/local/bin}"
