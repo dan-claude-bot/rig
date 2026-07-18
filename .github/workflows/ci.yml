@@ -33,3 +33,102 @@ jobs:
       - uses: actions/checkout@v4
       - name: db dump/restore round-trip
         run: bash test/db-integration.sh
+
+  # The end-to-end devserver proof — the maintainer's "calling rig with host
+  # gives you all wrapped up", made a green check: install rig (this tree),
+  # bootstrap a dev box (host=yes installs box + runs box's setup-host), apply
+  # a users file whose operator carries role box (apply delegates the tier to
+  # `box grant`, box#75), then AS THAT OPERATOR mint a real container box and
+  # run a command in it. A GitHub runner is root on a disposable VM — exactly
+  # the substrate this chain needs — except for the tailnet, which CI does not
+  # have: RIG_SKIP_JOIN=1 (env-only, loud on every run) skips the tailscale
+  # section while the role marker still lands, because `rig users apply`'s
+  # host= gate reads it. Container mode for the mint, same trade box's own
+  # rehearsal job makes: the tier's mechanics are identical for containers and
+  # VMs; the VM trust boundary itself stays a real-hardware ritual.
+  # External dep: bootstrap curls box from heavy-duty/box@main — the same
+  # class of dependency box's CI takes on image servers, and precisely the
+  # artifact a real `rig bootstrap dev` would install.
+  # Every phase opens with a banner so a red job names the phase that died.
+  e2e-devserver:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - name: install rig from this checkout
+        # Not install.sh: it downloads RIG_REPO@RIG_REF from GitHub, and CI
+        # must prove the tree under review (same reasoning, same layout as
+        # box's own CI global install). Root-owned, world-readable, on PATH.
+        run: |
+          set -euo pipefail
+          echo "=== phase 1: install rig (the tree under review) ==="
+          sudo cp -r . /opt/rig
+          sudo rm -rf /opt/rig/.git
+          sudo chmod +x /opt/rig/bin/rig /opt/rig/commands/*.sh
+          sudo ln -sf /opt/rig/bin/rig /usr/local/bin/rig
+          rig --help >/dev/null
+          echo "rig on PATH: $(command -v rig)"
+      - name: rig bootstrap dev (tailnet join skipped — CI has no tailnet)
+        run: |
+          set -euo pipefail
+          echo "=== phase 2: rig bootstrap dev --hostname devsrv-e2e (RIG_SKIP_JOIN=1) ==="
+          sudo env RIG_SKIP_JOIN=1 rig bootstrap dev --hostname devsrv-e2e 2>&1 | tee /tmp/bootstrap.log
+          echo "=== assert: the skip was loud ==="
+          grep -q "NOT on the tailnet" /tmp/bootstrap.log
+          echo "=== assert: the role marker landed with the dev traits ==="
+          sudo grep -qx 'role=dev class=human host=yes join=authkey' /etc/rig/role
+          echo "=== assert: bootstrap installed box and box's setup-host built the stack ==="
+          command -v box
+          sudo incus network show boxnet >/dev/null
+          echo "boxnet is up; box is $(box --help >/dev/null 2>&1 && echo installed)"
+      - name: rig users apply — an admin and a box-role operator
+        run: |
+          set -euo pipefail
+          echo "=== phase 3: users file (throwaway keys) + rig users apply ==="
+          ssh-keygen -q -t ed25519 -N '' -f /tmp/e2e-admin-key
+          ssh-keygen -q -t ed25519 -N '' -f /tmp/e2e-op-key
+          {
+            printf 'e2eadmin admin %s\n' "$(cat /tmp/e2e-admin-key.pub)"
+            printf 'e2eop    box   %s\n' "$(cat /tmp/e2e-op-key.pub)"
+          } > /tmp/e2e-users
+          cat /tmp/e2e-users
+          # As REAL root (su - clears SUDO_USER): apply's invoker gate only
+          # admits rig-admin members or root itself, and the runner user is
+          # neither — CI is the bring-up shape, and bring-up is a root shell.
+          sudo su - root -c 'rig users apply --file /tmp/e2e-users' 2>&1 | tee /tmp/apply.log
+          echo "=== assert: box grant converged the tier (box#75) ==="
+          uid="$(id -u e2eop)"
+          id -nG e2eop | tr ' ' '\n' | grep -qx incus
+          sudo incus project show "user-$uid" >/dev/null
+          test "$(sudo incus project get "user-$uid" restricted.networks.access)" = boxnet
+          echo "=== assert: the grant holds from the operator's side of the socket ==="
+          sudo runuser -u e2eop -- incus profile show box-net </dev/null >/dev/null
+          echo "user-$uid exists, narrowed to boxnet, box-net profile visible to e2eop"
+      - name: mint a real container box as the operator
+        # runuser starts a fresh process with the group database's groups, so
+        # the just-granted incus membership is live without a re-login — the
+        # same pattern box's own scripts and rehearsal use. stdin pinned: an
+        # incus client with a terminal on stdin can go interactive and wedge.
+        run: |
+          set -euo pipefail
+          echo "=== phase 4: box new --name e2e --container, as e2eop ==="
+          sudo runuser -u e2eop -- box new --name e2e --container </dev/null
+          echo "=== assert: it lists and it runs ==="
+          sudo runuser -u e2eop -- box list </dev/null | tee /tmp/box-list.log
+          grep -q 'e2e' /tmp/box-list.log
+          sudo runuser -u e2eop -- box exec e2e -- true </dev/null
+          echo "e2e is up and executing commands"
+      - name: teardown — box rm, then the revoke path
+        run: |
+          set -euo pipefail
+          echo "=== phase 5: box rm, then drop e2eop from the users file ==="
+          sudo runuser -u e2eop -- box rm e2e --force </dev/null
+          printf 'e2eadmin admin %s\n' "$(cat /tmp/e2e-admin-key.pub)" > /tmp/e2e-users-dropped
+          sudo su - root -c 'rig users apply --file /tmp/e2e-users-dropped' 2>&1 | tee /tmp/apply2.log
+          echo "=== assert: tier revoked (group gone), project kept — revoke, never delete ==="
+          if id -nG e2eop | tr ' ' '\n' | grep -qx incus; then
+            echo "FAIL: e2eop still in the incus group after being dropped" >&2
+            exit 1
+          fi
+          sudo incus project show "user-$(id -u e2eop)" >/dev/null
+          echo "e2eop revoked; their project survives for a future re-grant"
