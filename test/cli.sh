@@ -584,6 +584,12 @@ check "users close-root: absent marker refuses, names bootstrap as the repair" \
   1 "no /etc/rig/role marker" marker_gate "$MARKER_DIR/absent"
 check "users close-root: class=server refuses, names the control plane" \
   1 "control plane" marker_gate "$MARKER_DIR/server"
+# #17's original table let the runner ROLE close root; the class model
+# supersedes it — runner is class=server, an automation identity, and the
+# refusal must SAY so or the divergence reads as a bug to anyone holding the
+# old table.
+check "users close-root: the server refusal owns the runner row (#17)" \
+  1 "runner included" marker_gate "$MARKER_DIR/server"
 check "users close-root: class=human passes the gate" \
   0 "" marker_gate "$MARKER_DIR/human"
 rm -rf "$MARKER_DIR"

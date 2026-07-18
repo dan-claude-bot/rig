@@ -131,7 +131,14 @@ assert_marker_human() {
     *class=server*)
       # Root SSH on a server IS the control plane's (Coolify's) automation
       # identity — closing it severs fleet management. No --force exists.
-      printf '%s\n' "class=server: root here is the control plane's automation identity — closing it severs fleet management"
+      # Deliberately per-CLASS, not per-role: #17's original table let the
+      # runner role close root ("no Coolify involved"), but the class model
+      # (#26) supersedes that — every server-class box, runner included, is
+      # an automation identity whose management plane is root SSH, and rig
+      # itself converges through that door. A CI box someone administers
+      # like a human machine is class=human at bootstrap, not an exception
+      # carved out here.
+      printf '%s\n' "class=server: root here is the control plane's automation identity — closing it severs fleet management. Every server-class box (runner included) keeps root deliberately: it is an automation identity, and root SSH is its management plane; a box meant to be administered like a human machine is --class human at bootstrap, not an exception here"
       return 1 ;;
     *)
       printf '%s\n' "marker names no class (${marker}): re-run rig bootstrap; refusing to shut the root door blind"
