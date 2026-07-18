@@ -1,0 +1,48 @@
+name: release
+# The tag half of the release flow (#32; box#83's design, near-verbatim).
+# A release is a PR, then a tag: the `release: X.Y.Z` PR bumps VERSION and
+# stamps CHANGELOG.md's Unreleased section with version + date; after the
+# merge, the merge commit is tagged bare `X.Y.Z` (no `v` prefix — box's tag
+# scheme) and the tag is pushed. This workflow turns that tag into the
+# GitHub release, with the changelog section as the body — the curated
+# prose, never the auto-generated PR list.
+#
+# No assets on purpose: for a pure-bash tree, GitHub's source tarball for
+# the tag IS the package (install.sh downloads archive/refs/tags/<tag>).
+on:
+  push:
+    # Every tag, not a shape filter: a tag that mismatches VERSION must fail
+    # LOUDLY below, not be silently skipped by a pattern that didn't match.
+    tags: ['**']
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      # The tag names a tree; the tree names its own version. When they
+      # disagree, creating a release would put a version label on a tree
+      # that is not that version — exactly the lie the release flow exists
+      # to end — so: fail, create nothing.
+      - name: assert the tag matches the tree's VERSION
+        run: |
+          ver="$(cat VERSION)"
+          if [ "$GITHUB_REF_NAME" != "$ver" ]; then
+            echo "tag '$GITHUB_REF_NAME' != VERSION '$ver' — refusing to create a release for a tree that says it is something else" >&2
+            exit 1
+          fi
+      - name: create the release from the changelog section
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          . .github/scripts/release-lib.sh
+          notes="$(changelog_section CHANGELOG.md "$GITHUB_REF_NAME")"
+          if [ -z "$notes" ]; then
+            echo "CHANGELOG.md has no '## $GITHUB_REF_NAME' section — stamp the Unreleased section in the release PR before tagging" >&2
+            exit 1
+          fi
+          gh release create "$GITHUB_REF_NAME" --verify-tag \
+            --title "$GITHUB_REF_NAME" --notes "$notes"

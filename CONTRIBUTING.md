@@ -36,9 +36,29 @@ labels tell you where everything is without opening anything.
    With three formal head-current approvals the labels workflow requests it
    automatically; when part of the panel is comment-only, reading their
    agreement is the author's judgment, so the author makes the request.
-7. **Checks must be green**: `shellcheck` and `bash test/cli.sh` locally
-   mirror what CI runs; the db dump/restore round-trip
-   (`test/db-integration.sh`) executes in CI where Docker is present.
+7. **Checks must be green**: `shellcheck`, `bash test/cli.sh` and
+   `bash test/release.sh` locally mirror what CI runs; the db dump/restore
+   round-trip (`test/db-integration.sh`) executes in CI where Docker is
+   present.
+8. **Feature PRs land their changelog entry as part of the PR** (box's
+   convention): add it under `CHANGELOG.md`'s `## Unreleased` heading —
+   that section becomes the release notes verbatim when a release is cut.
+
+## Releasing
+
+A release is a PR, then a tag (#32; box#83's design):
+
+1. A small PR — `release: X.Y.Z` — bumps `VERSION` from `X.Y.Z-dev` and
+   stamps `CHANGELOG.md`'s Unreleased section as `## X.Y.Z — YYYY-MM-DD`.
+   CI green on it, same loop as any PR.
+2. Merge, tag the merge commit bare `X.Y.Z` (no `v` prefix — box's tag
+   scheme), push the tag. `release.yml` asserts tag == `VERSION` (a
+   mismatch fails loudly and creates nothing) and creates the GitHub
+   release with that version's changelog section as the body. No assets —
+   the source tarball for the tag is the package `install.sh` downloads.
+3. A follow-up (or the next feature PR) bumps main's `VERSION` to
+   `X.Y.(Z+1)-dev`, so a dev install never impersonates the release in the
+   `versions/<v>` layout.
 
 ## Labels — who sets what
 

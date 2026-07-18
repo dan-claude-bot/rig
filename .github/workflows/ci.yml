@@ -20,6 +20,8 @@ jobs:
           shellcheck -x "${files[@]}"
       - name: cli tests
         run: bash test/cli.sh
+      - name: release-flow tests
+        run: bash test/release.sh
 
   # Kept SEPARATE from `check` on purpose: this job pulls a Postgres image and
   # stands up throwaway containers, and a slow image pull must never delay the
