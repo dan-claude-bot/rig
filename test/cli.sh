@@ -970,6 +970,25 @@ check "install: the PATH symlink rides the chain" 0 "$H1/current/bin/rig" readli
 check "install: rig --version answers through the whole chain" 0 "rig $VER" irig "$B1/rig" --version
 check "install: INSTALLED_FROM records the local source" 0 "local:" cat "$H1/versions/$VER/INSTALLED_FROM"
 
+# --- rig#39: no $HOME in the environment (cloud-init's runcmd) ---------------
+# The box#88 seed runs install.sh from runcmd, which carries NO $HOME; under
+# set -u the first $HOME expansion was a death instead of an install. The
+# installer now derives a home from getent — driven here with a shim getent
+# so the derived home is a throwaway root, and proven fatal-BY-NAME when
+# getent has no answer either (never a bare unbound-variable stack).
+GESHIM="$WORK/geshim"; GEHOME="$WORK/gehome"; mkdir -p "$GESHIM" "$GEHOME"
+printf '#!/bin/sh\necho "u:x:0:0::%s:/bin/sh"\n' "$GEHOME" > "$GESHIM/getent"
+chmod +x "$GESHIM/getent"
+check "install: no \$HOME derives one from getent (rig#39)" 0 "done" \
+  env -u HOME PATH="$GESHIM:$PATH" RIG_ROLE_MARKER="$WORK/no-marker" \
+      RIG_INSTALL_SOURCE="$ROOT" bash "$ROOT/install.sh"
+check "install: ...and the tree landed under the derived home" 0 "" \
+  test -x "$GEHOME/.local/share/rig/versions/$VER/bin/rig"
+printf '#!/bin/sh\nexit 2\n' > "$GESHIM/getent"
+check "install: no \$HOME and no getent answer refuses by name" 1 "set HOME and re-run" \
+  env -u HOME PATH="$GESHIM:$PATH" RIG_ROLE_MARKER="$WORK/no-marker" \
+      RIG_INSTALL_SOURCE="$ROOT" bash "$ROOT/install.sh"
+
 # --- converge, don't clobber ------------------------------------------------
 touch "$H1/versions/$VER/CANARY"
 check "install: a same-version re-run is a no-op that says so" 0 "already installed" inst "$H1" "$B1"
