@@ -12,6 +12,7 @@ HERE="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")" && pwd)"
 . "$HERE/lib/users-config.sh"
 
 log()  { printf 'rig-users: %s\n' "$*"; }
+warn() { printf 'rig-users: WARNING: %s\n' "$*" >&2; }
 die()  { printf 'rig-users: ERROR: %s\n' "$1" >&2; exit "${2:-1}"; }
 
 usage() {
@@ -26,10 +27,14 @@ Human class ONLY. On class=server, root SSH is the control plane's (Coolify's)
 automation identity — closing it severs fleet management — so close-root
 refuses there, with no --force. It also refuses without a role marker (re-run
 rig bootstrap; never shut the root door blind) and refuses while no rig-admin
-member holds a login sshd would plausibly accept — authorized_keys present
-and non-empty, home/.ssh/keys owned by the user and not group/world-writable
-(sshd's StrictModes rejects the key otherwise), a real login shell, account
-not expired. The refusal names which check failed, per candidate. Run rig
+member holds a login this box would actually honor. Per candidate, in order:
+the StrictModes shape (authorized_keys present and non-empty, home/.ssh/keys
+owned by the user and not group/world-writable, a real login shell, account
+not expired), then two reachability proofs (#17) — `sudo -n true` under
+runuser must answer (NOPASSWD sudo is effective, not merely written), and
+`sshd -T -C user=...` must resolve a per-user effective config that accepts
+the login (pubkeyauthentication yes, no DenyUsers hit, AllowUsers — if set —
+names them). The refusal names which check failed, per candidate. Run rig
 users apply first; never close the only door.
 
 Before running, verify your admin login in a SEPARATE session — `ssh
@@ -70,16 +75,33 @@ if ! WHY="$(assert_marker_human "${RIG_ROLE_MARKER:-/etc/rig/role}")"; then
 fi
 
 # Admin-door gate — never close the only door. Root SSH goes away below, so
-# at least one rig-admin member must hold a login sshd would plausibly ACCEPT
-# — a non-empty authorized_keys alone proves a file exists, not a door:
+# at least one rig-admin member must hold a login this box would actually
+# HONOR — a non-empty authorized_keys alone proves a file exists, not a door:
 # StrictModes rejects keys behind wrongly-owned or group/world-writable
 # paths, a nologin shell never logs in, and an expired account fails PAM
 # before the key is read. So every candidate is checked for the StrictModes
-# shape, and the refusal names, per candidate, WHICH check failed — an
-# operator staring at a refusal must see the repair. Honestly: this proves
-# the door SHOULD open per StrictModes, not that it does — the
-# verify-in-a-separate-session advisory in --help stays load-bearing.
+# shape, and then for REACHABILITY (#17): the shape checks prove the door
+# SHOULD open, these prove what can be proven from inside — that NOPASSWD
+# sudo actually answers (`sudo -n true` under runuser; a sudoers drop-in
+# that never landed is a shape the file checks cannot see), and that sshd's
+# per-user EFFECTIVE config would accept the login (`sshd -T -C user=...` —
+# an AllowUsers or Match block elsewhere can quietly exclude the admin while
+# every file looks right). The refusal names, per candidate, WHICH check
+# failed — an operator staring at a refusal must see the repair. Honestly:
+# the one thing no local check can prove is that the operator HOLDS the
+# private key — the verify-in-a-separate-session advisory in --help stays
+# load-bearing.
 today=$(( $(date +%s) / 86400 ))
+# runuser ships in util-linux on Debian — rig's target — but the gate must
+# not die on a box without it: skip the live sudo proof with a loud warning
+# rather than block close-root on a missing prover. Warned once, not per
+# candidate.
+HAVE_RUNUSER=0
+if command -v runuser >/dev/null 2>&1; then
+  HAVE_RUNUSER=1
+else
+  warn "runuser not found; skipping the live NOPASSWD-sudo proof — verify 'sudo -n true' as your admin by hand before trusting the closed door"
+fi
 # path_strict <path> <uid> <label> — flag the two StrictModes complaints
 flag() { bad="${bad:+$bad, }$1"; }
 path_strict() {
@@ -122,6 +144,36 @@ while IFS= read -r a; do
   exp="$(getent shadow "$a" 2>/dev/null | cut -d: -f8)"
   if [ -n "$exp" ] && [ "$exp" -le "$today" ] 2>/dev/null; then
     flag "account expired"
+  fi
+  # Reachability proof 1 — NOPASSWD sudo answers for real. `sudo -n` never
+  # prompts: with the %rig-admin NOPASSWD rule effective it exits 0, and a
+  # sudoers drop-in that failed to land (or a sudo that is simply absent)
+  # exits non-zero right here instead of after root is welded shut.
+  if [ "$HAVE_RUNUSER" -eq 1 ]; then
+    if ! runuser -u "$a" -- sudo -n true >/dev/null 2>&1; then
+      flag "sudo -n true fails as this user (NOPASSWD sudo not effective — re-run rig users apply)"
+    fi
+  fi
+  # Reachability proof 2 — sshd's per-user EFFECTIVE config accepts them.
+  # `sshd -T -C user=...` resolves Match blocks for exactly this login, so an
+  # exclusion the global `sshd -T` never shows is caught. Allow/Deny entries
+  # are matched LITERALLY: a pattern that would in fact admit the admin still
+  # flags here — fail closed, the operator proves patterns by hand — while a
+  # denying pattern this literal match misses is one more reason the
+  # separate-session verification stays load-bearing.
+  if perT="$(sshd -T -C "user=$a,host=$(hostname),addr=127.0.0.1" 2>/dev/null)"; then
+    if ! printf '%s\n' "$perT" | grep -qx 'pubkeyauthentication yes'; then
+      flag "sshd resolves pubkeyauthentication != yes for this user"
+    fi
+    if printf '%s\n' "$perT" | grep -i '^denyusers ' | tr ' ' '\n' | grep -qx "$a"; then
+      flag "sshd DenyUsers names this user"
+    fi
+    if printf '%s\n' "$perT" | grep -qi '^allowusers ' \
+        && ! printf '%s\n' "$perT" | grep -i '^allowusers ' | tr ' ' '\n' | grep -qx "$a"; then
+      flag "sshd AllowUsers is set and does not name this user"
+    fi
+  else
+    flag "sshd -T -C user=$a failed — cannot resolve the per-user config sshd would apply"
   fi
   if [ -z "$bad" ]; then ADMIN_OK=1; break; fi
   DETAIL="$DETAIL; $a: $bad"

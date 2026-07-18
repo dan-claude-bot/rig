@@ -539,6 +539,34 @@ check "users close-root: no-op needs a daemon start newer than the config" 0 "" 
 # needs root + real accounts, so grep the load-bearing check's wording.
 check "users close-root: gate checks the StrictModes shape" 0 "" \
   grep -q "group/world-writable" "$ROOT/commands/users-close-root.sh"
+# The reachability proofs (#17): the shape checks prove the door SHOULD open;
+# these prove what can be proven from inside — NOPASSWD sudo actually answers
+# (`runuser ... sudo -n true`) and sshd's per-user EFFECTIVE config accepts
+# the login (`sshd -T -C user=...`). Both need root, real accounts, and a
+# live sshd, so grep the calls — and pin their ordering BEFORE the drop-in
+# install, because reachability proven after the door shut is no proof at
+# all. Match the calls, not the words (comments mention neither literal);
+# defaults fail closed.
+# The $a/$TMP/$DROPIN below are LITERALS we grep for in the script — single
+# quotes are the point, as in the db and box-install checks.
+# shellcheck disable=SC2016
+check "users close-root: gate proves NOPASSWD sudo answers" 0 "" \
+  grep -qF -- 'runuser -u "$a" -- sudo -n true' "$ROOT/commands/users-close-root.sh"
+check "users close-root: gate resolves sshd's per-user config" 0 "" \
+  grep -qF -- 'sshd -T -C "user=' "$ROOT/commands/users-close-root.sh"
+# shellcheck disable=SC2016
+sudon_at="$(grep -nF -- 'runuser -u "$a" -- sudo -n true' "$ROOT/commands/users-close-root.sh" | head -n1 | cut -d: -f1)"
+pert_at="$(grep -nF -- 'sshd -T -C "user=' "$ROOT/commands/users-close-root.sh" | head -n1 | cut -d: -f1)"
+# shellcheck disable=SC2016
+dropin_at="$(grep -nF 'install -m 0644 "$TMP" "$DROPIN"' "$ROOT/commands/users-close-root.sh" | head -n1 | cut -d: -f1)"
+check "users close-root: sudo -n proof precedes the drop-in install" \
+  0 "" test "${sudon_at:-999999}" -lt "${dropin_at:-0}"
+check "users close-root: per-user sshd resolve precedes the drop-in install" \
+  0 "" test "${pert_at:-999999}" -lt "${dropin_at:-0}"
+# runuser may be absent off-Debian; the gate must skip that one proof loudly,
+# never die on a missing prover. Grep the graceful branch.
+check "users close-root: a missing runuser skips the sudo proof, loudly" 0 "" \
+  grep -q "runuser not found" "$ROOT/commands/users-close-root.sh"
 # Marker-gate refusals through the sourced lib against fixture markers: the CLI
 # path sits behind the root check, so the gate is a pure lib function on
 # purpose (repo precedent: parse_users_file, assert_runner_repo). The command
