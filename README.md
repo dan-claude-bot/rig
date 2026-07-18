@@ -17,6 +17,26 @@ takes arguments, does its work, and stores no credential, ever.
 curl -fsSL https://raw.githubusercontent.com/heavy-duty/rig/main/install.sh | bash
 ```
 
+That installs the **latest release**: the installer resolves the newest tag
+by following GitHub's `releases/latest` redirect (no API, no token) and
+downloads that tag's source tarball — which, for a pure-bash tree, *is* the
+package. Three channels from the same script; `RIG_REF` picks:
+
+```sh
+curl -fsSL .../install.sh | bash                   # the latest release
+curl -fsSL .../install.sh | RIG_REF=0.1.0 bash     # pinned to a release
+curl -fsSL .../install.sh | RIG_REF=main bash      # the development tree
+```
+
+A tag outranks a branch of the same name (the pin must win); anything that
+is not a tag falls back to `refs/heads/<ref>`.
+
+> **Transitional, until 0.1.0 is cut** (right after rig#32 lands): rig has
+> no GitHub release yet, so the default channel has nothing to resolve —
+> it **fails loudly** naming `RIG_REF=main` as the way to install today,
+> and never silently falls back to main. Once 0.1.0 exists, the plain
+> `curl | bash` above is the normal path.
+
 The layout, under the install root (`~/.local/share/rig`):
 
 ```
@@ -30,8 +50,8 @@ $BINDIR/rig -> current/bin/rig    the PATH entry, riding the chain
 **Re-running is a safe converge.** Installing a version you already have
 changes nothing and says so (`RIG_REINSTALL=1` replaces that version's
 tree); a **new** version installs side by side and becomes the default — so
-"re-run any time to upgrade" stays true, and every version you had stays
-installed as the way back:
+"re-run any time to upgrade" stays true, and now means *upgrade to the
+latest release*; every version you had stays installed as the way back:
 
 ```sh
 rig versions        # what is installed, which is current, which is running
@@ -337,13 +357,14 @@ command is exactly who that refusal catches (it names the new spelling).
 
 > **The rig install in the seed is unpinned — same honesty as the box note
 > above.** The seed preinstalls rig via its curl installer, which resolves
-> `RIG_REPO`/`RIG_REF` (default `heavy-duty/rig@main`, branches only — rig
-> cuts no tags yet). That inverts the install edge on this page: rig installs
-> box on host-class machines, and box guests now install rig — both tracking
-> a moving `main` until a release flow exists (rig#32). `RIG_REPO`/`RIG_REF`
-> are the pin points the day there is something to pin to, or point them at a
-> frozen branch of your own fork. The seed side of this edge is box#81's to
-> document.
+> `RIG_REPO`/`RIG_REF` — and since rig#32 the installer defaults to the
+> **latest release**, with `RIG_REF=<tag>` the pin and `RIG_REF=main` the
+> dev channel. Until rig cuts 0.1.0 there is no release to resolve, so the
+> seed must set `RIG_REF=main` explicitly (the default channel fails loudly
+> rather than falling back). That inverts the install edge on this page:
+> rig installs box on host-class machines, and box guests now install rig.
+> `RIG_REPO`/`RIG_REF` are the pin points, or point them at a frozen branch
+> of your own fork. The seed side of this edge is box#81's to document.
 
 ### The identity model
 

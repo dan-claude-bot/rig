@@ -95,8 +95,10 @@ commands:
 
 install/upgrade:
   curl -fsSL https://raw.githubusercontent.com/heavy-duty/rig/main/install.sh | bash
-      Re-run any time: an installed version converges (no-op), a new one
-      installs side by side at <root>/versions/<v> and becomes the default.
+      Installs the latest RELEASE (RIG_REF=<tag> pins one, RIG_REF=main
+      tracks the development tree). Re-run any time: an installed version
+      converges (no-op), a new one installs side by side at
+      <root>/versions/<v> and becomes the default.
 EOF
 }
 

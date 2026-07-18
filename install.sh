@@ -3,6 +3,15 @@ set -euo pipefail
 
 # rig installer — intended for: curl -fsSL .../install.sh | bash
 #
+# Three channels from this one script (heavy-duty/rig#32; box#83's design):
+#
+#   RIG_REF unset      the latest RELEASE — the tag is resolved from the
+#                      releases/latest redirect, the download is that tag's
+#                      source tarball (which IS the package)
+#   RIG_REF=<tag>      that release, pinned (a tag outranks a branch of the
+#                      same name)
+#   RIG_REF=<branch>   the development tree, e.g. RIG_REF=main
+#
 # Downloads the rig repo tarball and installs it into the VERSIONED layout
 # under $DEST (box#79's layout, ported — heavy-duty/rig#35):
 #
@@ -25,7 +34,7 @@ set -euo pipefail
 # review.
 
 REPO="${RIG_REPO:-heavy-duty/rig}"
-REF="${RIG_REF:-main}"
+REF="${RIG_REF:-}"   # empty = the latest release, resolved below
 DEST="${RIG_HOME:-$HOME/.local/share/rig}"
 if [ "$(id -u)" -eq 0 ]; then
   BINDIR="${RIG_BIN:-/usr/local/bin}"
@@ -67,6 +76,32 @@ warn_bootstrapped() {   # $1 = what is about to happen
   warn "$1 changes what a re-converge (rig bootstrap, users apply) would do — proceeding."
 }
 
+# --- the release channels (#32; box#83's design, near-verbatim) --------------
+# resolve_latest_tag <owner/repo> — print the latest RELEASE tag, resolved by
+# following the releases/latest redirect and reading the Location header
+# (curl's %{redirect_url} is that header, parsed): no API, no token, no
+# rate-limit pain. A repo with no releases redirects to /releases — not to
+# /releases/tag/<tag> — so this returns 1 there instead of inventing a ref,
+# and the CALLER owns the loud story. test/release.sh extracts this function
+# (awk, the valid_version idiom) and drives it against a stubbed curl.
+resolve_latest_tag() {
+  local loc
+  loc="$(curl -fsSI -o /dev/null -w '%{redirect_url}' "https://github.com/$1/releases/latest")" || return 1
+  case "$loc" in
+    */releases/tag/?*) printf '%s\n' "${loc##*/releases/tag/}" ;;
+    *) return 1 ;;
+  esac
+}
+
+# ref_candidate_urls <owner/repo> <ref> — the download candidates for an
+# explicit RIG_REF, in order: refs/tags first, so a tag always outranks a
+# branch that happens to share its name (the pin must win), refs/heads as
+# the fallback that keeps RIG_REF=main the dev channel.
+ref_candidate_urls() {
+  printf 'https://github.com/%s/archive/refs/tags/%s.tar.gz\n' "$1" "$2"
+  printf 'https://github.com/%s/archive/refs/heads/%s.tar.gz\n' "$1" "$2"
+}
+
 # --- prerequisites -----------------------------------------------------------
 # curl only when something must be downloaded — a local RIG_INSTALL_SOURCE
 # needs none, which is what lets test/cli.sh drive REAL installs offline.
@@ -78,7 +113,7 @@ command -v tar  >/dev/null 2>&1 || die "tar is required but was not found."
 if [ -n "${RIG_INSTALL_SOURCE:-}" ]; then
   SRCDESC="local source $RIG_INSTALL_SOURCE"
 else
-  SRCDESC="$REPO@$REF"
+  SRCDESC="$REPO@${REF:-latest-release}"   # refined once the tag resolves
 fi
 
 # Flip $DEST/current to versions/<v> atomically: build the new link beside it,
@@ -138,12 +173,36 @@ if [ -n "${RIG_INSTALL_SOURCE:-}" ]; then
     die "RIG_INSTALL_SOURCE is set but is neither a directory nor a tarball: $SRC"
   fi
 else
+  # Which ref? RIG_REF unset means the latest release — and while no release
+  # exists (rig cuts its first, 0.1.0, right after #32 lands), that channel
+  # must FAIL, loudly and with the way out, never silently fall back to
+  # main: "I installed the latest release" must not quietly mean "I
+  # installed whatever main was that second".
+  if [ -z "$REF" ]; then
+    log "resolving the latest release of $REPO"
+    if ! REF="$(resolve_latest_tag "$REPO")"; then
+      warn "could not resolve the latest release of $REPO — either no release exists yet, or GitHub was unreachable."
+      warn "(rig has no release until 0.1.0 is cut — rig#32. Until then, install the development tree explicitly.)"
+      die "set RIG_REF: e.g.  curl -fsSL https://raw.githubusercontent.com/$REPO/main/install.sh | RIG_REF=main bash"
+    fi
+    log "latest release: $REF"
+    urls=("https://github.com/$REPO/archive/refs/tags/$REF.tar.gz")
+  else
+    mapfile -t urls < <(ref_candidate_urls "$REPO" "$REF")
+  fi
+  SRCDESC="$REPO@$REF"
   INSTALLED_FROM="$REPO@$REF"
-  URL="https://github.com/$REPO/archive/refs/heads/$REF.tar.gz"
   log "installing rig ($REPO@$REF)"
-  log "downloading $URL"
-  curl -fsSL "$URL" -o "$TMPDIR/rig.tar.gz" \
-    || die "failed to download $URL"
+  got=""
+  for URL in "${urls[@]}"; do
+    log "downloading $URL"
+    if curl -fsSL "$URL" -o "$TMPDIR/rig.tar.gz"; then
+      got="$URL"
+      break
+    fi
+  done
+  [ -n "$got" ] \
+    || die "failed to download $REPO@$REF — not a tag and not a branch (tried refs/tags then refs/heads)"
 
   log "extracting archive"
   tar -xzf "$TMPDIR/rig.tar.gz" -C "$TMPDIR" \
