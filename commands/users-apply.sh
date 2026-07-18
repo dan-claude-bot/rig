@@ -35,8 +35,10 @@ keys; the roles must be identical on every line of one user.
 roles:
   admin   group rig-admin — full NOPASSWD sudo
   rig     group rig       — NOPASSWD sudo for /usr/local/bin/rig only
-  box     group incus     — Incus restricted tier, no sudo (box's setup-host
-                            owns the Incus install; rig only asserts it)
+  box     the box restricted tier, no sudo. On a host=yes box rig delegates
+          the whole grant to 'box grant <user>' (group, project, hardened
+          boxnet) and a dropped user gets a bare 'box revoke' — box owns
+          Incus, rig only asserts it is there.
 
 All passwords stay locked, always — the SSH key at the door is the
 authentication, and NOPASSWD sudo does not weaken it. Convergent: membership
@@ -139,11 +141,42 @@ if getent group incus >/dev/null; then INCUS_OK=1; fi
 if [ "$NEED_INCUS" -eq 1 ] && [ "$INCUS_OK" -eq 0 ]; then
   case "$(read_role_marker "${RIG_ROLE_MARKER:-/etc/rig/role}")" in
     *host=yes*)
-      die "a user carries role box and this box hosts VMs (host=yes) but group incus is absent — install the box CLI and run 'box setup-host' first; rig never installs Incus" ;;
+      die "a user carries role box and this box hosts VMs (host=yes) but group incus is absent — install the box CLI and run 'box setup-host' first (re-running 'rig bootstrap' does both); rig never installs Incus" ;;
     *host=no*)
       warn "box role skipped for ${BOX_USERS[*]}: this box does not host VMs (host=no); everything else converges" ;;
     *)
       warn "box role skipped for ${BOX_USERS[*]}: the role marker names no host= trait — re-run rig bootstrap so this box knows whether it hosts VMs" ;;
+  esac
+fi
+
+# The box role is MORE than the incus group. box 0.6.0's restricted tier
+# (box#75) is a per-user CONVERGENCE: box grant puts the user in the group AND
+# narrows their incus-user project onto the hardened boxnet
+# (restricted.networks.access=boxnet and ONLY boxnet), allows snapshots, and
+# installs the box-net placement profile into their project. A bare group add —
+# what this command did before — leaves incus-user's auto-created private
+# bridge (a stock NAT bridge: no ACL, no DNS isolation, none of box's
+# contract) one --network flag away from any box the operator mints. That
+# undercuts the very contract bootstrap's "box owns Incus" delegation exists
+# to uphold: the maintainer's whole point is that rig on a host-class machine
+# wraps the devserver up END TO END, and an operator whose tier is only half
+# granted is not wrapped up. So on a host=yes box rig DELEGATES the tier to
+# `box grant` (idempotent convergence by design) and only asserts the
+# preconditions — the same law as bootstrap's box install: rig never touches
+# Incus itself.
+#
+# The gate is host=yes AND the box CLI resolving: host=no boxes already
+# skipped the role above, and a host=yes box without the box CLI is a broken
+# VM host exactly like the absent-group case — refuse and name the repair
+# (bootstrap installs box and runs its setup-host), never quietly fall back
+# to the bare group add the delegation exists to replace.
+BOX_DELEGATE=0
+if [ "$NEED_INCUS" -eq 1 ] && [ "$INCUS_OK" -eq 1 ]; then
+  case "$(read_role_marker "${RIG_ROLE_MARKER:-/etc/rig/role}")" in
+    *host=yes*)
+      command -v box >/dev/null 2>&1 \
+        || die "a user carries role box and this box hosts VMs (host=yes) but the box CLI is not installed — re-run 'rig bootstrap' (host=yes installs box and runs its setup-host); rig never installs Incus"
+      BOX_DELEGATE=1 ;;
   esac
 fi
 
@@ -176,7 +209,23 @@ for u in "${USERS[@]}"; do
   for g in rig-admin rig incus; do
     case " $want " in
       *" $g "*)
-        if ! in_group "$u" "$g"; then
+        # Under delegation the incus ADD is box grant's alone — a deliberate
+        # division so the two tools cannot fight. box grant performs its own
+        # usermod -aG incus and, when a grant IT started fails, verifiably
+        # backs that membership out: a half-granted user must not hold live
+        # socket access onto an un-narrowed project. If rig added the group
+        # first, box grant would read the user as a pre-existing member and
+        # KEEP the group on failure — rig's eager add would have disarmed
+        # box's own safety. So rig's exact-membership logic still DECLARES
+        # incus wanted (the removal arm below must never strip a granted
+        # membership), but the add is left to the grant that runs after this
+        # loop. The REMOVE stays rig's: the moment the box role is gone,
+        # want lacks incus and rig strips it — and box revoke's own
+        # gpasswd -d is guarded on membership, so whichever side acts first,
+        # the other is a clean no-op.
+        if [ "$g" = "incus" ] && [ "$BOX_DELEGATE" -eq 1 ]; then
+          :
+        elif ! in_group "$u" "$g"; then
           usermod -aG "$g" "$u"
           log "added $u to $g"
           CHANGED=1
@@ -213,6 +262,31 @@ for u in "${USERS[@]}"; do
   chown "$u:$ugroup" "$home/.ssh/authorized_keys"
 done
 
+# --- box tier (host=yes): delegate to box grant ------------------------------
+# AFTER the group convergence on purpose: the loop above settled every
+# rig-managed membership except the delegated incus add, so box grant is the
+# only writer of that group from here — its usermod and its verified back-out
+# both act on state no rig line has pre-empted. Failure is a die, not a warn:
+# an operator this apply is provisioning who did not actually receive the tier
+# is a real refusal — reporting "converged" over it would be the bare-group-add
+# bug wearing a success message. box grant's own back-out has already closed
+# the group by the time we die, so the refused operator holds no socket
+# access; everything converged before the failure stays converged, and a
+# re-run picks up where this one stopped (grant is idempotent convergence).
+#
+# CHANGED is deliberately not touched here: box grant narrates its own
+# convergence line by line ("already in 'incus'", "project ... already
+# exists"), and rig cannot cheaply tell a no-op grant from a first one. The
+# closing "already converged; no changes" therefore speaks only for rig's own
+# moves — box's are printed right above it.
+if [ "$BOX_DELEGATE" -eq 1 ]; then
+  for u in "${BOX_USERS[@]}"; do
+    log "box role for $u: delegating the restricted tier to box (box owns Incus, not rig)"
+    box grant "$u" \
+      || die "'box grant $u' failed — $u was NOT granted the box tier (box's own back-out closes the group on a failed grant, so they hold no socket access). Repair: check 'journalctl -u incus-user', make sure the host stack is built ('box setup-host', or re-run rig bootstrap), then re-run rig users apply — everything already converged stays converged."
+  done
+fi
+
 # --- previously managed users no longer in the file --------------------------
 # The ledger is what lets a REMOVED user be found at all — so it must REMEMBER
 # them: two-field lines, 'name active' / 'name revoked' (a legacy bare name
@@ -236,9 +310,32 @@ if [ -r "$LEDGER" ]; then
     if [ -f "$prevhome/.ssh/authorized_keys" ]; then
       mv "$prevhome/.ssh/authorized_keys" "$prevhome/.ssh/authorized_keys.revoked-by-rig"
     fi
+    # Whether they held the tier is read BEFORE the strip: the ledger stores
+    # names, not roles, and after the strip the membership that would have
+    # said so is gone. This is also what keeps a re-run quiet — an
+    # already-revoked user is no longer in incus, so box revoke is not
+    # re-invoked to re-announce a tier that is already gone.
+    had_incus=0
+    if in_group "$prev" incus; then had_incus=1; fi
     for g in rig-admin rig incus; do
       if in_group "$prev" "$g"; then gpasswd -d "$prev" "$g" >/dev/null; fi
     done
+    # box revoke, BARE — never with the purge flag: rig revokes access, it
+    # does not destroy state ('home kept, nothing deleted' is this section's
+    # own contract), and bare box revoke matches it exactly — the project and
+    # its boxes stay restorable, 'box grant' brings everything back. The
+    # group overlap cannot fight: rig stripped incus just above, so box
+    # revoke's own gpasswd -d finds nothing to do and says so. What box
+    # revoke ADDS is the tier's side of the story — the live-session warning
+    # (group membership is read at login; a leftover tmux keeps the socket)
+    # and the kept-project notice. A failure here is a WARN, not a die: the
+    # access-closing move — the group strip — already happened by rig's own
+    # hand, so nothing is left open; dying would strand the rest of the apply
+    # (the ledger write below records the revocation) over messaging.
+    if [ "$had_incus" -eq 1 ] && command -v box >/dev/null 2>&1; then
+      box revoke "$prev" \
+        || warn "'box revoke $prev' did not complete — their incus group is already stripped (rig's own strip above closed the socket at next login), but box could not report the tier's state; run 'box revoke $prev' by hand to check it"
+    fi
     REVOKED+=("$prev")
     # Warn on the TRANSITION only: an already-revoked user is converged above
     # (quietly — repairing drift, not announcing news) so a second identical

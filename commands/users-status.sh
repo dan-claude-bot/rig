@@ -85,4 +85,13 @@ while read -r u lstate _; do
   else
     log "$u  roles=$roles  keys=$keys  $lstate"
   fi
+  case ",$roles," in *,box,*) SAW_BOX=1 ;; esac
 done < "$LEDGER"
+
+# The box role's SUBSTANCE — the user's incus-user project, the boxnet
+# narrowing — is box's domain, not this reader's: probing the daemon here
+# would make a fast account read hang on Incus's mood, and box already knows
+# how to tell its own story. A pointer, nothing more.
+if [ "${SAW_BOX:-0}" -eq 1 ] && command -v box >/dev/null 2>&1; then
+  log "box-role tier state lives with box: 'box grant <user>' re-converges it; 'incus project show user-<uid>' inspects it"
+fi
