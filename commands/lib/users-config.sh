@@ -176,3 +176,46 @@ deny_verdict() {
   done
   return 0
 }
+
+# group_deny_verdict <space-separated groups> <denygroups token...>
+#
+# deny_verdict's sibling for sshd's DenyGroups, judged against the
+# candidate's ACTUAL group membership (id -Gn), same fail-closed rule:
+# empty output = every token is provably irrelevant — literal and naming
+# none of the candidate's groups. A literal token naming a group they are
+# in flags, and so does any pattern or host-qualified token, because a
+# token this side of sshd cannot prove irrelevant may be the one that
+# denies. Pure text→text, sourced by the harness.
+group_deny_verdict() {
+  local groups="$1" tok g; shift
+  for tok in "$@"; do
+    case "$tok" in
+      *[*?]*) printf "sshd DenyGroups has pattern entry '%s' — cannot prove it misses this user's groups; make it literal or remove it, then re-run" "$tok"; return 0 ;;
+      *@*) printf "sshd DenyGroups has host-qualified entry '%s' — whether it bites depends on the client address, which no local check can prove; make it literal or remove it, then re-run" "$tok"; return 0 ;;
+      *) for g in $groups; do
+           if [ "$tok" = "$g" ]; then
+             printf "sshd DenyGroups names '%s' — a group this user is in" "$g"; return 0
+           fi
+         done ;;
+    esac
+  done
+  return 0
+}
+
+# group_allow_verdict <space-separated groups> <allowgroups token...>
+#
+# AllowGroups' direction: when the directive is set, sshd admits only
+# members of a matching group, so the proof must be a LITERAL token
+# naming a group the candidate is in. A pattern that would in fact admit
+# them proves nothing here (same stance as AllowUsers: over-refusing is
+# the safe error), so no literal hit → flag. Pure text→text.
+group_allow_verdict() {
+  local groups="$1" tok g; shift
+  for tok in "$@"; do
+    for g in $groups; do
+      [ "$tok" = "$g" ] && return 0
+    done
+  done
+  printf "sshd AllowGroups is set and no entry literally names a group this user is in — add their group (or them to a named group), then re-run"
+  return 0
+}

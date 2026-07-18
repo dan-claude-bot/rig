@@ -588,6 +588,34 @@ check "users close-root: deny_verdict fails closed on USER@HOST forms" \
 deny_pass() { [ -z "$(deny_v "$@")" ]; } # empty verdict IS the pass
 check "users close-root: deny_verdict passes provably-irrelevant literals" \
   0 "" deny_pass admin root git backup
+# The group directives, same discipline, judged against the candidate's ACTUAL
+# membership (the review's regressions: an unmet AllowGroups, a DenyGroups
+# naming a group they hold). First arg is the id -Gn word list.
+groups_v() { # groups_v <fn> <groups> <token...>
+  bash -c 'set -euo pipefail
+    . "$1/commands/lib/users-config.sh"; shift
+    "$@"' _ "$ROOT" "$@"
+}
+groups_pass() { [ -z "$(groups_v "$@")" ]; }
+check "users close-root: DenyGroups naming a held group flags" \
+  0 "a group this user is in" groups_v group_deny_verdict "dan sudo rig-admin" backup sudo
+check "users close-root: DenyGroups fails closed on patterns" \
+  0 "pattern entry 'rig-*'" groups_v group_deny_verdict "dan rig-admin" "rig-*"
+check "users close-root: DenyGroups passes provably-irrelevant literals" \
+  0 "" groups_pass group_deny_verdict "dan rig-admin" docker backup
+check "users close-root: an unmet AllowGroups flags (fail closed)" \
+  0 "no entry literally names a group this user is in" groups_v group_allow_verdict "dan rig-admin" sudo
+check "users close-root: AllowGroups pattern is no proof (fail closed)" \
+  0 "no entry literally names" groups_v group_allow_verdict "dan rig-admin" "rig-*"
+check "users close-root: a literally-named held group passes AllowGroups" \
+  0 "" groups_pass group_allow_verdict "dan rig-admin" sudo rig-admin
+# ...and the shipped gate consults both, against real membership.
+# shellcheck disable=SC2016
+check "users close-root: the gate consults the group verdicts" 0 "" \
+  grep -qE '^[[:space:]]*denyg_reason="\$\(group_deny_verdict ' "$ROOT/commands/users-close-root.sh"
+# shellcheck disable=SC2016
+check "users close-root: the gate resolves real membership (id -Gn)" 0 "" \
+  grep -qF -- 'id -Gn -- "$a"' "$ROOT/commands/users-close-root.sh"
 # ...and the shipped gate must actually consult it (call, not comment).
 # shellcheck disable=SC2016
 check "users close-root: the gate consults deny_verdict" 0 "" \

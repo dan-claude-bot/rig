@@ -34,9 +34,11 @@ not expired), then two reachability proofs (#17) — `sudo -n true` under
 runuser must answer (NOPASSWD sudo is effective, not merely written), and
 `sshd -T -C user=...` must resolve a per-user effective config that accepts
 the login (pubkeyauthentication yes, no DenyUsers hit — where any pattern or
-host-qualified Deny entry counts as a hit, fail closed — and AllowUsers, if
-set, names them literally). The refusal names which check failed, per
-candidate. Run rig users apply first; never close the only door.
+host-qualified Deny entry counts as a hit, fail closed — AllowUsers, if set,
+names them literally, and the same pair of rules for DenyGroups/AllowGroups
+judged against the admin's actual groups from id -Gn). The refusal names
+which check failed, per candidate. Run rig users apply first; never close
+the only door.
 
 Before running, verify your admin login in a SEPARATE session — `ssh
 <admin>@<box>` while this one stays open. Root SSH is the door being welded
@@ -179,6 +181,24 @@ while IFS= read -r a; do
       # shellcheck disable=SC2086  # word-splitting the tokens is the point
       deny_reason="$(deny_verdict "$a" ${deny_line#* })"
       [ -n "$deny_reason" ] && flag "$deny_reason"
+    fi
+    # The group directives close the same door through the other hinge: sshd
+    # enforces Allow/DenyGroups against the candidate's ACTUAL membership, so
+    # the gate resolves id -Gn and judges both with the same fail-closed
+    # discipline as the *Users pair. id failing yields no groups, which makes
+    # a set AllowGroups flag — the safe direction.
+    a_groups="$(id -Gn -- "$a" 2>/dev/null)"
+    denyg_line="$(printf '%s\n' "$perT" | grep -i '^denygroups ' | head -n1)"
+    if [ -n "$denyg_line" ]; then
+      # shellcheck disable=SC2086  # word-splitting the tokens is the point
+      denyg_reason="$(group_deny_verdict "$a_groups" ${denyg_line#* })"
+      [ -n "$denyg_reason" ] && flag "$denyg_reason"
+    fi
+    allowg_line="$(printf '%s\n' "$perT" | grep -i '^allowgroups ' | head -n1)"
+    if [ -n "$allowg_line" ]; then
+      # shellcheck disable=SC2086  # word-splitting the tokens is the point
+      allowg_reason="$(group_allow_verdict "$a_groups" ${allowg_line#* })"
+      [ -n "$allowg_reason" ] && flag "$allowg_reason"
     fi
     if printf '%s\n' "$perT" | grep -qi '^allowusers ' \
         && ! printf '%s\n' "$perT" | grep -i '^allowusers ' | tr ' ' '\n' | grep -qx "$a"; then

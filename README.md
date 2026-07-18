@@ -631,8 +631,10 @@ written, and `sshd -T -C user=<admin>` must resolve a per-user effective
 config that accepts the login (`pubkeyauthentication yes`, no `DenyUsers`
 hit — where any pattern or `USER@HOST` entry counts as a hit, fail closed,
 since `DenyUsers dan*` really denies admin `dan` and rig will not re-implement
-sshd's pattern engine to prove a miss — and `AllowUsers`, if set, names them
-literally), so a `Match` block elsewhere cannot quietly exclude the admin
+sshd's pattern engine to prove a miss — `AllowUsers`, if set, names them
+literally, and the same fail-closed pair for `DenyGroups`/`AllowGroups`
+judged against the admin's actual groups), so a `Match` block elsewhere
+cannot quietly exclude the admin
 while every file looks right. The refusal names which check failed, per
 candidate. What no local check can prove: that you *hold* the private key,
 and how a `Match Address` rule treats your real client address (the probe
