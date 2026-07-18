@@ -7,6 +7,10 @@
 # already-filled bindings file is left untouched.
 set -euo pipefail
 
+HERE="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")" && pwd)"
+# shellcheck source=SCRIPTDIR/lib/users-config.sh
+. "$HERE/lib/users-config.sh"   # read_role_marker — the traits line bootstrap wrote
+
 log()  { printf 'rig-coolify-backup: %s\n' "$*"; }
 warn() { printf 'rig-coolify-backup: WARNING: %s\n' "$*" >&2; }
 die()  { printf 'rig-coolify-backup: ERROR: %s\n' "$1" >&2; exit "${2:-1}"; }
@@ -66,6 +70,18 @@ done
 [ -n "$PG_CONTAINER" ] || die "--pg-container must not be empty" 2
 [ -n "$PG_USER" ]      || die "--pg-user must not be empty" 2
 [ -n "$PG_DB" ]        || die "--pg-db must not be empty" 2
+
+# --- role-marker sanity (issue #25) ------------------------------------------
+# Same advisory check as `rig coolify install`, same reasoning: this command
+# dumps the CONTROL PLANE's database, so a marker naming any other role almost
+# certainly means the wrong SSH session — but the marker is advisory and may be
+# absent, so WARN, never die, and warn before the root check so the harness can
+# prove it non-root (RIG_ROLE_MARKER points it at fixtures, repo precedent).
+MARKER_LINE="$(read_role_marker "${RIG_ROLE_MARKER:-/etc/rig/role}")"
+case "$MARKER_LINE" in
+  ""|"role=control-plane "*) ;;
+  *) warn "this box's role marker says '${MARKER_LINE}' — not a control-plane box. The nightly dump targets Coolify's own database, which lives on role control-plane; if this is the wrong box, stop here and re-check your SSH session." ;;
+esac
 
 # --- guards ----------------------------------------------------------------
 [ "$(id -u)" -eq 0 ] || die "must run as root"

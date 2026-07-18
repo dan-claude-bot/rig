@@ -200,6 +200,52 @@ else
   echo "skip: coolify backup non-root refusal (running as root)"
 fi
 
+# --- role-marker sanity: coolify verbs off the control plane (#25) -----------
+# Both coolify commands read /etc/rig/role and WARN — never die — when the
+# marker names a non-control-plane role: the likeliest story is the wrong SSH
+# session, but the marker is advisory and must not outrank the operator. The
+# warning fires BEFORE the root check (same testability rule as arg errors),
+# so a non-root run prints it and then hits the root refusal — provable here
+# with RIG_ROLE_MARKER pointed at fixtures (repo precedent: the close-root
+# marker gate). Counting fires proves silence too: a control-plane marker, an
+# absent marker, and a marker-less box must all stay quiet, because warning on
+# absence would nag every pre-marker box on every legitimate run.
+marker_warns() { # marker_warns <marker_path> <cmd...> — how many warnings fired
+  local marker="$1"; shift
+  env RIG_ROLE_MARKER="$marker" "$@" 2>&1 | grep -c "not a control-plane box" || true
+}
+MARKER_FIX="$(mktemp -d)"
+printf 'role=workload class=server host=no join=authkey\n'      > "$MARKER_FIX/workload"
+printf 'role=control-plane class=server host=no join=authkey\n' > "$MARKER_FIX/control-plane"
+if [ "$(id -u)" -ne 0 ]; then
+  check "coolify: warns on a non-control-plane marker" 0 "1" \
+    marker_warns "$MARKER_FIX/workload" "$ROOT/commands/coolify-install.sh" --version 4.1.2
+  check "coolify: control-plane marker stays silent" 0 "0" \
+    marker_warns "$MARKER_FIX/control-plane" "$ROOT/commands/coolify-install.sh" --version 4.1.2
+  check "coolify: absent marker stays silent (advisory, not a gate)" 0 "0" \
+    marker_warns "$MARKER_FIX/absent" "$ROOT/commands/coolify-install.sh" --version 4.1.2
+  # The warning must stay a warning: the run proceeds past it and stops at the
+  # root check (exit 1), never turned into a marker refusal.
+  check "coolify: the marker warns but never refuses" 1 "must run as root" \
+    env RIG_ROLE_MARKER="$MARKER_FIX/workload" "$ROOT/commands/coolify-install.sh" --version 4.1.2
+  check "coolify backup: warns on a non-control-plane marker" 0 "1" \
+    marker_warns "$MARKER_FIX/workload" "$ROOT/commands/coolify-backup-install.sh"
+  check "coolify backup: control-plane marker stays silent" 0 "0" \
+    marker_warns "$MARKER_FIX/control-plane" "$ROOT/commands/coolify-backup-install.sh"
+  check "coolify backup: the marker warns but never refuses" 1 "must run as root" \
+    env RIG_ROLE_MARKER="$MARKER_FIX/workload" "$ROOT/commands/coolify-backup-install.sh"
+else
+  echo "skip: coolify role-marker warning checks (running as root)"
+fi
+rm -rf "$MARKER_FIX"
+# Root runs skip the live checks above, so also pin the warning's presence in
+# both shipped scripts — a deleted advisory cannot ship green (repo precedent:
+# the staging/runner tag greps).
+check "coolify: marker warning present in the shipped script" 0 "" \
+  grep -q "not a control-plane box" "$ROOT/commands/coolify-install.sh"
+check "coolify backup: marker warning present in the shipped script" 0 "" \
+  grep -q "not a control-plane box" "$ROOT/commands/coolify-backup-install.sh"
+
 # --- rig db (ad-hoc dump/restore) -------------------------------------------
 check "bare db shows usage, exit 2"       2 "usage:" "$ROOT/bin/rig" db
 check "db --help exits 0"                 0 "usage:" "$ROOT/bin/rig" db --help
