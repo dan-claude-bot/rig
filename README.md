@@ -243,6 +243,15 @@ On `class=server` it stays open — key-only, as bootstrap left it — because
 root there is the **automation** identity the control plane (Coolify) SSHes
 in as. It is a machine door, never a human one.
 
+**Where this diverges from #17's original table:** that table let the
+`runner` role close root ("no Coolify involved"). The class model supersedes
+the per-role call: runner is `class=server` — an automation identity, not a
+person's box — and on every server-class machine root SSH is the management
+plane rig itself converges through, so `close-root` refuses there
+deliberately, runner included. A CI box you mean to administer like a human
+machine is `--class human` at bootstrap, not an exception carved out of the
+gate.
+
 **The detection side benefit:** once humans never use root, any root login
 that is not the control plane is anomalous *by definition* — a cheap,
 high-signal alert that a shared root identity makes impossible to write.
@@ -554,6 +563,20 @@ refused as a username: this file names operators; root's fate is class policy.
 `--file -` reads stdin. A bad file exits 2 with **every** error listed at
 once, before anything changes — one fix cycle, not one round-trip per line.
 
+**`@root` — seed keys from the door you came in through (#17).** A key field
+of exactly `@root` means "this user's `authorized_keys` becomes root's
+CURRENT `/root/.ssh/authorized_keys`". The point is lockout-avoidance: you
+provably hold a root private key — you SSHed in with it to run apply at all —
+so the seeded key is the one key rig can *know* opens for you; any pasted
+literal can be a key you do not hold. `@root` mixes with literal lines
+(seeded keys land first, literals append after), re-runs re-seed from root's
+then-current file — convergent to it, so a seeded key you hand-remove from
+the admin returns until you switch the line to literal keys — and apply dies
+if root has no `authorized_keys` to seed. Root's key lines are copied
+verbatim, options included: a `from=`/`command=` restriction follows the key,
+and on a Coolify-managed box root's file also carries *Coolify's* key — on
+`class=server`, prefer literal keys.
+
 **Public tool, private state, here too.** The users file lives in *your*
 private infra repo and is passed per invocation — rig never persists it. It
 holds nothing secret anyway: usernames, roles, and *public* keys.
@@ -636,9 +659,22 @@ automation identity and closing it severs fleet management. Then at least one
 non-empty `authorized_keys` alone proves a file, not a door: the gate checks
 the `StrictModes` shape (home, `.ssh`, and `authorized_keys` owned by the
 user and not group/world-writable), a real login shell, and an unexpired
-account, and its refusal names which check failed, per candidate. It proves
-the door *should* open, not that it does — which is why the separate-session
-verification below stays load-bearing. Never close the only door.
+account — and then two **reachability** proofs (#17): `sudo -n true` under
+`runuser` must answer, so NOPASSWD sudo is effective rather than merely
+written, and `sshd -T -C user=<admin>` must resolve a per-user effective
+config that accepts the login (`pubkeyauthentication yes`, no `DenyUsers`
+hit — where any pattern or `USER@HOST` entry counts as a hit, fail closed,
+since `DenyUsers dan*` really denies admin `dan` and rig will not re-implement
+sshd's pattern engine to prove a miss — `AllowUsers`, if set, names them
+literally, and the same fail-closed pair for `DenyGroups`/`AllowGroups`
+judged against the admin's actual groups), so a `Match` block elsewhere
+cannot quietly exclude the admin
+while every file looks right. The refusal names which check failed, per
+candidate. What no local check can prove: that you *hold* the private key,
+and how a `Match Address` rule treats your real client address (the probe
+resolves against a synthetic `addr=127.0.0.1`) — which is why the
+separate-session verification below stays load-bearing. Never close the only
+door.
 
 Before running it, prove the admin door in a **separate** session — `ssh
 <admin>@<box>` while this one stays open. Root SSH is being welded shut; the

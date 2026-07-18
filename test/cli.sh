@@ -515,10 +515,40 @@ check "users parser: one run reports the root line"  0 "" grep -q "not a rig-man
 check "users parser: same run reports the bad role"  0 "" grep -q "unknown role" "$MULTI_ERRS"
 rm -f "$MULTI_ERRS"
 
+# --- '@root': seed the admin's keys from root's own authorized_keys (#17) ----
+# The operator provably holds a root private key — they SSHed in with it to
+# run apply at all — so seeding root's CURRENT authorized_keys is the one key
+# source that cannot lock them out. The parser owns only the token's SHAPE
+# (reading /root/.ssh needs root and is apply's business), so the shape is
+# proven here: the exact token parses, trailing material is refused, literal
+# key lines mix (append semantics), a second '@root' is a duplicate, and root
+# cannot seed itself.
+printf '%s\n' 'dan admin @root' > "$FIX_BAD"
+check "users parser: '@root' is a valid key field" 0 "dan|admin|@root" parse "$FIX_BAD"
+printf '%s\n' 'dan admin @root ssh-ed25519 AAAA x' > "$FIX_BAD"
+check "users parser: '@root' takes no trailing material" 1 "whole key field" parse "$FIX_BAD"
+printf '%s\n' 'dan admin @root' 'dan admin ssh-ed25519 AAAAC3lit dan@desk' > "$FIX_BAD"
+check "users parser: '@root' mixes with literal key lines" \
+  0 "dan|admin|ssh-ed25519 AAAAC3lit dan@desk" parse "$FIX_BAD"
+printf '%s\n' 'dan admin @root' 'dan admin @root' > "$FIX_BAD"
+check "users parser: a second '@root' line is a duplicate" 1 "duplicate key line" parse "$FIX_BAD"
+printf '%s\n' 'root admin @root' > "$FIX_BAD"
+check "users parser: root cannot seed from itself" 1 "not a rig-managed user" parse "$FIX_BAD"
+# The empty-seed refusal (root has no authorized_keys) sits behind the root
+# check — /root/.ssh is unreadable before it — so grep the die message, the
+# same way every root-only refusal in this harness is pinned.
+check "users apply: '@root' with a keyless root dies naming the repair" 0 "" \
+  grep -q "root has no authorized_keys" "$ROOT/commands/users-apply.sh"
+
 if [ "$(id -u)" -ne 0 ]; then
   # A VALID fixture proves the whole file-validation pass sits before the
   # root check — a parse failure here would exit 2, not 1.
   check "users apply: refuses non-root"  1 "must run as root" "$ROOT/commands/users-apply.sh" --file "$FIX_OK"
+  # An '@root' fixture reaching the root check proves the token is parse-pass
+  # validation, not a runtime surprise.
+  printf '%s\n' 'dan admin @root' > "$FIX_BAD"
+  check "users apply: '@root' fixture parses, refuses non-root" 1 "must run as root" \
+    "$ROOT/commands/users-apply.sh" --file "$FIX_BAD"
   check "users status: refuses non-root" 1 "must run as root" "$ROOT/commands/users-status.sh"
 else
   echo "skip: users non-root refusals (running as root)"
@@ -599,6 +629,87 @@ check "users close-root: no-op needs a daemon start newer than the config" 0 "" 
 # needs root + real accounts, so grep the load-bearing check's wording.
 check "users close-root: gate checks the StrictModes shape" 0 "" \
   grep -q "group/world-writable" "$ROOT/commands/users-close-root.sh"
+# The reachability proofs (#17): the shape checks prove the door SHOULD open;
+# these prove what can be proven from inside — NOPASSWD sudo actually answers
+# (`runuser ... sudo -n true`) and sshd's per-user EFFECTIVE config accepts
+# the login (`sshd -T -C user=...`). Both need root, real accounts, and a
+# live sshd, so grep the calls — and pin their ordering BEFORE the drop-in
+# install, because reachability proven after the door shut is no proof at
+# all. Match the calls, not the words (comments mention neither literal);
+# defaults fail closed.
+# The $a/$TMP/$DROPIN below are LITERALS we grep for in the script — single
+# quotes are the point, as in the db and box-install checks.
+# shellcheck disable=SC2016
+check "users close-root: gate proves NOPASSWD sudo answers" 0 "" \
+  grep -qF -- 'runuser -u "$a" -- sudo -n true' "$ROOT/commands/users-close-root.sh"
+check "users close-root: gate resolves sshd's per-user config" 0 "" \
+  grep -qF -- 'sshd -T -C "user=' "$ROOT/commands/users-close-root.sh"
+# shellcheck disable=SC2016
+sudon_at="$(grep -nF -- 'runuser -u "$a" -- sudo -n true' "$ROOT/commands/users-close-root.sh" | head -n1 | cut -d: -f1)"
+pert_at="$(grep -nF -- 'sshd -T -C "user=' "$ROOT/commands/users-close-root.sh" | head -n1 | cut -d: -f1)"
+# shellcheck disable=SC2016
+dropin_at="$(grep -nF 'install -m 0644 "$TMP" "$DROPIN"' "$ROOT/commands/users-close-root.sh" | head -n1 | cut -d: -f1)"
+check "users close-root: sudo -n proof precedes the drop-in install" \
+  0 "" test "${sudon_at:-999999}" -lt "${dropin_at:-0}"
+check "users close-root: per-user sshd resolve precedes the drop-in install" \
+  0 "" test "${pert_at:-999999}" -lt "${dropin_at:-0}"
+# runuser may be absent off-Debian; the gate must skip that one proof loudly,
+# never die on a missing prover. Grep the graceful branch.
+check "users close-root: a missing runuser skips the sudo proof, loudly" 0 "" \
+  grep -q "runuser not found" "$ROOT/commands/users-close-root.sh"
+# DenyUsers judged fail-closed through the lib's pure deny_verdict — sshd
+# accepts patterns and USER@HOST forms, and 'DenyUsers dan*' REALLY denies
+# admin 'dan', so a token the check cannot prove irrelevant must flag, never
+# pass (the review's regression: a wildcard denial). Empty output is the only
+# pass; every hit names its reason.
+deny_v() { # deny_v <user> <token...>
+  bash -c 'set -euo pipefail
+    . "$1/commands/lib/users-config.sh"; shift
+    deny_verdict "$@"' _ "$ROOT" "$@"
+}
+check "users close-root: deny_verdict flags a literal hit" \
+  0 "names this user" deny_v admin root admin
+check "users close-root: deny_verdict fails closed on a wildcard (dan* vs dan)" \
+  0 "pattern entry 'dan*'" deny_v dan "dan*"
+check "users close-root: deny_verdict fails closed on '?' patterns" \
+  0 "pattern entry" deny_v admin "admi?"
+check "users close-root: deny_verdict fails closed on USER@HOST forms" \
+  0 "host-qualified" deny_v admin "admin@10.0.0.1"
+deny_pass() { [ -z "$(deny_v "$@")" ]; } # empty verdict IS the pass
+check "users close-root: deny_verdict passes provably-irrelevant literals" \
+  0 "" deny_pass admin root git backup
+# The group directives, same discipline, judged against the candidate's ACTUAL
+# membership (the review's regressions: an unmet AllowGroups, a DenyGroups
+# naming a group they hold). First arg is the id -Gn word list.
+groups_v() { # groups_v <fn> <groups> <token...>
+  bash -c 'set -euo pipefail
+    . "$1/commands/lib/users-config.sh"; shift
+    "$@"' _ "$ROOT" "$@"
+}
+groups_pass() { [ -z "$(groups_v "$@")" ]; }
+check "users close-root: DenyGroups naming a held group flags" \
+  0 "a group this user is in" groups_v group_deny_verdict "dan sudo rig-admin" backup sudo
+check "users close-root: DenyGroups fails closed on patterns" \
+  0 "pattern entry 'rig-*'" groups_v group_deny_verdict "dan rig-admin" "rig-*"
+check "users close-root: DenyGroups passes provably-irrelevant literals" \
+  0 "" groups_pass group_deny_verdict "dan rig-admin" docker backup
+check "users close-root: an unmet AllowGroups flags (fail closed)" \
+  0 "no entry literally names a group this user is in" groups_v group_allow_verdict "dan rig-admin" sudo
+check "users close-root: AllowGroups pattern is no proof (fail closed)" \
+  0 "no entry literally names" groups_v group_allow_verdict "dan rig-admin" "rig-*"
+check "users close-root: a literally-named held group passes AllowGroups" \
+  0 "" groups_pass group_allow_verdict "dan rig-admin" sudo rig-admin
+# ...and the shipped gate consults both, against real membership.
+# shellcheck disable=SC2016
+check "users close-root: the gate consults the group verdicts" 0 "" \
+  grep -qE '^[[:space:]]*denyg_reason="\$\(group_deny_verdict ' "$ROOT/commands/users-close-root.sh"
+# shellcheck disable=SC2016
+check "users close-root: the gate resolves real membership (id -Gn)" 0 "" \
+  grep -qF -- 'id -Gn -- "$a"' "$ROOT/commands/users-close-root.sh"
+# ...and the shipped gate must actually consult it (call, not comment).
+# shellcheck disable=SC2016
+check "users close-root: the gate consults deny_verdict" 0 "" \
+  grep -qE '^[[:space:]]*deny_reason="\$\(deny_verdict ' "$ROOT/commands/users-close-root.sh"
 # Marker-gate refusals through the sourced lib against fixture markers: the CLI
 # path sits behind the root check, so the gate is a pure lib function on
 # purpose (repo precedent: parse_users_file, assert_runner_repo). The command
@@ -616,6 +727,12 @@ check "users close-root: absent marker refuses, names bootstrap as the repair" \
   1 "no /etc/rig/role marker" marker_gate "$MARKER_DIR/absent"
 check "users close-root: class=server refuses, names the control plane" \
   1 "control plane" marker_gate "$MARKER_DIR/server"
+# #17's original table let the runner ROLE close root; the class model
+# supersedes it — runner is class=server, an automation identity, and the
+# refusal must SAY so or the divergence reads as a bug to anyone holding the
+# old table.
+check "users close-root: the server refusal owns the runner row (#17)" \
+  1 "runner included" marker_gate "$MARKER_DIR/server"
 check "users close-root: class=human passes the gate" \
   0 "" marker_gate "$MARKER_DIR/human"
 rm -rf "$MARKER_DIR"

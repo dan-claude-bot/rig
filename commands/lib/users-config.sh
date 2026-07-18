@@ -13,6 +13,16 @@
 # Repeated username lines are additional authorized keys; the roles field must
 # be IDENTICAL on each — a repeated line means "another key", never a quiet
 # role edit hiding mid-file. '#' comments and blank lines are skipped.
+#
+# The key field may also be the literal token '@root' (#17): "this user's
+# authorized_keys becomes root's CURRENT /root/.ssh/authorized_keys at apply
+# time". The operator provably holds a root private key — they SSHed in with
+# it to run apply at all — so seeding it is the one key source that cannot
+# lock them out; any pasted literal can be a key they do not hold. '@root'
+# mixes with literal key lines: seeded keys come first, literal keys are
+# APPENDED after them, and re-runs converge to root's then-current keys plus
+# the literals. The parser only owns the token's shape — reading root's file
+# needs root and is apply's business.
 
 # parse_users_file <path>
 #
@@ -24,9 +34,11 @@
 # Refusals: unknown role (the valid set is named), differing roles across one
 # user's lines, root as username (root's keys are class policy's business, not
 # this file's), malformed line (fewer than 3 fields, or a key field that does
-# not start with an SSH key type), invalid username (the charset below —
-# '|' would corrupt this parser's own delimited stream, a leading '-' reads
-# as a useradd flag), duplicate identical key line.
+# not start with an SSH key type and is not exactly '@root'), '@root' with
+# trailing material (the token IS the whole field), invalid username (the
+# charset below — '|' would corrupt this parser's own delimited stream, a
+# leading '-' reads as a useradd flag), duplicate identical key line (a
+# second '@root' for one user counts — the seen[] map catches it for free).
 parse_users_file() {
   local path="$1"
   local -a errs=() out=() rlist=()
@@ -41,9 +53,13 @@ parse_users_file() {
       continue
     fi
     case "$k" in
+      @root) ;;   # seed token — apply reads root's authorized_keys (#17)
+      @root*)
+        errs+=("line $n: '@root' is the whole key field — it names root's authorized_keys as this user's key source and takes no trailing material")
+        continue ;;
       ssh-*|ecdsa-*|sk-ssh-*|sk-ecdsa-*) ;;
       *)
-        errs+=("line $n: malformed — key field must start with an SSH key type (ssh-..., ecdsa-...)")
+        errs+=("line $n: malformed — key field must start with an SSH key type (ssh-..., ecdsa-...) or be the literal '@root'")
         continue ;;
     esac
     # The username feeds this parser's own '|'-delimited stream and then
@@ -115,10 +131,91 @@ assert_marker_human() {
     *class=server*)
       # Root SSH on a server IS the control plane's (Coolify's) automation
       # identity — closing it severs fleet management. No --force exists.
-      printf '%s\n' "class=server: root here is the control plane's automation identity — closing it severs fleet management"
+      # Deliberately per-CLASS, not per-role: #17's original table let the
+      # runner role close root ("no Coolify involved"), but the class model
+      # (#26) supersedes that — every server-class box, runner included, is
+      # an automation identity whose management plane is root SSH, and rig
+      # itself converges through that door. A CI box someone administers
+      # like a human machine is class=human at bootstrap, not an exception
+      # carved out here.
+      printf '%s\n' "class=server: root here is the control plane's automation identity — closing it severs fleet management. Every server-class box (runner included) keeps root deliberately: it is an automation identity, and root SSH is its management plane; a box meant to be administered like a human machine is --class human at bootstrap, not an exception here"
       return 1 ;;
     *)
       printf '%s\n' "marker names no class (${marker}): re-run rig bootstrap; refusing to shut the root door blind"
       return 1 ;;
   esac
+}
+
+# deny_verdict <user> <denyusers token...>
+#
+# Judge sshd's effective DenyUsers list against ONE candidate, fail closed.
+# Empty output = every token is PROVABLY irrelevant to <user>: literal (no
+# sshd pattern metacharacters, no host qualifier) and not this username.
+# Anything else prints the reason and the caller flags the candidate:
+#
+#   - a literal hit — DenyUsers really names them;
+#   - ANY pattern token (* or ?) — 'DenyUsers dan*' genuinely denies admin
+#     'dan', and this side of sshd cannot re-implement its pattern engine
+#     just to prove a miss, so an unprovable token counts as a hit;
+#   - ANY host-qualified token (USER@HOST) — whether it bites depends on the
+#     client's address, which no local probe knows.
+#
+# The asymmetry with AllowUsers is deliberate and points the same direction:
+# AllowUsers must name the admin literally (a pattern that WOULD admit them
+# still refuses — over-refusing is safe), DenyUsers refuses on anything it
+# cannot prove misses. Both errors close toward "repair first", never toward
+# a welded-shut root door. Pure text→text, sourced by the harness.
+deny_verdict() {
+  local u="$1" tok; shift
+  for tok in "$@"; do
+    case "$tok" in
+      "$u") printf 'sshd DenyUsers names this user'; return 0 ;;
+      *[*?]*) printf "sshd DenyUsers has pattern entry '%s' — cannot prove it misses this user; make it literal or remove it, then re-run" "$tok"; return 0 ;;
+      *@*) printf "sshd DenyUsers has host-qualified entry '%s' — whether it bites depends on the client address, which no local check can prove; make it literal or remove it, then re-run" "$tok"; return 0 ;;
+    esac
+  done
+  return 0
+}
+
+# group_deny_verdict <space-separated groups> <denygroups token...>
+#
+# deny_verdict's sibling for sshd's DenyGroups, judged against the
+# candidate's ACTUAL group membership (id -Gn), same fail-closed rule:
+# empty output = every token is provably irrelevant — literal and naming
+# none of the candidate's groups. A literal token naming a group they are
+# in flags, and so does any pattern or host-qualified token, because a
+# token this side of sshd cannot prove irrelevant may be the one that
+# denies. Pure text→text, sourced by the harness.
+group_deny_verdict() {
+  local groups="$1" tok g; shift
+  for tok in "$@"; do
+    case "$tok" in
+      *[*?]*) printf "sshd DenyGroups has pattern entry '%s' — cannot prove it misses this user's groups; make it literal or remove it, then re-run" "$tok"; return 0 ;;
+      *@*) printf "sshd DenyGroups has host-qualified entry '%s' — whether it bites depends on the client address, which no local check can prove; make it literal or remove it, then re-run" "$tok"; return 0 ;;
+      *) for g in $groups; do
+           if [ "$tok" = "$g" ]; then
+             printf "sshd DenyGroups names '%s' — a group this user is in" "$g"; return 0
+           fi
+         done ;;
+    esac
+  done
+  return 0
+}
+
+# group_allow_verdict <space-separated groups> <allowgroups token...>
+#
+# AllowGroups' direction: when the directive is set, sshd admits only
+# members of a matching group, so the proof must be a LITERAL token
+# naming a group the candidate is in. A pattern that would in fact admit
+# them proves nothing here (same stance as AllowUsers: over-refusing is
+# the safe error), so no literal hit → flag. Pure text→text.
+group_allow_verdict() {
+  local groups="$1" tok g; shift
+  for tok in "$@"; do
+    for g in $groups; do
+      [ "$tok" = "$g" ] && return 0
+    done
+  done
+  printf "sshd AllowGroups is set and no entry literally names a group this user is in — add their group (or them to a named group), then re-run"
+  return 0
 }

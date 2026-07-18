@@ -32,6 +32,17 @@ keys; the roles must be identical on every line of one user.
   dan      admin,box   ssh-ed25519 AAAA... dan@laptop
   maria    rig,box     ssh-ed25519 AAAA... maria@mac
 
+The key field may also be the literal token '@root': this user's
+authorized_keys is seeded from root's CURRENT /root/.ssh/authorized_keys.
+You provably hold a root private key — you SSHed in with it to run apply at
+all — so the seeded key is the one key that cannot lock you out. '@root'
+mixes with literal key lines: seeded keys land first, literal keys are
+appended after them, and every re-run re-seeds from root's then-current file
+(convergent to it — a seeded key you remove from the admin by hand returns;
+switch the line to literal keys to pin them). Root's key lines are copied
+verbatim, options included — a from= or command= restriction on a root key
+follows it to the user. Apply dies if root has no authorized_keys to seed.
+
 roles:
   admin   group rig-admin — full NOPASSWD sudo
   rig     group rig       — NOPASSWD sudo for /usr/local/bin/rig only
@@ -78,11 +89,12 @@ fi
 PARSED="$(parse_users_file "$FILE")" \
   || die "invalid users file: $FILE — every error is listed above; nothing was changed" 2
 
-declare -A USER_ROLES=() USER_KEYS=()
+declare -A USER_ROLES=() USER_KEYS=() USER_SEED=()
 USERS=()
 BOX_USERS=()
 NEED_SUDO=0
 NEED_INCUS=0
+NEED_SEED=0
 while IFS='|' read -r u r k; do
   [ -n "$u" ] || continue
   if [ -z "${USER_ROLES[$u]:-}" ]; then
@@ -90,7 +102,14 @@ while IFS='|' read -r u r k; do
     USER_ROLES[$u]="$r"
     case ",$r," in *,box,*) BOX_USERS+=("$u") ;; esac
   fi
-  USER_KEYS[$u]="${USER_KEYS[$u]:-}$k"$'\n'
+  # '@root' is a key SOURCE, not a key: remember who seeds and resolve the
+  # actual lines after the root check — /root/.ssh is unreadable before it.
+  if [ "$k" = "@root" ]; then
+    USER_SEED[$u]=1
+    NEED_SEED=1
+  else
+    USER_KEYS[$u]="${USER_KEYS[$u]:-}$k"$'\n'
+  fi
   case ",$r," in *,admin,*|*,rig,*) NEED_SUDO=1 ;; esac
   case ",$r," in *,box,*) NEED_INCUS=1 ;; esac
 done <<< "$PARSED"
@@ -106,6 +125,24 @@ done <<< "$PARSED"
 if [ -n "${SUDO_USER:-}" ] && [ "$SUDO_USER" != "root" ] \
     && ! id -nG "$SUDO_USER" 2>/dev/null | tr ' ' '\n' | grep -qx rig-admin; then
   die "the users family changes who holds root — only rig-admin members (or root itself) may run it; role rig grants operational rig use, not identity management (invoker: $SUDO_USER)"
+fi
+
+# --- @root seed source (#17) -------------------------------------------------
+# The lockout-avoidance move: the operator SSHed in as root to run this at
+# all, so root's CURRENT authorized_keys provably contains a key they hold —
+# the one claim no local check can make about a pasted literal. Resolved ONCE
+# here (post-root-check: /root/.ssh needs root) and copied verbatim, options
+# included: a from=/command= restriction on a root key line follows it to the
+# user, which is honest — rig will not silently widen what a key can do.
+# Comments and blanks are dropped so the seeded block is exactly key lines;
+# an empty result is a hard stop, because seeding nothing would converge the
+# admin's authorized_keys to empty and close-root would then refuse — better
+# to name the real problem now.
+ROOT_SEED_KEYS=""
+if [ "$NEED_SEED" -eq 1 ]; then
+  ROOT_SEED_KEYS="$(grep -Ev '^[[:space:]]*(#|$)' /root/.ssh/authorized_keys 2>/dev/null || true)"
+  [ -n "$ROOT_SEED_KEYS" ] \
+    || die "a user's keys seed from @root but root has no authorized_keys (/root/.ssh/authorized_keys missing or without key lines) — @root's whole point is copying a key you provably hold; list a literal key instead"
 fi
 
 # Class is a note, never a refusal: #26's call is that operators belong on
@@ -199,8 +236,16 @@ for u in "${USERS[@]}"; do
   home="$(getent passwd "$u" | cut -d: -f6)"
   ugroup="$(id -gn "$u")"
   mkdir -p "$home/.ssh"
+  # Seeded (@root) keys land FIRST, literal lines append after — fixed order
+  # so the cmp-guard sees identical bytes on identical state and re-runs
+  # converge to root's then-current keys plus the literals (#17). A literal
+  # that duplicates a seeded key writes twice; sshd does not mind and the
+  # bytes stay deterministic.
   AK_TMP="$(mktemp)"
-  printf '%s' "${USER_KEYS[$u]}" > "$AK_TMP"
+  {
+    if [ -n "${USER_SEED[$u]:-}" ]; then printf '%s\n' "$ROOT_SEED_KEYS"; fi
+    printf '%s' "${USER_KEYS[$u]:-}"
+  } > "$AK_TMP"
   if ! cmp -s "$AK_TMP" "$home/.ssh/authorized_keys" 2>/dev/null; then
     install -m 0600 -o "$u" -g "$ugroup" "$AK_TMP" "$home/.ssh/authorized_keys"
     log "authorized_keys for $u: $(grep -c . "$AK_TMP") key(s)"
