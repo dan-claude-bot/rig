@@ -4,7 +4,7 @@ A CLI that turns a **pristine Debian server into a hardened, tailnet-joined
 node** — one curl, one command. A second command installs a version-pinned
 Coolify on a control-plane box.
 
-Philosophy (shared with [claudebox](https://github.com/heavy-duty/claudebox)):
+Philosophy (shared with [box](https://github.com/heavy-duty/box)):
 **public tool, private state**. rig carries plumbing logic only — no
 hostnames, no bindings, no secrets, nothing about *your* infrastructure. It
 takes arguments, does its work, and stores no credential, ever.
@@ -188,6 +188,18 @@ which legitimately lack it. (The world-readable global install path — box unde
 `/opt/box` readable by every non-root user — depends on box PR #71; until that
 merges box's root install lands in `/root`.)
 
+> **The box install is unpinned — on purpose, and out loud.** `coolify install`
+> demands a version pin; the box step tracks a moving `heavy-duty/box@main`.
+> Not because box self-updates (it doesn't — it has Coolify's shape, not the
+> runner's) but because there is nothing to pin *to*: box cuts no tags and no
+> releases, and its installer resolves `refs/heads/<ref>` — branches only — so
+> a `BOX_REF=v0.5.0` would 404 even if the tag existed. Issue #12's call was
+> that silently tracking `main` on the box that runs the agents is the option
+> not to pick — hence this paragraph. `BOX_REPO` / `BOX_REF` are the pin
+> points the day box cuts a tag (or you point at a frozen branch of your own
+> fork); `RIG_SKIP_BOX_INSTALL=1` opts out entirely for a host whose box you
+> manage by hand.
+
 `dev` is `staging`'s human-class sibling — the same VM-hosting, `tag:local`
 shape with a person living on it, box CLI installed the same way — and
 `workstation` is the machine at the keyboard end of all the SSH connections:
@@ -202,6 +214,28 @@ the door: whoever holds a key to an account *is* that account, and a shared
 root login is unattributable by construction. `rig users apply` puts named
 operators on every box, server-class included; a human always enters as
 themself and elevates via sudo.
+
+Per role, the whole identity picture at a glance — issue #25's class
+comparison, translated onto the traits that replaced the class binary:
+
+| role            | class  | host | join    | who lives here                       | root SSH after `rig users apply` |
+|-----------------|--------|------|---------|--------------------------------------|----------------------------------|
+| `control-plane` | server | no   | authkey | nobody — Coolify runs here           | open — the automation door       |
+| `workload`      | server | no   | authkey | nobody — deployed services run here  | open — the automation door       |
+| `runner`        | server | no   | authkey | nobody — CI jobs as `github-runner`  | open — the automation door       |
+| `staging`       | server | yes  | authkey | nobody — an unattended VM appliance  | open — the automation door       |
+| `dev`           | human  | yes  | authkey | operators, minting boxes             | closed by `rig users close-root` |
+| `workstation`   | human  | yes  | login   | its owner                            | closed by `rig users close-root` |
+
+Who installs what, and who runs as what: **bootstrap is always root** and
+installs everything a role needs — on `host=yes` that includes the box CLI
+(globally) and box's own `setup-host`. **Humans always run as themselves**:
+operators land via `rig users apply` on every class and elevate through sudo
+(roles `admin`/`rig`) or the `incus` group (role `box`) — never by logging in
+as root. **Machine identities stay machine-shaped**: Coolify's automation
+SSHes in as root (that is what server-class root *is*), CI jobs run as the
+unprivileged `github-runner`, and guest VMs are their own server-class boxes,
+converged from inside by `rig bootstrap workload`.
 
 **`class` decides root SSH's fate — after `rig users apply`, never before.**
 On `class=human`, root SSH closes entirely (`rig users close-root`, below).
