@@ -398,64 +398,86 @@ verify_user_owned() {
   log "user-owned join verified (untagged)"
 }
 
-if ! command -v tailscale >/dev/null 2>&1; then
-  log "installing tailscale"
-  curl -fsSL https://tailscale.com/install.sh | sh
-fi
-if tailscale status >/dev/null 2>&1; then
-  log "tailnet already joined; skipping tailscale up (no pre-auth key needed)"
-  # ...but skipping `tailscale up` also skipped --hostname, so the TAILNET name
-  # never converged: a box that joined under the wrong name (e.g. --hostname
-  # omitted, so it defaulted to the ROLE) stayed misnamed forever, and re-running
-  # rig — the documented repair — could not fix it. rig is convergent by
-  # contract; this was the one field that wasn't. `tailscale set` converges it
-  # without a re-auth or a pre-auth key.
-  #
-  # Safe by construction here: Tailscale ACLs cannot bind a rule's dst to a
-  # hostname (it must be a tag, an IP, or a `hosts` alias — which is exactly why
-  # acl.hujson pins coolify-box to an IP), so a rename cannot silently void a
-  # grant. It also will NOT clobber a deliberate rename: a machine renamed in the
-  # admin console keeps that name, and the device hostname no longer overrides it.
-  current_ts_name="$(tailscale status --peers=false 2>/dev/null | awk 'NR==1 {print $2}')"
-  if [ -n "$current_ts_name" ] && [ "$current_ts_name" != "$TS_HOSTNAME" ]; then
-    log "tailnet hostname is '${current_ts_name}', want '${TS_HOSTNAME}' — converging"
-    tailscale set --hostname="$TS_HOSTNAME" \
-      || warn "tailscale set --hostname failed; rename '${current_ts_name}' -> '${TS_HOSTNAME}' in the admin console"
-  else
-    log "tailnet hostname already ${TS_HOSTNAME}"
-  fi
-  # Verify the tag on the already-joined path too, not only on first join: this
-  # catches a box bootstrapped BEFORE rig looked at tags, or one retagged behind
-  # rig's back, on the very next ordinary re-run. Skipping `tailscale up` here is
-  # deliberate and stays — re-running an identical tagged-authkey `up` errors —
-  # but skipping the CHECK was how the M900s stayed mis-tagged unnoticed.
-  # The check the traits demand: authkey wants the granted tag, login wants none
-  # — both in `keep` mode: never back out a join this run did not perform.
-  if [ "$JOIN" = "login" ]; then
-    verify_user_owned keep
-  else
-    verify_effective_tag keep
-  fi
-elif [ "$JOIN" = "login" ]; then
-  # No pre-auth key on this path — the human at the keyboard is the credential.
-  # `tailscale up` prints a login URL and blocks until the browser login lands.
-  log "joining tailnet as ${TS_HOSTNAME} (interactive login; follow the URL tailscale prints)"
-  tailscale up --hostname="$TS_HOSTNAME"
-  verify_user_owned back-out
+# RIG_SKIP_JOIN=1 — the rehearsal/CI escape hatch, and deliberately ENV-ONLY:
+# it is not a flag, it is not in --help, and it must stay that way. A flag is
+# an invitation; an env var buried in the CI workflow is a confession. The
+# e2e-devserver CI job is the one caller — a GitHub runner has no tailnet and
+# never will, yet it is exactly the substrate on which the whole
+# bootstrap→box→users→grant chain can be proven end to end. The skip covers
+# the ENTIRE tailscale section (install, join, tag verification): a
+# half-skipped join would leave tailscaled installed-but-unverified, which is
+# worse than honestly absent.
+#
+# The role marker below still lands, on purpose. The marker records the
+# CONFIGURED traits — join= is the mode the operator declared, not an attest
+# that the join happened (an already-joined re-run also never re-joins) — and
+# the commands the rehearsal exists to exercise (`rig users apply` gates on
+# host=, close-root on class=) read that marker. Withholding it would make the
+# skip useless for the only purpose it has. The honesty lives in the warn: it
+# fires on EVERY run with the var set, so no transcript of a skipped bootstrap
+# can read like a joined one.
+if [ "${RIG_SKIP_JOIN:-}" = "1" ]; then
+  warn "RIG_SKIP_JOIN=1 — tailscale install, join and tag verification SKIPPED: this machine is NOT on the tailnet. Rehearsal/CI only; a real box must never run with this set."
 else
-  # env override, else prompt; never touches disk
-  if [ -z "${TS_AUTHKEY:-}" ]; then
-    read -rsp "tailscale pre-auth key (single-use, tagged, <=1h expiry): " TS_AUTHKEY
-    echo
+  if ! command -v tailscale >/dev/null 2>&1; then
+    log "installing tailscale"
+    curl -fsSL https://tailscale.com/install.sh | sh
   fi
-  [ -n "${TS_AUTHKEY:-}" ] || die "empty pre-auth key"
-  # No --advertise-tags: the key's own tags apply (documented default for a
-  # tagged key), and rig verifies them below instead of stating a second tag it
-  # cannot reconcile with the key's. A tagged key needs no flag; an untagged one
-  # cannot be rescued by one (verify_effective_tag refuses it and logs out).
-  log "joining tailnet as ${TS_HOSTNAME} (tag comes from the pre-auth key)"
-  tailscale up --authkey="$TS_AUTHKEY" --hostname="$TS_HOSTNAME"
-  verify_effective_tag back-out
+  if tailscale status >/dev/null 2>&1; then
+    log "tailnet already joined; skipping tailscale up (no pre-auth key needed)"
+    # ...but skipping `tailscale up` also skipped --hostname, so the TAILNET name
+    # never converged: a box that joined under the wrong name (e.g. --hostname
+    # omitted, so it defaulted to the ROLE) stayed misnamed forever, and re-running
+    # rig — the documented repair — could not fix it. rig is convergent by
+    # contract; this was the one field that wasn't. `tailscale set` converges it
+    # without a re-auth or a pre-auth key.
+    #
+    # Safe by construction here: Tailscale ACLs cannot bind a rule's dst to a
+    # hostname (it must be a tag, an IP, or a `hosts` alias — which is exactly why
+    # acl.hujson pins coolify-box to an IP), so a rename cannot silently void a
+    # grant. It also will NOT clobber a deliberate rename: a machine renamed in the
+    # admin console keeps that name, and the device hostname no longer overrides it.
+    current_ts_name="$(tailscale status --peers=false 2>/dev/null | awk 'NR==1 {print $2}')"
+    if [ -n "$current_ts_name" ] && [ "$current_ts_name" != "$TS_HOSTNAME" ]; then
+      log "tailnet hostname is '${current_ts_name}', want '${TS_HOSTNAME}' — converging"
+      tailscale set --hostname="$TS_HOSTNAME" \
+        || warn "tailscale set --hostname failed; rename '${current_ts_name}' -> '${TS_HOSTNAME}' in the admin console"
+    else
+      log "tailnet hostname already ${TS_HOSTNAME}"
+    fi
+    # Verify the tag on the already-joined path too, not only on first join: this
+    # catches a box bootstrapped BEFORE rig looked at tags, or one retagged behind
+    # rig's back, on the very next ordinary re-run. Skipping `tailscale up` here is
+    # deliberate and stays — re-running an identical tagged-authkey `up` errors —
+    # but skipping the CHECK was how the M900s stayed mis-tagged unnoticed.
+    # The check the traits demand: authkey wants the granted tag, login wants none
+    # — both in `keep` mode: never back out a join this run did not perform.
+    if [ "$JOIN" = "login" ]; then
+      verify_user_owned keep
+    else
+      verify_effective_tag keep
+    fi
+  elif [ "$JOIN" = "login" ]; then
+    # No pre-auth key on this path — the human at the keyboard is the credential.
+    # `tailscale up` prints a login URL and blocks until the browser login lands.
+    log "joining tailnet as ${TS_HOSTNAME} (interactive login; follow the URL tailscale prints)"
+    tailscale up --hostname="$TS_HOSTNAME"
+    verify_user_owned back-out
+  else
+    # env override, else prompt; never touches disk
+    if [ -z "${TS_AUTHKEY:-}" ]; then
+      read -rsp "tailscale pre-auth key (single-use, tagged, <=1h expiry): " TS_AUTHKEY
+      echo
+    fi
+    [ -n "${TS_AUTHKEY:-}" ] || die "empty pre-auth key"
+    # No --advertise-tags: the key's own tags apply (documented default for a
+    # tagged key), and rig verifies them below instead of stating a second tag it
+    # cannot reconcile with the key's. A tagged key needs no flag; an untagged one
+    # cannot be rescued by one (verify_effective_tag refuses it and logs out).
+    log "joining tailnet as ${TS_HOSTNAME} (tag comes from the pre-auth key)"
+    tailscale up --authkey="$TS_AUTHKEY" --hostname="$TS_HOSTNAME"
+    verify_effective_tag back-out
+  fi
 fi
 
 # --- role marker --------------------------------------------------------------
