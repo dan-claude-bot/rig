@@ -136,6 +136,32 @@ check "bootstrap: box install runs after the role marker write" \
 # host whose box did not install is never left without the next move.
 check "bootstrap: box skip/failure keeps a pointer to the manual install" 0 "" \
   grep -q "prepare Incus" "$ROOT/commands/bootstrap.sh"
+# --- RIG_SKIP_JOIN: the env-only rehearsal escape (the e2e-devserver CI job) --
+# A GitHub runner has no tailnet, so the end-to-end chain needs a join skip —
+# but a skip that looked routine would be a lie factory. The contract: LOUD on
+# every run (a transcript of a skipped bootstrap must never read joined),
+# env-only (not a flag, absent from --help — an env var buried in CI is a
+# confession, a flag is an invitation), and the role marker still lands (it
+# records the CONFIGURED traits; `rig users apply`'s host= gate — the very
+# thing the CI chain exercises — reads it). Exercising the skip needs root and
+# a real apt, so prove the shipped script: grep the warn, run --help and
+# assert the var is NOT offered, and pin the skip-before-marker ordering.
+check "bootstrap: RIG_SKIP_JOIN warn is present and loud" 0 "" \
+  grep -q "NOT on the tailnet" "$ROOT/commands/bootstrap.sh"
+# The $1 below is bash -c's own positional, not this shell's — single quotes intended.
+# shellcheck disable=SC2016
+check "bootstrap: RIG_SKIP_JOIN is env-only — absent from --help" 1 "" \
+  bash -c '"$1" --help | grep -q RIG_SKIP_JOIN' _ "$ROOT/commands/bootstrap.sh"
+# The skip gate must sit BEFORE the marker write (so the marker still lands on
+# a skipped run — the skip branch falls through, it never exits). Defaults
+# fail closed: gate missing -> huge, marker missing -> 0 -> fails.
+# $MARKER_TMP is a literal we grep for in the script — single quotes intended.
+# shellcheck disable=SC2016
+skipjoin_at="$(grep -n 'RIG_SKIP_JOIN' "$ROOT/commands/bootstrap.sh" | head -n1 | cut -d: -f1)"
+# shellcheck disable=SC2016
+marker_write_at="$(grep -n 'install -m 0644 "$MARKER_TMP"' "$ROOT/commands/bootstrap.sh" | head -n1 | cut -d: -f1)"
+check "bootstrap: a skipped join still writes the role marker (gate precedes write)" \
+  0 "" test "${skipjoin_at:-999999}" -lt "${marker_write_at:-0}"
 if [ "$(id -u)" -ne 0 ]; then
   check "bootstrap: refuses non-root"      1 "must run as root" env TS_AUTHKEY=x "$ROOT/commands/bootstrap.sh" workload
   check "bootstrap: runner role parses, refuses non-root" 1 "must run as root" env TS_AUTHKEY=x "$ROOT/commands/bootstrap.sh" runner
@@ -469,6 +495,52 @@ check "users apply: revoked keys are renamed, never deleted" 0 "" \
 # admins included — still converges.
 check "users apply: box role skips on a host=no box" 0 "" \
   grep -q "box role skipped" "$ROOT/commands/users-apply.sh"
+# --- box tier delegation: apply hands the grant to box (box#75) --------------
+# A bare incus group add is NOT the tier: box grant also narrows the user's
+# incus-user project onto the hardened boxnet — without it, the auto-created
+# private bridge is one --network flag from any box they mint. Exercising the
+# delegation needs root, a marker, and a live Incus (the e2e-devserver CI job
+# does exactly that), so here prove the shipped script the grep-guard way.
+# The call must exist, on box-role users:
+# shellcheck disable=SC2016
+check "users apply: box-role users are granted via box grant" 0 "" \
+  grep -qF 'box grant "$u"' "$ROOT/commands/users-apply.sh"
+# ...gated on the host=yes marker arm (delegation is a VM-host's behavior):
+# The $1 below is bash -c's own positional, not this shell's — single quotes intended.
+# shellcheck disable=SC2016
+check "users apply: delegation flag rides the host=yes marker arm" 0 "" \
+  bash -c 'grep -A3 "host=yes\*)" "$1" | grep -q "BOX_DELEGATE=1"' _ "$ROOT/commands/users-apply.sh"
+# ...and on the box CLI actually resolving — an absent box on a host=yes box
+# is a refusal naming bootstrap as the repair, never a quiet bare-group-add.
+check "users apply: delegation requires the box CLI on PATH" 0 "" \
+  grep -qF 'command -v box' "$ROOT/commands/users-apply.sh"
+check "users apply: absent box CLI on host=yes refuses, names bootstrap" 0 "" \
+  grep -q "the box CLI is not installed" "$ROOT/commands/users-apply.sh"
+# Ordering is the design: box grant runs AFTER the group convergence loop, so
+# box's verified back-out (which only removes a membership box itself added)
+# is never disarmed by an eager rig add. Line-number compare, defaults fail
+# closed (loop add missing -> huge, grant missing -> 0 -> fails).
+# shellcheck disable=SC2016
+group_add_at="$(grep -nF 'usermod -aG "$g" "$u"' "$ROOT/commands/users-apply.sh" | head -n1 | cut -d: -f1)"
+# shellcheck disable=SC2016
+grant_at="$(grep -nF 'box grant "$u"' "$ROOT/commands/users-apply.sh" | head -n1 | cut -d: -f1)"
+check "users apply: box grant runs after the group convergence" \
+  0 "" test "${group_add_at:-999999}" -lt "${grant_at:-0}"
+# A failed grant is a real refusal — an operator apply claims to have
+# provisioned who holds no tier must die, with repair steps, never converge
+# quietly past it.
+check "users apply: a failed box grant refuses the apply" 0 "" \
+  grep -q "was NOT granted the box tier" "$ROOT/commands/users-apply.sh"
+# The revoke path: a user dropped from the file gets a BARE box revoke —
+# access ends, their project and boxes stay restorable (rig revokes, never
+# deletes). The call exists, on the dropped user:
+# shellcheck disable=SC2016
+check "users apply: dropped box users get box revoke" 0 "" \
+  grep -qF 'box revoke "$prev"' "$ROOT/commands/users-apply.sh"
+# ...and never with the purge flag: a grep that finds nothing (exit 1) is the
+# pass, so a --purge sneaking onto the call line cannot ship green.
+check "users apply: box revoke is never --purge" 1 "" \
+  grep -E 'box revoke .*--purge' "$ROOT/commands/users-apply.sh"
 
 # --- users close-root: the human-class root-door shutter ---------------------
 check "users close-root: --help exits 0"       0 "usage:"       "$ROOT/commands/users-close-root.sh" --help
