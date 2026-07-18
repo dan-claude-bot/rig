@@ -100,9 +100,12 @@ done
 #     Names the staging rename out loud — before #31, `staging` was the VM-host
 #     PRESET; that shape is now spelled through the traits.
 #   - class= (agent tenants) → refuse: an agent box is never a tailnet machine.
-#   - class= with host=no (staging only) → PROCEED, and leave the marker alone:
-#     that is the staging guest AFTER its operator-run workload join, and
+#   - class=server with host=no (staging only) → PROCEED, and leave the marker
+#     alone: that is the staging guest AFTER its operator-run workload join, and
 #     re-converging docker+hardening on it is exactly what convergence is for.
+#     ONLY that shape — any other class (say class=human, via `custom`) is a
+#     machine rig built on purpose, and staging hardening it with server rules
+#     would die with server-specific messaging on a box that was never one.
 MARKER_PATH="${RIG_ROLE_MARKER:-/etc/rig/role}"
 EXISTING_MARKER="$(read_role_marker "$MARKER_PATH")"
 case "$EXISTING_MARKER" in
@@ -111,7 +114,12 @@ case "$EXISTING_MARKER" in
   *class=*)
     if [ "$ROLE" != "staging" ]; then
       die "this box already carries a machine role (${EXISTING_MARKER}) — the agent tenants converge box guests, never tailnet machines. If this really is a guest, remove ${MARKER_PATH} and re-run."
-    fi ;;
+    fi
+    case "$EXISTING_MARKER" in
+      *class=server*) ;;
+      *)
+        die "this box carries a non-server machine role (${EXISTING_MARKER}) — staging tolerates only the workload-joined guest (class=server host=no). If this really is a staging guest, remove ${MARKER_PATH} and re-run." ;;
+    esac ;;
 esac
 
 [ "$(id -u)" -eq 0 ] || die "must run as root"
@@ -185,6 +193,16 @@ else
   log "docker already installed"
 fi
 docker --version >/dev/null 2>&1 || die "docker installed but 'docker --version' does not answer"
+# The client answering is not the effective state — a dead dockerd would still
+# pass it. Ask the daemon, with a bounded settle for the freshly-installed case
+# (get.docker.com starts it, but not instantaneously on a slow guest).
+docker_up=""
+for _ in 1 2 3 4 5 6; do
+  if docker info >/dev/null 2>&1; then docker_up=1; break; fi
+  sleep 5
+done
+[ -n "$docker_up" ] || die "dockerd does not answer 'docker info' after 30s — the daemon is not running; check 'systemctl status docker' (or the container's init) before re-running"
+log "dockerd answering"
 if getent group docker >/dev/null 2>&1; then
   if id -nG "$TENANT_USER" | tr ' ' '\n' | grep -qx docker; then
     log "${TENANT_USER} already in the docker group"
@@ -260,9 +278,11 @@ esac
 if [ -n "$CLI" ]; then
   [ -e "$CLI_SRC" ] || die "the ${CLI} installer produced no ${CLI_SRC} — upstream layout changed?"
   ln -sf "$CLI_SRC" "/usr/local/bin/$CLI"
-  runuser -l "$TENANT_USER" -c "$CLI --version" >/dev/null 2>&1 \
-    || die "'$CLI --version' does not answer for ${TENANT_USER} — the CLI landed but cannot run; check /usr/local/bin/$CLI and its target"
-  log "${CLI} CLI on the system PATH and answering ($(runuser -l "$TENANT_USER" -c "$CLI --version" 2>/dev/null | head -n1))"
+  # One capture serves both the assert and the log line; emptiness IS the
+  # failure signal (head exits 0 regardless, so a pipeline status can't be).
+  CLI_VER="$(runuser -l "$TENANT_USER" -c "$CLI --version" 2>/dev/null | head -n1)"
+  [ -n "$CLI_VER" ] || die "'$CLI --version' does not answer for ${TENANT_USER} — the CLI landed but cannot run; check /usr/local/bin/$CLI and its target"
+  log "${CLI} CLI on the system PATH and answering (${CLI_VER})"
 
   # The interactive-shell PATH exports the templates carried, converged as
   # literal rc lines (written once, never duplicated). Single quotes are the

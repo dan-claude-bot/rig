@@ -209,6 +209,11 @@ check "tenant: unknown role exits 2"    2 "unknown tenant role" "$ROOT/commands/
 check "tenant: unknown flag exits 2"    2 "unknown flag" "$ROOT/commands/bootstrap-tenant.sh" claude --nope
 check "tenant: --user needs value"      2 "needs a value" "$ROOT/commands/bootstrap-tenant.sh" claude --user
 check "tenant: bad --user charset exits 2" 2 "invalid user" "$ROOT/commands/bootstrap-tenant.sh" claude --user 'fo|o'
+# The docker converge asserts the DAEMON answers, not just the client binary —
+# a dead dockerd passing `docker --version` is the "linked but cannot run"
+# scar in daemon form. Grep-pinned so the assert cannot ship deleted.
+check "tenant: dockerd effective-state assert is present" 0 "" \
+  grep -qF "docker info" "$ROOT/commands/bootstrap-tenant.sh"
 # The machine-role traits die with the tenant story, never "unknown flag" — an
 # operator reaching for --hostname must learn where the trait family went.
 check "tenant: trait flags die with the tenant story" 2 "have no traits" \
@@ -224,12 +229,17 @@ check "bootstrap: tenant roles dispatch through bootstrap.sh" 0 "claude|codex|gr
 # VM host (host=yes) refuses for every tenant — and names the staging rename,
 # because a pre-#31 staging HOST re-running its old command is exactly who
 # lands here. An agent tenant refuses ANY machine-role box; staging tolerates
-# a class= marker with host=no — that is the staging guest after its
+# ONLY class=server with host=no — that is the staging guest after its
 # operator-run workload join, and re-converging it is what convergence is for.
+# A non-server machine (class=human via custom) is NOT that guest, and server
+# hardening would die at it with server-specific messaging — refuse instead.
 TEN_FIX="$(mktemp -d)"
 printf 'role=dev class=human host=yes join=authkey\n'      > "$TEN_FIX/host"
 printf 'role=workload class=server host=no join=authkey\n' > "$TEN_FIX/machine"
+printf 'role=custom class=human host=no join=login\n'      > "$TEN_FIX/human"
 printf 'role=claude tenant=yes host=no\n'                  > "$TEN_FIX/tenant"
+check "tenant: staging refuses a non-server machine box" 1 "non-server machine role" \
+  env RIG_ROLE_MARKER="$TEN_FIX/human" "$ROOT/commands/bootstrap-tenant.sh" staging
 check "tenant: refuses a host=yes box (a VM host is never a guest)" 1 "hosts VMs" \
   env RIG_ROLE_MARKER="$TEN_FIX/host" "$ROOT/commands/bootstrap-tenant.sh" claude
 check "tenant: the host refusal names the old staging preset's new spelling" 1 "custom --class server --host yes" \
@@ -279,6 +289,7 @@ check "tenant context: the guard says whose host this is not" 0 "not a host you 
 check "tenant context: the guard cites box#80" 0 "box#80" tctx claude
 check "tenant context: the creds-free contract is stated" 0 "Creds-free by default" tctx claude
 check "tenant context: claude names /login as the operator's flow" 0 "/login" tctx claude
+check "tenant context: codex names its login flow" 0 "login flow (\`codex\`)" tctx codex
 check "tenant context: grok names its login flow" 0 "grok login" tctx grok
 check "tenant context: staging renders nothing (no agent lives there)" 1 "" tctx staging
 # Creds-free BY CONSTRUCTION, provable by absence (box#69's grep-refusal
