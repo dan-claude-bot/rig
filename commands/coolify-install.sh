@@ -53,7 +53,7 @@ fi
 # (repo precedent: users-apply, users-close-root).
 MARKER_LINE="$(read_role_marker "${RIG_ROLE_MARKER:-/etc/rig/role}")"
 case "$MARKER_LINE" in
-  ""|"role=control-plane "*) ;;
+  ""|"role=control-plane"|"role=control-plane "*) ;;
   *) warn "this box's role marker says '${MARKER_LINE}' — not a control-plane box. Coolify belongs on role control-plane; if this is the wrong box, stop here and re-check your SSH session. Repurposing it on purpose? Re-run 'rig bootstrap control-plane' first so the marker tells the truth." ;;
 esac
 

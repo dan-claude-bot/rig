@@ -153,10 +153,19 @@ check "bootstrap: a hollow box-install success warns, never dies" 0 "" \
 box_check_at="$(grep -nE '^[[:space:]]*if command -v box' "$ROOT/commands/bootstrap.sh" | head -n1 | cut -d: -f1)"
 check "bootstrap: the effective check follows the installer run" \
   0 "" test "${box_install_at:-999999}" -lt "${box_check_at:-0}"
-# rig's delegation law caps the check's depth: rig never interrogates Incus, so
-# the deeper verdict is handed to box's own verb rather than reimplemented.
-check "bootstrap: the deeper host verification is delegated to box doctor" 0 "" \
-  grep -q "box doctor" "$ROOT/commands/bootstrap.sh"
+# rig's delegation law caps the check's depth: rig never interrogates Incus —
+# the host verdict is box's own verb, and the "host set up" CLAIM is gated on
+# it. Two asserts: the gate exists as a call (not just prose naming the verb),
+# and the claim line sits inside/after it (line order, fail-closed defaults —
+# a claim that outruns its proof is exactly the overclaim this closes).
+check "bootstrap: the host-set-up claim is gated on box doctor" 0 "" \
+  grep -qE '^[[:space:]]*if box doctor' "$ROOT/commands/bootstrap.sh"
+doctor_at="$(grep -nE '^[[:space:]]*if box doctor' "$ROOT/commands/bootstrap.sh" | head -n1 | cut -d: -f1)"
+claim_at="$(grep -n 'box installed and host set up' "$ROOT/commands/bootstrap.sh" | head -n1 | cut -d: -f1)"
+check "bootstrap: the claim follows the doctor gate" \
+  0 "" test "${doctor_at:-999999}" -lt "${claim_at:-0}"
+check "bootstrap: a failed doctor warns without claiming the host" 0 "" \
+  grep -q "the CLI landed, the host stack is unproven" "$ROOT/commands/bootstrap.sh"
 # --- README: the box rename (#12) --------------------------------------------
 # The philosophy line must point at heavy-duty/box — the old claudebox slug
 # only works through a GitHub redirect that one squatted rename away from
@@ -217,11 +226,16 @@ marker_warns() { # marker_warns <marker_path> <cmd...> — how many warnings fir
 MARKER_FIX="$(mktemp -d)"
 printf 'role=workload class=server host=no join=authkey\n'      > "$MARKER_FIX/workload"
 printf 'role=control-plane class=server host=no join=authkey\n' > "$MARKER_FIX/control-plane"
+printf 'role=control-plane\n'                                   > "$MARKER_FIX/bare-control-plane"
 if [ "$(id -u)" -ne 0 ]; then
   check "coolify: warns on a non-control-plane marker" 0 "1" \
     marker_warns "$MARKER_FIX/workload" "$ROOT/commands/coolify-install.sh" --version 4.1.2
   check "coolify: control-plane marker stays silent" 0 "0" \
     marker_warns "$MARKER_FIX/control-plane" "$ROOT/commands/coolify-install.sh" --version 4.1.2
+  # A bare marker line with no trailing traits must read the same as the full
+  # one — the guard must not couple to the marker's field formatting.
+  check "coolify: a bare 'role=control-plane' line (no traits) stays silent" 0 "0" \
+    marker_warns "$MARKER_FIX/bare-control-plane" "$ROOT/commands/coolify-install.sh" --version 4.1.2
   check "coolify: absent marker stays silent (advisory, not a gate)" 0 "0" \
     marker_warns "$MARKER_FIX/absent" "$ROOT/commands/coolify-install.sh" --version 4.1.2
   # The warning must stay a warning: the run proceeds past it and stops at the

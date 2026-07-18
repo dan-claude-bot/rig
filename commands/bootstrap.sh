@@ -537,16 +537,21 @@ if [ "$HOST" = "yes" ]; then
       # only adding a group, asking for a re-login. That is the sshd first-wins
       # bug's exact shape — asserting what was REQUESTED (here: the installer's
       # claimed success) instead of what actually TOOK. The check stays
-      # deliberately LIGHT: box on PATH is the one artifact rig asked the
-      # installer for. Anything deeper — the incus daemon, the pool, the
-      # network — is box's domain, and rig never interrogates Incus (the same
-      # delegation law as the install itself: box owns the daemon); box ships
-      # its own effective-state verdict as `box doctor`, so the success line
-      # hands the operator that verb instead of half-reimplementing it here.
-      # And a failed check WARNS, never dies: box is the host EXTRA, and the
-      # OS+tailnet core above is already done and asserted.
+      # Two proofs, one claim each. `command -v box` proves the CLI landed
+      # (box's root install symlinks into /usr/local/bin, already on this
+      # shell's PATH — no login shell needed). "Host set up" is a separate
+      # claim and gets box's OWN effective-state verdict, `box doctor` —
+      # the daemon, the pool, the network stay box's domain (the same
+      # delegation law as the install itself: box owns the daemon), rig
+      # just refuses to claim what that verdict does not answer. Both
+      # failures WARN, never die: box is the host EXTRA, and the OS+tailnet
+      # core above is already done and asserted.
       if command -v box >/dev/null 2>&1; then
-        log "box installed and host set up — mint guest boxes with 'box new'; 'box doctor' verifies the host end to end"
+        if box doctor >/dev/null 2>&1; then
+          log "box installed and host set up — 'box doctor' passed; mint guest boxes with 'box new'"
+        else
+          warn "box is on PATH but 'box doctor' does not pass — the CLI landed, the host stack is unproven. Run 'box doctor' for the verdict, then 'box setup-host' (or finish by hand: ${BOX_MANUAL})"
+        fi
       else
         warn "box's installer reported success but no 'box' is on PATH — the install did not take effect. Finish the host by hand: ${BOX_MANUAL}"
       fi
