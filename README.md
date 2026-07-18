@@ -2,7 +2,9 @@
 
 A CLI that turns a **pristine Debian server into a hardened, tailnet-joined
 node** — one curl, one command. A second command installs a version-pinned
-Coolify on a control-plane box.
+Coolify on a control-plane box. And inside a [box](https://github.com/heavy-duty/box)-minted
+guest, the same verb converges the **box tenants** — claude, codex, grok,
+staging — from thin, creds-free seeds (see *the box tenants* below).
 
 Philosophy (shared with [box](https://github.com/heavy-duty/box)):
 **public tool, private state**. rig carries plumbing logic only — no
@@ -68,19 +70,20 @@ itself is untouched — what bootstrap converged stays converged.
 
 ## Commands
 
-### `rig bootstrap <control-plane|workload|runner|staging|dev|workstation|custom>`
+### `rig bootstrap <control-plane|workload|runner|dev|workstation|custom>`
 
 Run as root on the fresh box (over SSH). Convergent — safe to re-run; a
-second run changes nothing.
+second run changes nothing. (The box TENANT roles — `claude`, `codex`,
+`grok`, `staging` — share the verb but are their own family; see *the box
+tenants* below.)
 
 ```sh
 rig bootstrap control-plane --hostname my-coolify-box
 rig bootstrap workload --hostname my-prod-box
 rig bootstrap runner --hostname my-ci-box
-rig bootstrap staging --hostname my-vm-host
 rig bootstrap dev --hostname my-dev-box
 rig bootstrap workstation --hostname my-laptop
-rig bootstrap custom --hostname odd-duck --class server --host yes --join authkey
+rig bootstrap custom --hostname my-vm-host --class server --host yes --join authkey
 ```
 
 - `--hostname <name>` — system + tailnet hostname (default: the role name;
@@ -107,9 +110,19 @@ presets nothing and requires `--hostname` plus all three traits.
 | `control-plane` | server | no   | authkey | `tag:server` |
 | `workload`      | server | no   | authkey | `tag:server` |
 | `runner`        | server | no   | authkey | `tag:ci` — refuses `tag:server` |
-| `staging`       | server | yes  | authkey | `tag:local` — refuses `tag:server` |
 | `dev`           | human  | yes  | authkey | `tag:local` — refuses `tag:server` |
 | `workstation`   | human  | yes  | login   | untagged — any tag refused |
+
+> **Where the `staging` preset went.** Before #31, `staging` was the VM-host
+> preset (`class=server host=yes join=authkey`). The name now belongs to the
+> box TENANT family — the *guest*, not the host under it — because that is
+> what "staging" mostly names in practice (the box the control plane will
+> manage), and two meanings on one word was the worse bug. The host shape
+> lost nothing: it is one flag away — `rig bootstrap dev --class server
+> --hostname my-vm-host` — or fully spelled as `custom --class server --host
+> yes --join authkey`. Tag policy is unchanged: mint the host's key with
+> `tag:local`; an effective `tag:server` is refused on every role but
+> `control-plane` and `workload`.
 
 The tag column is **derived policy, not a fourth trait**: `tag:server` means
 "the control plane manages this box", and `control-plane` and `workload` are
@@ -208,19 +221,20 @@ grant `tag:server` to repo-controlled code." A runner executes that code, and
 the check turns the worst misconfiguration from a documentation warning into a
 hard, post-join error.
 
-`staging` is the box that *hosts* staging boxes — Incus VMs minted by the
-[`box`](https://github.com/heavy-duty/box) CLI, each converged from inside with
-`rig bootstrap workload` and registered in the control plane as its own server.
-It is `class=server`: an unattended VM appliance — operators converge it and
-leave; nobody lives there. Mint its key with `tag:local`: the host and its
-guests sit on opposite sides of a trust boundary, and the *host* is never
-managed by the control plane — so the role **refuses an effective
-`tag:server`**, same mechanism as `runner`.
+The VM-host shape — the box that *hosts* staging boxes: Incus VMs minted by
+the [`box`](https://github.com/heavy-duty/box) CLI, each converged from inside
+with the tenant roles and (for staging guests) `rig bootstrap workload` —
+rides the traits since #31 (`--class server --host yes --join authkey`; see
+the note above). It is `class=server`: an unattended VM appliance — operators
+converge it and leave; nobody lives there. Mint its key with `tag:local`: the
+host and its guests sit on opposite sides of a trust boundary, and the *host*
+is never managed by the control plane — so an effective **`tag:server` is
+refused**, same mechanism as `runner`.
 
 On a host-class box (`host=yes`), bootstrap finishes the job instead of leaving
 a to-do: after the role marker is written it **installs the `box` CLI globally
 and runs box's own `setup-host`**, so the Incus stack is ready for
-`box new --template staging` when bootstrap returns. rig **delegates to box; it
+`box new` when bootstrap returns. rig **delegates to box; it
 never touches Incus itself** — it does not `apt-get install incus`, does not
 configure the daemon, does not create the `incus` group. It runs box's global
 installer (`curl … | BOX_YES=1 bash`) as root, and box installs Incus via its
@@ -248,11 +262,88 @@ merges box's root install lands in `/root`.)
 > fork); `RIG_SKIP_BOX_INSTALL=1` opts out entirely for a host whose box you
 > manage by hand.
 
-`dev` is `staging`'s human-class sibling — the same VM-hosting, `tag:local`
-shape with a person living on it, box CLI installed the same way — and
-`workstation` is the machine at the keyboard end of all the SSH connections:
-human-class, `join=login`, entering the tailnet as *your* device rather than the
-fleet's.
+`dev` is the human-class VM-hosting shape — `tag:local`, box CLI installed as
+above, a person living on it (`--class server` turns it into the unattended
+VM-host appliance) — and `workstation` is the machine at the keyboard end of
+all the SSH connections: human-class, `join=login`, entering the tailnet as
+*your* device rather than the fleet's.
+
+### `rig bootstrap <claude|codex|grok|staging>` — the box tenants
+
+Run as root, **inside** a [box](https://github.com/heavy-duty/box)-minted
+guest. Convergent — safe to re-run; a second run changes nothing.
+
+```sh
+rig bootstrap claude              # or codex, grok — the agent tenants
+rig bootstrap staging             # the server tenant (docker + sshd hardening)
+rig bootstrap claude --user dev   # when the seed's BOX_USER differs
+```
+
+**The layering** (rig#31 ↔ box#81): a box template stops being where tenant
+content lives. box mints a **thin, creds-free seed** — base image, the
+`BOX_USER`, rig (+ tmux) preinstalled, and nothing that joins or admits — and
+everything the guest *becomes* is a rig tenant role. cloud-init is a first-boot
+one-shot: not convergent, not re-runnable, and only parse-and-grep testable.
+rig roles are idempotent scripts with effective-state asserts, driven by the
+same harness as everything else — and re-runnable on an *existing* box to
+converge it to a new spec instead of re-minting it. One convergence engine;
+the guests were the hole.
+
+It is **one mechanism, parameterized per tenant** (`lib/tenant-config.sh`
+holds the whole per-tenant table), not four hand-maintained scripts:
+
+| tenant    | user     | what lands |
+|-----------|----------|------------|
+| `claude`  | `claude` | the agent toolbelt (git, gh, tmux, ripgrep, jq, age, unzip, build-essential), docker, node 22, the Claude Code CLI on the system PATH, zsh + oh-my-zsh, and `~/.claude/CLAUDE.md` |
+| `codex`   | `codex`  | the toolbelt, docker, node 22, `@openai/codex` on the system PATH, and `~/.codex/AGENTS.md` |
+| `grok`    | `grok`   | the toolbelt, docker, the grok CLI on the system PATH, and `~/.grok/AGENTS.md` |
+| `staging` | `ops`    | box#69's server posture: docker + the same sshd hardening the machine roles get (shared `lib/sshd.sh`, `class=server` acceptance) |
+
+Every install is **asserted on effective state**, not exit codes: the CLI must
+*answer* (`--version`, run as the tenant user — a CLI that exists but cannot
+run has already cost a drill), docker must answer, `sshd -T` must resolve the
+hardening. The CLI also lands on the **system** PATH (`/usr/local/bin`):
+`box exec <box> -- claude …` runs a non-interactive shell that reads no rc
+files, so a PATH export alone is invisible to it.
+
+**Creds-free and non-interactive, by contract.** box auto-runs these at mint
+(`box exec … rig bootstrap claude`), so nothing here prompts, joins, or admits
+— no tailnet, no keys (the harness pins this by *absence*: no `tailscale`, no
+prompt, in the shipped script). The one creds-holding step a staging guest
+eventually needs — the tailnet workload join — stays **operator-run**, exactly
+as box#69 designed it: `box shell` → `sudo rig bootstrap workload --hostname
+<name>` with a single-use tagged pre-auth key. After that join, re-running
+`rig bootstrap staging` still converges docker + hardening and leaves the
+workload marker alone — the machine role is the truer statement of what the
+box became.
+
+**The agent-context file carries the box#80 guard, once.** Every agent tenant
+writes its agent's instructions file (`CLAUDE.md` / `AGENTS.md`), rendered
+from one shared template: the creds-free contract, the isolation and
+disposability facts, and the guard note — **never run `box setup-host`,
+`box teardown-host`, or the drill inside a box; the box you are in is not a
+host you own**. A nested box stack claims the guest's own uplink subnet and
+silently breaks its networking (box#80). The note lives in
+`lib/tenant-config.sh` exactly once, not copy-pasted per template — that was
+the point of moving it here.
+
+**Tenants and the role marker.** A tenant run writes `role=<tenant> tenant=yes
+host=no` — no `class=`, because a guest has no root-door policy of its own
+(`rig users close-root` fails closed on it, by design). The guard runs the
+other way too: a box already carrying a **machine** role refuses the agent
+tenants outright, and *any* tenant refuses a `host=yes` box — a VM host is
+the opposite of a guest, and a pre-#31 staging *host* re-running its old
+command is exactly who that refusal catches (it names the new spelling).
+
+> **The rig install in the seed is unpinned — same honesty as the box note
+> above.** The seed preinstalls rig via its curl installer, which resolves
+> `RIG_REPO`/`RIG_REF` (default `heavy-duty/rig@main`, branches only — rig
+> cuts no tags yet). That inverts the install edge on this page: rig installs
+> box on host-class machines, and box guests now install rig — both tracking
+> a moving `main` until a release flow exists (rig#32). `RIG_REPO`/`RIG_REF`
+> are the pin points the day there is something to pin to, or point them at a
+> frozen branch of your own fork. The seed side of this edge is box#81's to
+> document.
 
 ### The identity model
 
@@ -271,9 +362,14 @@ comparison, translated onto the traits that replaced the class binary:
 | `control-plane` | server | no   | authkey | nobody — Coolify runs here           | open — the automation door       |
 | `workload`      | server | no   | authkey | nobody — deployed services run here  | open — the automation door       |
 | `runner`        | server | no   | authkey | nobody — CI jobs as `github-runner`  | open — the automation door       |
-| `staging`       | server | yes  | authkey | nobody — an unattended VM appliance  | open — the automation door       |
 | `dev`           | human  | yes  | authkey | operators, minting boxes             | closed by `rig users close-root` |
 | `workstation`   | human  | yes  | login   | its owner                            | closed by `rig users close-root` |
+
+(The unattended VM-host appliance — formerly the `staging` preset — is the
+`class=server host=yes join=authkey` shape: nobody lives there, root SSH stays
+open as the automation door. The box TENANT roles sit outside this table on
+purpose: a guest is not a tailnet machine, and its marker carries no `class=`,
+so `rig users close-root` fails closed on it.)
 
 Who installs what, and who runs as what: **bootstrap is always root** and
 installs everything a role needs — on `host=yes` that includes the box CLI
@@ -774,7 +870,14 @@ uninstalls with their absence asserts. The
 `rig users` family is covered the same way: the harness drives its refusal
 matrix — users-file parsing, the marker gates, the lexical drop-in-name
 assertion, the validate-then-apply ordering — through the sourced lib
-functions, non-root and network-free. The end-to-end rehearsal is a throwaway
-VM/container: pristine Debian → install → `bootstrap workload` with a real
-single-use key → assert the sshd drop-in, tailnet join, and a no-op second
-run → destroy, remove the node from the tailnet.
+functions, non-root and network-free. The tenant family follows the same
+split: the harness proves the arg/refusal surface, the marker guards (off
+fixture markers), the pure parameter table, and the rendered agent-context
+file — guard note included — plus absence-greps for the creds-free contract;
+the real converge belongs to the rehearsal. The end-to-end rehearsal is a
+throwaway VM/container: pristine Debian → install → `bootstrap workload` with
+a real single-use key → assert the sshd drop-in, tailnet join, and a no-op
+second run → destroy, remove the node from the tailnet. The tenant rehearsal
+is the same shape, creds-free: container + seed user → `rig bootstrap claude`
+/ `staging` → assert the CLI answers, docker answers, `sshd -T`, the context
+file — then re-run and watch it no-op.

@@ -13,7 +13,7 @@ usage() {
 usage: rig <command> [args]
 
 commands:
-  bootstrap <control-plane|workload|runner|staging|dev|workstation|custom>
+  bootstrap <control-plane|workload|runner|dev|workstation|custom>
             [--hostname <name>] [--class <human|server>] [--host <yes|no>]
             [--join <authkey|login>]
       OS plumbing on a pristine Debian box: hardening, unattended-upgrades,
@@ -24,6 +24,14 @@ commands:
       only control-plane and workload may carry tag:server. join=login
       (workstation) needs no key: interactive login, node must come up
       untagged. Run as root.
+  bootstrap <claude|codex|grok|staging> [--user <name>]
+      The box TENANT roles: converge a box-minted guest. claude|codex|grok
+      land the agent toolbelt (git, gh, tmux, docker), the agent's CLI on
+      the system PATH, and the agent-context file (with the box#80 guard:
+      never run box setup-host inside a box). staging lands box#69's server
+      posture — docker + sshd hardening; its tailnet join stays operator-run
+      via 'rig bootstrap workload'. Creds-free and non-interactive: box
+      auto-runs these at mint. Run as root, inside the box.
   coolify install --version <pin>
       Pinned Coolify install (AUTOUPDATE=false). Control-plane box only.
   coolify backup install [options]
