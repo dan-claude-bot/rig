@@ -475,14 +475,74 @@ else
 fi
 rm -f "$MARKER_TMP"
 
+# --- box install (host-class only) -------------------------------------------
+# A host=yes box exists to run guest boxes, so bootstrap finishes the job rather
+# than printing a to-do: it installs the box CLI globally and lets box's OWN
+# setup-host build the Incus stack. Placed AFTER the role marker write on
+# purpose — a box that failed to become what it claims (tag refused, join backed
+# out) dies above and never reaches here, so box is never installed on top of a
+# half-built host.
+#
+# rig DELEGATES to box; it never touches Incus itself. This is the same design
+# law `rig users apply` enforces — "rig NEVER installs Incus: box's setup-host
+# owns the daemon and its group." rig does not apt-install incus, does not
+# configure the daemon, does not create the incus group. It runs BOX'S global
+# installer as root, and box installs Incus via its setup-host. Two tools
+# converging one daemon is drift by construction; box is the single owner.
+#
+# CONVERGENT: box's installer is a no-op when box is already installed — it says
+# so and changes nothing — so re-running bootstrap is safe and cheap.
+#
+# OPT-OUT: RIG_SKIP_BOX_INSTALL=1 skips the whole step (a container rehearsal
+# with no /dev/kvm, an offline box, or a host whose box you manage by hand). The
+# step ALSO skips gracefully — with a warning pointing at the manual command —
+# when curl is missing or the network is down: bootstrap's core job is OS
+# hardening + the tailnet, and box is the host EXTRA, so a failed box install
+# must never abort a bootstrap that otherwise fully succeeded.
+#
+# PIN POINTS: BOX_REPO / BOX_REF override the source (default heavy-duty/box@main).
+# BOX_YES=1 makes box's installer non-interactive AND keeps setup-host (so the
+# Incus stack is actually built, not just the CLI dropped on PATH).
+#
+# rig#12's hard constraints hold here: the HOST joined the tailnet above; the
+# guest boxes never do (box does not join the tailnet — fine), and there are no
+# credentials on the host (box is creds-free — fine).
+#
+# DEPENDENCY (box#71): the GLOBAL, world-readable install path — box under
+# /opt/box with a /usr/local/bin shim that every non-root user can read — depends
+# on box PR #71. Until that merges, box's root install lands in /root and non-root
+# users cannot reach it, so this step is only fully correct once box#71 is merged.
+if [ "$HOST" = "yes" ]; then
+  BOX_REPO="${BOX_REPO:-heavy-duty/box}"
+  BOX_REF="${BOX_REF:-main}"
+  BOX_INSTALL_URL="https://raw.githubusercontent.com/${BOX_REPO}/${BOX_REF}/install.sh"
+  BOX_MANUAL="curl -fsSL ${BOX_INSTALL_URL} | BOX_YES=1 bash"
+  if [ "${RIG_SKIP_BOX_INSTALL:-}" = "1" ]; then
+    log "RIG_SKIP_BOX_INSTALL=1 — skipping box install; to prepare Incus by hand later: ${BOX_MANUAL}"
+  elif ! command -v curl >/dev/null 2>&1; then
+    warn "curl not found — skipping box install; once curl is present, prepare Incus with: ${BOX_MANUAL}"
+  else
+    log "installing box (${BOX_REPO}@${BOX_REF}) and running its host setup — box owns Incus, not rig"
+    # BOX_YES=1 in the environment: non-interactive AND keeps setup-host, so box
+    # builds the Incus stack rather than only dropping the CLI on PATH. Running as
+    # root, box installs globally (/opt/box + /usr/local/bin). No-op if box is
+    # already installed, so re-running bootstrap converges instead of reinstalling.
+    # A curl failure (no network) fails the pipe under pipefail and lands in the
+    # else — a warning, never an abort: box is the host extra, the OS+tailnet core
+    # is already done.
+    if curl -fsSL "$BOX_INSTALL_URL" | BOX_YES=1 bash; then
+      log "box installed and host set up — mint guest boxes with 'box new'"
+    else
+      warn "box install did not complete (no network, or box's installer failed); bootstrap's core work is done. Finish the host by hand: ${BOX_MANUAL}"
+    fi
+  fi
+fi
+
 log "done — role ${ROLE}, hostname ${TS_HOSTNAME}"
 if [ "$ROLE" = "control-plane" ]; then
   log "next: rig coolify install --version <pin>"
 elif [ "$ROLE" = "runner" ]; then
   log "next: rig runner install --repo <owner/repo> --version <pin>"
-fi
-if [ "$HOST" = "yes" ]; then
-  log "next: install the box CLI and run 'box setup-host' to prepare Incus for guest boxes"
 fi
 # Every class gets operators: humans always enter as themselves and elevate via
 # sudo — a shared root login is unattributable. What differs by class is root
