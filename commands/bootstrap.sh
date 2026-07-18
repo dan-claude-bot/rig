@@ -536,7 +536,7 @@ if [ "$HOST" = "yes" ]; then
       # is written for a sudo-capable user, and one of its paths exits 0 after
       # only adding a group, asking for a re-login. That is the sshd first-wins
       # bug's exact shape — asserting what was REQUESTED (here: the installer's
-      # claimed success) instead of what actually TOOK. The check stays
+      # claimed success) instead of what actually TOOK.
       # Two proofs, one claim each. `command -v box` proves the CLI landed
       # (box's root install symlinks into /usr/local/bin, already on this
       # shell's PATH — no login shell needed). "Host set up" is a separate
