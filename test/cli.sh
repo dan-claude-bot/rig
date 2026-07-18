@@ -425,10 +425,40 @@ check "users parser: one run reports the root line"  0 "" grep -q "not a rig-man
 check "users parser: same run reports the bad role"  0 "" grep -q "unknown role" "$MULTI_ERRS"
 rm -f "$MULTI_ERRS"
 
+# --- '@root': seed the admin's keys from root's own authorized_keys (#17) ----
+# The operator provably holds a root private key — they SSHed in with it to
+# run apply at all — so seeding root's CURRENT authorized_keys is the one key
+# source that cannot lock them out. The parser owns only the token's SHAPE
+# (reading /root/.ssh needs root and is apply's business), so the shape is
+# proven here: the exact token parses, trailing material is refused, literal
+# key lines mix (append semantics), a second '@root' is a duplicate, and root
+# cannot seed itself.
+printf '%s\n' 'dan admin @root' > "$FIX_BAD"
+check "users parser: '@root' is a valid key field" 0 "dan|admin|@root" parse "$FIX_BAD"
+printf '%s\n' 'dan admin @root ssh-ed25519 AAAA x' > "$FIX_BAD"
+check "users parser: '@root' takes no trailing material" 1 "whole key field" parse "$FIX_BAD"
+printf '%s\n' 'dan admin @root' 'dan admin ssh-ed25519 AAAAC3lit dan@desk' > "$FIX_BAD"
+check "users parser: '@root' mixes with literal key lines" \
+  0 "dan|admin|ssh-ed25519 AAAAC3lit dan@desk" parse "$FIX_BAD"
+printf '%s\n' 'dan admin @root' 'dan admin @root' > "$FIX_BAD"
+check "users parser: a second '@root' line is a duplicate" 1 "duplicate key line" parse "$FIX_BAD"
+printf '%s\n' 'root admin @root' > "$FIX_BAD"
+check "users parser: root cannot seed from itself" 1 "not a rig-managed user" parse "$FIX_BAD"
+# The empty-seed refusal (root has no authorized_keys) sits behind the root
+# check — /root/.ssh is unreadable before it — so grep the die message, the
+# same way every root-only refusal in this harness is pinned.
+check "users apply: '@root' with a keyless root dies naming the repair" 0 "" \
+  grep -q "root has no authorized_keys" "$ROOT/commands/users-apply.sh"
+
 if [ "$(id -u)" -ne 0 ]; then
   # A VALID fixture proves the whole file-validation pass sits before the
   # root check — a parse failure here would exit 2, not 1.
   check "users apply: refuses non-root"  1 "must run as root" "$ROOT/commands/users-apply.sh" --file "$FIX_OK"
+  # An '@root' fixture reaching the root check proves the token is parse-pass
+  # validation, not a runtime surprise.
+  printf '%s\n' 'dan admin @root' > "$FIX_BAD"
+  check "users apply: '@root' fixture parses, refuses non-root" 1 "must run as root" \
+    "$ROOT/commands/users-apply.sh" --file "$FIX_BAD"
   check "users status: refuses non-root" 1 "must run as root" "$ROOT/commands/users-status.sh"
 else
   echo "skip: users non-root refusals (running as root)"

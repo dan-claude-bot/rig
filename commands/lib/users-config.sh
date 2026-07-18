@@ -13,6 +13,16 @@
 # Repeated username lines are additional authorized keys; the roles field must
 # be IDENTICAL on each — a repeated line means "another key", never a quiet
 # role edit hiding mid-file. '#' comments and blank lines are skipped.
+#
+# The key field may also be the literal token '@root' (#17): "this user's
+# authorized_keys becomes root's CURRENT /root/.ssh/authorized_keys at apply
+# time". The operator provably holds a root private key — they SSHed in with
+# it to run apply at all — so seeding it is the one key source that cannot
+# lock them out; any pasted literal can be a key they do not hold. '@root'
+# mixes with literal key lines: seeded keys come first, literal keys are
+# APPENDED after them, and re-runs converge to root's then-current keys plus
+# the literals. The parser only owns the token's shape — reading root's file
+# needs root and is apply's business.
 
 # parse_users_file <path>
 #
@@ -24,9 +34,11 @@
 # Refusals: unknown role (the valid set is named), differing roles across one
 # user's lines, root as username (root's keys are class policy's business, not
 # this file's), malformed line (fewer than 3 fields, or a key field that does
-# not start with an SSH key type), invalid username (the charset below —
-# '|' would corrupt this parser's own delimited stream, a leading '-' reads
-# as a useradd flag), duplicate identical key line.
+# not start with an SSH key type and is not exactly '@root'), '@root' with
+# trailing material (the token IS the whole field), invalid username (the
+# charset below — '|' would corrupt this parser's own delimited stream, a
+# leading '-' reads as a useradd flag), duplicate identical key line (a
+# second '@root' for one user counts — the seen[] map catches it for free).
 parse_users_file() {
   local path="$1"
   local -a errs=() out=() rlist=()
@@ -41,9 +53,13 @@ parse_users_file() {
       continue
     fi
     case "$k" in
+      @root) ;;   # seed token — apply reads root's authorized_keys (#17)
+      @root*)
+        errs+=("line $n: '@root' is the whole key field — it names root's authorized_keys as this user's key source and takes no trailing material")
+        continue ;;
       ssh-*|ecdsa-*|sk-ssh-*|sk-ecdsa-*) ;;
       *)
-        errs+=("line $n: malformed — key field must start with an SSH key type (ssh-..., ecdsa-...)")
+        errs+=("line $n: malformed — key field must start with an SSH key type (ssh-..., ecdsa-...) or be the literal '@root'")
         continue ;;
     esac
     # The username feeds this parser's own '|'-delimited stream and then
