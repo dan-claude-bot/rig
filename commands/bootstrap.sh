@@ -6,6 +6,8 @@ set -euo pipefail
 HERE="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")" && pwd)"
 # shellcheck source=SCRIPTDIR/lib/runner-config.sh
 . "$HERE/lib/runner-config.sh"   # json_field / json_string_array read the netmap
+# shellcheck source=SCRIPTDIR/lib/sshd.sh
+. "$HERE/lib/sshd.sh"            # harden_sshd — shared with the staging tenant
 
 log()  { printf 'rig-bootstrap: %s\n' "$*"; }
 warn() { printf 'rig-bootstrap: WARNING: %s\n' "$*" >&2; }
@@ -13,9 +15,11 @@ die()  { printf 'rig-bootstrap: ERROR: %s\n' "$1" >&2; exit "${2:-1}"; }
 
 usage() {
   cat <<'EOF'
-usage: rig bootstrap <control-plane|workload|runner|staging|dev|workstation|custom>
+usage: rig bootstrap <control-plane|workload|runner|dev|workstation|custom>
                      [--hostname <name>] [--class <human|server>]
                      [--host <yes|no>] [--join <authkey|login>]
+       rig bootstrap <claude|codex|grok|staging> [--user <name>]
+                     (the box TENANT roles — see their own --help)
 
   --hostname  system + tailnet hostname (default: the role name; custom has
               no default and requires it)
@@ -32,9 +36,12 @@ custom presets nothing and requires --hostname plus all three traits.
   control-plane   server  no    authkey
   workload        server  no    authkey
   runner          server  no    authkey
-  staging         server  yes   authkey
   dev             human   yes   authkey
   workstation     human   yes   login
+
+The former staging VM-host preset is now spelled through the traits:
+'custom --class server --host yes --join authkey' (or 'dev --class server').
+'staging' names the box TENANT role today — the guest, not the host.
 
 The tailnet tag is NOT a rig argument. A pre-auth key is minted WITH its tags,
 so the key is the single source of truth: rig no longer requests a tag it might
@@ -56,10 +63,16 @@ EOF
 # --- args (validated before the root check, so errors are testable) ---------
 ROLE="${1:-}"
 case "$ROLE" in
-  control-plane|workload|runner|staging|dev|workstation|custom) shift ;;
+  control-plane|workload|runner|dev|workstation|custom) shift ;;
+  claude|codex|grok|staging)
+    # The box TENANT roles (#31) are a different family — guests a box mints,
+    # never tailnet machines — and live in their own mechanism, one script
+    # parameterized per tenant. Dispatched here so `rig bootstrap <role>`
+    # stays the single entrypoint for both families.
+    exec "$HERE/bootstrap-tenant.sh" "$@" ;;
   -h|--help) usage; exit 0 ;;
-  "") usage >&2; die "role required (control-plane|workload|runner|staging|dev|workstation|custom)" 2 ;;
-  *) die "unknown role: $ROLE (want control-plane|workload|runner|staging|dev|workstation|custom)" 2 ;;
+  "") usage >&2; die "role required (control-plane|workload|runner|dev|workstation|custom — or a tenant role: claude|codex|grok|staging)" 2 ;;
+  *) die "unknown role: $ROLE (want control-plane|workload|runner|dev|workstation|custom — or a tenant role: claude|codex|grok|staging)" 2 ;;
 esac
 
 # Role→traits map — the single place a role's shape is declared (issue #26).
@@ -71,7 +84,6 @@ case "$ROLE" in
   control-plane) CLASS=server HOST=no  JOIN=authkey ;;
   workload)      CLASS=server HOST=no  JOIN=authkey ;;
   runner)        CLASS=server HOST=no  JOIN=authkey ;;
-  staging)       CLASS=server HOST=yes JOIN=authkey ;;
   dev)           CLASS=human  HOST=yes JOIN=authkey ;;
   workstation)   CLASS=human  HOST=yes JOIN=login   ;;
   custom)        ;;
@@ -182,74 +194,13 @@ APT::Periodic::Update-Package-Lists "1";
 APT::Periodic::Unattended-Upgrade "1";
 EOF
 
-# --- sshd hardening (restart only when the drop-in actually changed) ---------
-# The name must sort BEFORE cloud-init's drop-in. sshd_config is FIRST-wins
-# ("for each keyword, the first obtained value will be used" — sshd_config(5)),
-# and Include expands the glob in lexical order. Cloud images ship
-# /etc/ssh/sshd_config.d/50-cloud-init.conf carrying `PasswordAuthentication
-# yes`, so the old 99-rig.conf was read second and silently lost every keyword
-# it set. 00- wins. (Found 2026-07-12: every Hetzner box rig had bootstrapped
-# was still serving `passwordauthentication yes`. The Incus rehearsal never
-# caught it — a pristine Debian container has no cloud-init drop-in.)
-DROPIN=/etc/ssh/sshd_config.d/00-rig.conf
-LEGACY_DROPIN=/etc/ssh/sshd_config.d/99-rig.conf
-TMP="$(mktemp)"
-cat > "$TMP" <<'EOF'
-PermitRootLogin prohibit-password
-PasswordAuthentication no
-EOF
-if ! cmp -s "$TMP" "$DROPIN" 2>/dev/null || [ -e "$LEGACY_DROPIN" ]; then
-  BACKUP=""
-  [ -e "$DROPIN" ] && { BACKUP="$(mktemp)"; cp -a "$DROPIN" "$BACKUP"; }
-  install -m 0644 "$TMP" "$DROPIN"
-  rm -f "$LEGACY_DROPIN"   # sweep the losing file from already-bootstrapped boxes
-
-  # Validate the MERGED config BEFORE bouncing the daemon. On a box whose only
-  # door is SSH, `systemctl restart ssh` against a config sshd refuses to parse
-  # leaves no listener and no way back in. `sshd -t` parses everything sshd
-  # would parse — our drop-in, cloud-init's, and any third-party file — so a
-  # broken neighbour is caught here rather than after the door has shut.
-  if ! sshd -t 2>/dev/null; then
-    if [ -n "$BACKUP" ]; then cp -a "$BACKUP" "$DROPIN"; else rm -f "$DROPIN"; fi
-    rm -f "$TMP" "$BACKUP"
-    die "sshd rejects the merged config; drop-in rolled back, daemon untouched. Run 'sshd -t' to see which file is bad."
-  fi
-  rm -f "$BACKUP"
-
-  systemctl restart ssh
-  log "sshd hardening drop-in installed"
-else
-  log "sshd hardening drop-in already in place"
-fi
-rm -f "$TMP"
-
-# Assert the EFFECTIVE config, not the file's existence — asserting the file is
-# what let the first-wins bug ship green. `sshd -T` is what the daemon actually
-# resolved, cloud-init and all.
-eff="$(sshd -T 2>/dev/null)" || die "sshd -T failed; refusing to claim a hardened box"
-echo "$eff" | grep -qx 'passwordauthentication no' \
-  || die "sshd still resolves passwordauthentication=yes — a drop-in is beating ${DROPIN}; check ls /etc/ssh/sshd_config.d/"
-# The permitrootlogin acceptance is CLASS-gated, because `no` means opposite
-# things on the two classes. class=human: `no` is the post-`rig users
-# close-root` state — strictly harder than the prohibit-password this script
-# installs. Bootstrap must never read a closed door as a broken one, and it
-# cannot reopen one either: by first-wins its own drop-in loses to
-# 00-rig-users.conf. class=server: root SSH is the control plane's automation
-# door (Coolify SSHes in as root), so `no` is not hardening — it is fleet
-# management silently dead, and the likely culprit is a drop-in left over from
-# a former class=human life on a repurposed box. rig can DETECT that but must
-# not FIX it: silently reopening a root door is worse than a loud stop, so —
-# same doctrine as the tag checks — detect, refuse, and name the repair.
-if [ "$CLASS" = "human" ]; then
-  echo "$eff" | grep -qxE 'permitrootlogin (no|prohibit-password|without-password)' \
-    || die "sshd still permits root password login — check ls /etc/ssh/sshd_config.d/"
-elif echo "$eff" | grep -qx 'permitrootlogin no'; then
-  die "sshd resolves permitrootlogin=no, but this is a class=server box: root SSH is the control plane's automation door, and with it shut the fleet cannot manage this box. Likely cause: a leftover /etc/ssh/sshd_config.d/00-rig-users.conf from a former class=human life ('rig users close-root' ran here once). Remove that drop-in and re-run bootstrap."
-else
-  echo "$eff" | grep -qxE 'permitrootlogin (prohibit-password|without-password)' \
-    || die "sshd still permits root password login — check ls /etc/ssh/sshd_config.d/"
-fi
-log "sshd hardening verified (sshd -T: passwordauthentication no)"
+# --- sshd hardening ----------------------------------------------------------
+# The whole block lives in lib/sshd.sh, shared with the staging TENANT role —
+# one drop-in, one converger, never two copies drifting apart. Everything the
+# block learned the hard way (00- beats cloud-init's 50- under first-wins,
+# validate-then-restart, assert sshd -T not the file, the class-gated
+# permitrootlogin acceptance) moved with it, verbatim.
+harden_sshd "$CLASS"
 
 # --- system hostname ----------------------------------------------------------
 # Set the SYSTEM hostname too, not just the tailnet one. Until 2026-07-12 rig
@@ -342,9 +293,11 @@ verify_effective_tag() {
       control-plane|workload) ;;
       runner)
         die "role runner joined with tag:server (effective tags: $(printf '%s' "$tags" | tr '\n' ' ')). The key you used grants tag:server to repo-controlled code; that must never happen. Re-run bootstrap with a key minted for a CI tag (e.g. tag:ci)." ;;
-      staging)
-        die "role staging joined with tag:server (effective tags: $(printf '%s' "$tags" | tr '\n' ' ')). A staging host is never managed by the control plane — its guest VMs are. Re-run bootstrap with a key minted for tag:local." ;;
       *)
+        # This arm now also owns the VM-host shape the old staging preset
+        # covered (custom/dev --class server): a host is never managed by the
+        # control plane — its guest VMs are — so tag:server is refused there
+        # like everywhere else outside control-plane|workload.
         die "role $ROLE joined with tag:server (effective tags: $(printf '%s' "$tags" | tr '\n' ' ')). Only control-plane and workload are managed by the control plane; tag:server on this box extends every server grant to it. Re-run bootstrap with a key minted for a non-server tag (e.g. tag:local)." ;;
     esac
   fi

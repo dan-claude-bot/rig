@@ -47,15 +47,17 @@ check "bootstrap: --ts-tag is removed (with value), exit 2" 2 "comes from the pr
   "$ROOT/commands/bootstrap.sh" runner --ts-tag tag:server
 check "bootstrap: --ts-tag is removed (no value), exit 2"   2 "comes from the pre-auth key" \
   "$ROOT/commands/bootstrap.sh" runner --ts-tag
-check "bootstrap: staging + removed --ts-tag exits 2" 2 "comes from the pre-auth key" \
+# staging is a box TENANT role since #31 (the guest, not the VM host), and it
+# never joins the tailnet — but --ts-tag on it must still die with a story,
+# not an "unknown flag": scripts from its trait-preset life may pass it, and
+# the message must say where both the tag AND the join went.
+check "bootstrap: staging + removed --ts-tag exits 2" 2 "never join the tailnet" \
   "$ROOT/commands/bootstrap.sh" staging --ts-tag tag:server
-# The staging tag:server refusal rides the EFFECTIVE tag, inside
-# verify_effective_tag — a path that needs a real tailnet, so it belongs to the
-# rehearsal. What the harness CAN prove is that the refusal exists in the
-# shipped script: grep the die message, so a deleted guard cannot ship green
-# (the same reason the runner-install repo guard is grepped below).
-check "bootstrap: staging effective-tag refusal is present" 0 "" \
-  grep -q "role staging joined with tag:server" "$ROOT/commands/bootstrap.sh"
+# The old staging effective-tag refusal guarded the VM-HOST shape, which now
+# rides the traits (custom/dev --class server) — the catch-all tag:server
+# refusal must still own that shape, so grep the general die instead.
+check "bootstrap: the catch-all tag:server refusal is present" 0 "" \
+  grep -q "Only control-plane and workload are managed by the control plane" "$ROOT/commands/bootstrap.sh"
 # --- traits: roles are presets, every trait individually settable (#26) -----
 check "bootstrap: unknown role still exits 2"    2 "unknown role" "$ROOT/commands/bootstrap.sh" potato
 check "bootstrap: bad --class value exits 2"     2 "human|server" "$ROOT/commands/bootstrap.sh" workload --class potato
@@ -178,7 +180,13 @@ check "README: points at heavy-duty/box" 0 "" \
 if [ "$(id -u)" -ne 0 ]; then
   check "bootstrap: refuses non-root"      1 "must run as root" env TS_AUTHKEY=x "$ROOT/commands/bootstrap.sh" workload
   check "bootstrap: runner role parses, refuses non-root" 1 "must run as root" env TS_AUTHKEY=x "$ROOT/commands/bootstrap.sh" runner
-  check "bootstrap: staging role parses, refuses non-root" 1 "must run as root" env TS_AUTHKEY=x "$ROOT/commands/bootstrap.sh" staging
+  # staging dispatches to the tenant mechanism now; reaching ITS root check
+  # through bootstrap.sh proves the dispatch and the tenant arg pass in one go.
+  # RIG_ROLE_MARKER points at an absent fixture: the tenant marker guard runs
+  # before the root check, and the machine running this harness may well have
+  # a real /etc/rig/role of its own.
+  check "bootstrap: staging dispatches to the tenant mechanism, refuses non-root" 1 "must run as root" \
+    env RIG_ROLE_MARKER=/nonexistent/rig-role "$ROOT/commands/bootstrap.sh" staging
   check "bootstrap: dev role parses, refuses non-root" 1 "must run as root" env TS_AUTHKEY=x "$ROOT/commands/bootstrap.sh" dev
   check "bootstrap: workstation parses, refuses non-root" 1 "must run as root" env -u TS_AUTHKEY "$ROOT/commands/bootstrap.sh" workstation
   check "bootstrap: custom parses, refuses non-root" 1 "must run as root" \
@@ -186,6 +194,126 @@ if [ "$(id -u)" -ne 0 ]; then
 else
   echo "skip: bootstrap non-root refusals (running as root)"
 fi
+
+# --- box tenant roles (#31): claude|codex|grok|staging ------------------------
+# What a box-minted guest becomes — ONE mechanism (bootstrap-tenant.sh),
+# parameterized per tenant through lib/tenant-config.sh, dispatched from
+# bootstrap.sh so `rig bootstrap <role>` stays the single entrypoint. The real
+# converge needs root, a tenant user, and the network — the container
+# rehearsal's job — so the harness proves what it can non-root: the whole
+# arg/refusal surface, the pure parameter table, the rendered agent-context
+# file (guard note included), and grep-pins on the shipped script.
+check "tenant: --help exits 0"          0 "usage:" "$ROOT/commands/bootstrap-tenant.sh" --help
+check "tenant: role required, exit 2"   2 "tenant role required" "$ROOT/commands/bootstrap-tenant.sh"
+check "tenant: unknown role exits 2"    2 "unknown tenant role" "$ROOT/commands/bootstrap-tenant.sh" potato
+check "tenant: unknown flag exits 2"    2 "unknown flag" "$ROOT/commands/bootstrap-tenant.sh" claude --nope
+check "tenant: --user needs value"      2 "needs a value" "$ROOT/commands/bootstrap-tenant.sh" claude --user
+check "tenant: bad --user charset exits 2" 2 "invalid user" "$ROOT/commands/bootstrap-tenant.sh" claude --user 'fo|o'
+# The machine-role traits die with the tenant story, never "unknown flag" — an
+# operator reaching for --hostname must learn where the trait family went.
+check "tenant: trait flags die with the tenant story" 2 "have no traits" \
+  "$ROOT/commands/bootstrap-tenant.sh" claude --class human
+check "tenant: --hostname dies the same way" 2 "have no traits" \
+  "$ROOT/commands/bootstrap-tenant.sh" staging --hostname my-guest
+# Dispatch: the machine-role entrypoint hands tenant roles to the tenant
+# mechanism with args intact (--help reaching the TENANT usage proves both).
+check "bootstrap: tenant roles dispatch through bootstrap.sh" 0 "claude|codex|grok|staging" \
+  "$ROOT/commands/bootstrap.sh" claude --help
+# The marker guard fires BEFORE the root check (repo precedent: the coolify
+# marker warning), so the refusals are provable here off fixture markers. A
+# VM host (host=yes) refuses for every tenant — and names the staging rename,
+# because a pre-#31 staging HOST re-running its old command is exactly who
+# lands here. An agent tenant refuses ANY machine-role box; staging tolerates
+# a class= marker with host=no — that is the staging guest after its
+# operator-run workload join, and re-converging it is what convergence is for.
+TEN_FIX="$(mktemp -d)"
+printf 'role=dev class=human host=yes join=authkey\n'      > "$TEN_FIX/host"
+printf 'role=workload class=server host=no join=authkey\n' > "$TEN_FIX/machine"
+printf 'role=claude tenant=yes host=no\n'                  > "$TEN_FIX/tenant"
+check "tenant: refuses a host=yes box (a VM host is never a guest)" 1 "hosts VMs" \
+  env RIG_ROLE_MARKER="$TEN_FIX/host" "$ROOT/commands/bootstrap-tenant.sh" claude
+check "tenant: the host refusal names the old staging preset's new spelling" 1 "custom --class server --host yes" \
+  env RIG_ROLE_MARKER="$TEN_FIX/host" "$ROOT/commands/bootstrap-tenant.sh" staging
+check "tenant: an agent role refuses a machine-role box" 1 "never tailnet machines" \
+  env RIG_ROLE_MARKER="$TEN_FIX/machine" "$ROOT/commands/bootstrap-tenant.sh" claude
+if [ "$(id -u)" -ne 0 ]; then
+  # RIG_ROLE_MARKER pinned to the absent fixture: the marker guard runs before
+  # the root check, and the harness machine may carry a real /etc/rig/role.
+  check "tenant: claude parses, refuses non-root" 1 "must run as root" \
+    env RIG_ROLE_MARKER="$TEN_FIX/absent" "$ROOT/commands/bootstrap-tenant.sh" claude
+  check "tenant: codex parses, refuses non-root"  1 "must run as root" \
+    env RIG_ROLE_MARKER="$TEN_FIX/absent" "$ROOT/commands/bootstrap-tenant.sh" codex
+  check "tenant: grok parses, refuses non-root"   1 "must run as root" \
+    env RIG_ROLE_MARKER="$TEN_FIX/absent" "$ROOT/commands/bootstrap-tenant.sh" grok
+  check "tenant: staging tolerates a workload-joined guest's marker" 1 "must run as root" \
+    env RIG_ROLE_MARKER="$TEN_FIX/machine" "$ROOT/commands/bootstrap-tenant.sh" staging
+  check "tenant: a tenant marker re-runs fine (convergence)" 1 "must run as root" \
+    env RIG_ROLE_MARKER="$TEN_FIX/tenant" "$ROOT/commands/bootstrap-tenant.sh" claude
+else
+  echo "skip: tenant non-root refusals (running as root)"
+fi
+rm -rf "$TEN_FIX"
+
+# The per-tenant parameter table and the agent-context renderer are pure lib
+# functions on purpose (repo precedent: parse_users_file, json_string_array):
+# the CLI path to them sits behind root + a real tenant user, so the harness
+# proves them here, sourced, non-root and network-free.
+tuser() { bash -c 'set -euo pipefail
+  . "$1/commands/lib/tenant-config.sh"; tenant_user "$2"' _ "$ROOT" "$1"; }
+tpath() { bash -c 'set -euo pipefail
+  . "$1/commands/lib/tenant-config.sh"; tenant_context_path "$2" "$3"' _ "$ROOT" "$1" "$2"; }
+tctx()  { bash -c 'set -euo pipefail
+  . "$1/commands/lib/tenant-config.sh"; render_tenant_context "$2"' _ "$ROOT" "$1"; }
+check "tenant params: agent users are named after their agent" 0 "claude" tuser claude
+check "tenant params: staging's user is box#69's ops" 0 "ops" tuser staging
+check "tenant params: claude context lands in ~/.claude/CLAUDE.md" 0 "/home/claude/.claude/CLAUDE.md" tpath claude /home/claude
+check "tenant params: codex context lands in ~/.codex/AGENTS.md" 0 "/home/codex/.codex/AGENTS.md" tpath codex /home/codex
+check "tenant params: grok context lands in ~/.grok/AGENTS.md" 0 "/home/grok/.grok/AGENTS.md" tpath grok /home/grok
+check "tenant params: staging has no context file" 1 "" tpath staging /home/ops
+# The box#80 guard note lives ONCE, in the renderer, and every agent's file
+# carries it — the layering decision's whole point: never per-template again.
+check "tenant context: claude carries the box#80 guard" 0 "box setup-host" tctx claude
+check "tenant context: codex carries the box#80 guard"  0 "box setup-host" tctx codex
+check "tenant context: grok carries the box#80 guard"   0 "box setup-host" tctx grok
+check "tenant context: the guard says whose host this is not" 0 "not a host you own" tctx claude
+check "tenant context: the guard cites box#80" 0 "box#80" tctx claude
+check "tenant context: the creds-free contract is stated" 0 "Creds-free by default" tctx claude
+check "tenant context: claude names /login as the operator's flow" 0 "/login" tctx claude
+check "tenant context: grok names its login flow" 0 "grok login" tctx grok
+check "tenant context: staging renders nothing (no agent lives there)" 1 "" tctx staging
+# Creds-free BY CONSTRUCTION, provable by absence (box#69's grep-refusal
+# idiom): nothing in the tenant mechanism touches the tailnet, prompts, or
+# apt-installs incus. A grep that finds nothing (exit 1) is the pass.
+check "tenant: never touches the tailnet" 1 "" \
+  grep -nE 'tailscale|TS_AUTHKEY' "$ROOT/commands/bootstrap-tenant.sh"
+check "tenant: non-interactive — nothing prompts" 1 "" \
+  grep -nE '\bread -r' "$ROOT/commands/bootstrap-tenant.sh"
+check "tenant: never apt-installs incus (box owns the daemon)" 1 "" \
+  grep -nE 'apt-get install.* incus' "$ROOT/commands/bootstrap-tenant.sh"
+# staging's posture rides the SAME hardening code as the machine roles — the
+# shared lib call is the anti-drift property, so pin the call, not the words.
+check "tenant: staging hardens through the shared sshd lib" 0 "" \
+  grep -qE '^[[:space:]]*harden_sshd server$' "$ROOT/commands/bootstrap-tenant.sh"
+check "tenant: docker lands via docker's own installer" 0 "" \
+  grep -q "get.docker.com" "$ROOT/commands/bootstrap-tenant.sh"
+# The #15 lesson pinned: 'box exec' shells read no rc files, so the CLI must
+# land on the SYSTEM path — and a claimed install is verified, not trusted:
+# it must ANSWER as the tenant user (the grok template's scar: linked but
+# cannot run). The $CLI/$TENANT_USER are literals we grep for in the script.
+# shellcheck disable=SC2016
+check "tenant: the agent CLI lands on the system PATH" 0 "" \
+  grep -qF '/usr/local/bin/$CLI' "$ROOT/commands/bootstrap-tenant.sh"
+# shellcheck disable=SC2016
+check "tenant: the CLI install is verified as the tenant user" 0 "" \
+  grep -qF 'runuser -l "$TENANT_USER" -c "$CLI --version"' "$ROOT/commands/bootstrap-tenant.sh"
+# Ordering is the safety property, as with bootstrap's marker-then-box assert:
+# the tenant marker may only describe converges that already happened, so the
+# write sits after the context-file converge. Defaults fail closed.
+ten_ctx_at="$(grep -n 'agent-context file written' "$ROOT/commands/bootstrap-tenant.sh" | head -n1 | cut -d: -f1)"
+# shellcheck disable=SC2016
+ten_marker_at="$(grep -nF 'install -m 0644 "$MARKER_TMP" "$MARKER_PATH"' "$ROOT/commands/bootstrap-tenant.sh" | head -n1 | cut -d: -f1)"
+check "tenant: the marker write follows the context-file converge" \
+  0 "" test "${ten_ctx_at:-999999}" -lt "${ten_marker_at:-0}"
 
 check "coolify: version required, exit 2"  2 "--version"      "$ROOT/commands/coolify-install.sh"
 check "coolify: --help exits 0"            0 "usage:"         "$ROOT/commands/coolify-install.sh" --help
@@ -743,16 +871,28 @@ else
 fi
 # Bootstrap must read the closed door as hardened, not broken: `no` is the
 # post-close-root state, strictly harder than what bootstrap installs. Byte-grep
-# the widened assertion so a revert cannot ship green.
-check "bootstrap: permitrootlogin assertion accepts the closed state" 0 "" \
-  grep -qF "permitrootlogin (no|prohibit-password|without-password)" "$ROOT/commands/bootstrap.sh"
+# the widened assertion so a revert cannot ship green. The hardening block
+# lives in lib/sshd.sh since #31 — ONE converger shared by the machine roles
+# and the staging tenant — so the greps pin the lib, and a call-site grep pins
+# that bootstrap actually runs it (a function nobody calls is not hardening).
+check "sshd lib: permitrootlogin assertion accepts the closed state" 0 "" \
+  grep -qF "permitrootlogin (no|prohibit-password|without-password)" "$ROOT/commands/lib/sshd.sh"
 # ...but only for class=human. On class=server a closed root door is a BROKEN
 # box — root SSH is the control plane's automation door — and the usual cause
 # is a 00-rig-users.conf left over from a former class=human life. The refusal
 # must name that drop-in or the operator greps sshd configs blind; the path
 # needs root + a doctored sshd, so grep the die message (repo precedent above).
-check "bootstrap: class=server refusal names the stale close-root drop-in" 0 "" \
-  grep -q "leftover /etc/ssh/sshd_config.d/00-rig-users.conf" "$ROOT/commands/bootstrap.sh"
+check "sshd lib: class=server refusal names the stale close-root drop-in" 0 "" \
+  grep -q "leftover /etc/ssh/sshd_config.d/00-rig-users.conf" "$ROOT/commands/lib/sshd.sh"
+# Validate-then-apply survived the extraction: sshd -t on the merged config
+# must still precede the restart (same idiom as the close-root ordering check).
+libt_at="$(grep -nE '^[[:space:]]*if ! sshd -t' "$ROOT/commands/lib/sshd.sh" | head -n1 | cut -d: -f1)"
+librestart_at="$(grep -nE '^[[:space:]]*systemctl restart ssh$' "$ROOT/commands/lib/sshd.sh" | head -n1 | cut -d: -f1)"
+check "sshd lib: sshd -t precedes the ssh restart" \
+  0 "" test "${libt_at:-999999}" -lt "${librestart_at:-0}"
+# shellcheck disable=SC2016
+check "bootstrap: hardening runs through the shared lib" 0 "" \
+  grep -qE '^harden_sshd "\$CLASS"$' "$ROOT/commands/bootstrap.sh"
 
 # The dump script ships to control-plane boxes as an embedded heredoc. A syntax
 # error in it would be invisible here and would first surface at 04:00 on a live
