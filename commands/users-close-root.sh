@@ -33,13 +33,17 @@ owned by the user and not group/world-writable, a real login shell, account
 not expired), then two reachability proofs (#17) — `sudo -n true` under
 runuser must answer (NOPASSWD sudo is effective, not merely written), and
 `sshd -T -C user=...` must resolve a per-user effective config that accepts
-the login (pubkeyauthentication yes, no DenyUsers hit, AllowUsers — if set —
-names them). The refusal names which check failed, per candidate. Run rig
-users apply first; never close the only door.
+the login (pubkeyauthentication yes, no DenyUsers hit — where any pattern or
+host-qualified Deny entry counts as a hit, fail closed — and AllowUsers, if
+set, names them literally). The refusal names which check failed, per
+candidate. Run rig users apply first; never close the only door.
 
 Before running, verify your admin login in a SEPARATE session — `ssh
 <admin>@<box>` while this one stays open. Root SSH is the door being welded
-shut; the admin door must be proven, not presumed.
+shut; the admin door must be proven, not presumed. This is not ceremony: the
+local probe resolves Match blocks against a synthetic loopback client
+(addr=127.0.0.1), so a `Match Address` rule that treats real inbound clients
+differently is invisible to it — only a real login proves the real door.
 
 Run as root. Convergent: once root is closed, a re-run is a clean no-op.
 EOF
@@ -157,16 +161,24 @@ while IFS= read -r a; do
   # Reachability proof 2 — sshd's per-user EFFECTIVE config accepts them.
   # `sshd -T -C user=...` resolves Match blocks for exactly this login, so an
   # exclusion the global `sshd -T` never shows is caught. Allow/Deny entries
-  # are matched LITERALLY: a pattern that would in fact admit the admin still
-  # flags here — fail closed, the operator proves patterns by hand — while a
-  # denying pattern this literal match misses is one more reason the
-  # separate-session verification stays load-bearing.
+  # are judged fail-closed in BOTH directions: AllowUsers must name the admin
+  # literally (a pattern that would in fact admit them still flags — the
+  # operator proves patterns by hand), and DenyUsers flags on a literal hit
+  # OR on any pattern/host-qualified token (deny_verdict, in the lib) —
+  # 'DenyUsers dan*' really denies admin 'dan', and a token this check cannot
+  # prove irrelevant must count as a hit, never as a pass. What no local
+  # probe can resolve is a Match on the CLIENT's address — the -C probe pins
+  # addr=127.0.0.1 — which is why the separate-session verification stays
+  # load-bearing.
   if perT="$(sshd -T -C "user=$a,host=$(hostname),addr=127.0.0.1" 2>/dev/null)"; then
     if ! printf '%s\n' "$perT" | grep -qx 'pubkeyauthentication yes'; then
       flag "sshd resolves pubkeyauthentication != yes for this user"
     fi
-    if printf '%s\n' "$perT" | grep -i '^denyusers ' | tr ' ' '\n' | grep -qx "$a"; then
-      flag "sshd DenyUsers names this user"
+    deny_line="$(printf '%s\n' "$perT" | grep -i '^denyusers ' | head -n1)"
+    if [ -n "$deny_line" ]; then
+      # shellcheck disable=SC2086  # word-splitting the tokens is the point
+      deny_reason="$(deny_verdict "$a" ${deny_line#* })"
+      [ -n "$deny_reason" ] && flag "$deny_reason"
     fi
     if printf '%s\n' "$perT" | grep -qi '^allowusers ' \
         && ! printf '%s\n' "$perT" | grep -i '^allowusers ' | tr ' ' '\n' | grep -qx "$a"; then

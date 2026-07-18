@@ -567,6 +567,31 @@ check "users close-root: per-user sshd resolve precedes the drop-in install" \
 # never die on a missing prover. Grep the graceful branch.
 check "users close-root: a missing runuser skips the sudo proof, loudly" 0 "" \
   grep -q "runuser not found" "$ROOT/commands/users-close-root.sh"
+# DenyUsers judged fail-closed through the lib's pure deny_verdict — sshd
+# accepts patterns and USER@HOST forms, and 'DenyUsers dan*' REALLY denies
+# admin 'dan', so a token the check cannot prove irrelevant must flag, never
+# pass (the review's regression: a wildcard denial). Empty output is the only
+# pass; every hit names its reason.
+deny_v() { # deny_v <user> <token...>
+  bash -c 'set -euo pipefail
+    . "$1/commands/lib/users-config.sh"; shift
+    deny_verdict "$@"' _ "$ROOT" "$@"
+}
+check "users close-root: deny_verdict flags a literal hit" \
+  0 "names this user" deny_v admin root admin
+check "users close-root: deny_verdict fails closed on a wildcard (dan* vs dan)" \
+  0 "pattern entry 'dan*'" deny_v dan "dan*"
+check "users close-root: deny_verdict fails closed on '?' patterns" \
+  0 "pattern entry" deny_v admin "admi?"
+check "users close-root: deny_verdict fails closed on USER@HOST forms" \
+  0 "host-qualified" deny_v admin "admin@10.0.0.1"
+deny_pass() { [ -z "$(deny_v "$@")" ]; } # empty verdict IS the pass
+check "users close-root: deny_verdict passes provably-irrelevant literals" \
+  0 "" deny_pass admin root git backup
+# ...and the shipped gate must actually consult it (call, not comment).
+# shellcheck disable=SC2016
+check "users close-root: the gate consults deny_verdict" 0 "" \
+  grep -qE '^[[:space:]]*deny_reason="\$\(deny_verdict ' "$ROOT/commands/users-close-root.sh"
 # Marker-gate refusals through the sourced lib against fixture markers: the CLI
 # path sits behind the root check, so the gate is a pure lib function on
 # purpose (repo precedent: parse_users_file, assert_runner_repo). The command

@@ -145,3 +145,34 @@ assert_marker_human() {
       return 1 ;;
   esac
 }
+
+# deny_verdict <user> <denyusers token...>
+#
+# Judge sshd's effective DenyUsers list against ONE candidate, fail closed.
+# Empty output = every token is PROVABLY irrelevant to <user>: literal (no
+# sshd pattern metacharacters, no host qualifier) and not this username.
+# Anything else prints the reason and the caller flags the candidate:
+#
+#   - a literal hit — DenyUsers really names them;
+#   - ANY pattern token (* or ?) — 'DenyUsers dan*' genuinely denies admin
+#     'dan', and this side of sshd cannot re-implement its pattern engine
+#     just to prove a miss, so an unprovable token counts as a hit;
+#   - ANY host-qualified token (USER@HOST) — whether it bites depends on the
+#     client's address, which no local probe knows.
+#
+# The asymmetry with AllowUsers is deliberate and points the same direction:
+# AllowUsers must name the admin literally (a pattern that WOULD admit them
+# still refuses — over-refusing is safe), DenyUsers refuses on anything it
+# cannot prove misses. Both errors close toward "repair first", never toward
+# a welded-shut root door. Pure text→text, sourced by the harness.
+deny_verdict() {
+  local u="$1" tok; shift
+  for tok in "$@"; do
+    case "$tok" in
+      "$u") printf 'sshd DenyUsers names this user'; return 0 ;;
+      *[*?]*) printf "sshd DenyUsers has pattern entry '%s' — cannot prove it misses this user; make it literal or remove it, then re-run" "$tok"; return 0 ;;
+      *@*) printf "sshd DenyUsers has host-qualified entry '%s' — whether it bites depends on the client address, which no local check can prove; make it literal or remove it, then re-run" "$tok"; return 0 ;;
+    esac
+  done
+  return 0
+}

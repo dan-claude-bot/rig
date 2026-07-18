@@ -629,11 +629,16 @@ account — and then two **reachability** proofs (#17): `sudo -n true` under
 `runuser` must answer, so NOPASSWD sudo is effective rather than merely
 written, and `sshd -T -C user=<admin>` must resolve a per-user effective
 config that accepts the login (`pubkeyauthentication yes`, no `DenyUsers`
-hit, `AllowUsers` — if set — names them), so a `Match` block elsewhere cannot
-quietly exclude the admin while every file looks right. The refusal names
-which check failed, per candidate. What no local check can prove is that you
-*hold* the private key — which is why the separate-session verification below
-stays load-bearing. Never close the only door.
+hit — where any pattern or `USER@HOST` entry counts as a hit, fail closed,
+since `DenyUsers dan*` really denies admin `dan` and rig will not re-implement
+sshd's pattern engine to prove a miss — and `AllowUsers`, if set, names them
+literally), so a `Match` block elsewhere cannot quietly exclude the admin
+while every file looks right. The refusal names which check failed, per
+candidate. What no local check can prove: that you *hold* the private key,
+and how a `Match Address` rule treats your real client address (the probe
+resolves against a synthetic `addr=127.0.0.1`) — which is why the
+separate-session verification below stays load-bearing. Never close the only
+door.
 
 Before running it, prove the admin door in a **separate** session — `ssh
 <admin>@<box>` while this one stays open. Root SSH is being welded shut; the
