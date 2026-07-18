@@ -3,6 +3,11 @@ set -euo pipefail
 
 ROOT="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/.." && pwd)"
 
+log() { printf 'rig: %s\n' "$*"; }
+warn() { printf 'rig: WARNING: %s\n' "$*" >&2; }
+die() { printf 'rig: ERROR: %s\n' "$*" >&2; exit 1; }
+version() { echo "rig $(cat "$ROOT/VERSION" 2>/dev/null || echo unknown) ($ROOT)"; }
+
 usage() {
   cat <<'EOF'
 usage: rig <command> [args]
@@ -59,10 +64,257 @@ commands:
       Shut root SSH on a class=human box once an admin key works. Refuses
       on class=server — root there is the control plane's automation door —
       and while no admin holds a key. Run as root.
+  versions
+      List the installed rig versions — install.sh lands each one side by
+      side at <root>/versions/<v>, a 'current' symlink tracks the default
+      (what the rig on your PATH runs). The default is marked (current);
+      the tree answering this command is marked (running).
+  use <version>
+      Switch the default rig version — repoint 'current' (and the PATH
+      symlink riding it) at an installed version, atomically, then assert
+      the flip took. WARNS on a bootstrapped host (/etc/rig/role exists):
+      switching the rig under a converged host changes what a re-converge
+      would do.
+  uninstall [<version>|--all] [--force]
+      Remove one NON-current installed version, or --all: every version,
+      'current', and the PATH symlinks. Asks first (--force or RIG_YES=1
+      skips the prompt) and ENDS with an absence assert — every removed
+      path is re-checked, and any survivor makes it exit 1 naming the
+      leftovers instead of reporting a clean uninstall that wasn't.
+  --version
+      Print the running rig's version (its tree's own VERSION file) and
+      where it runs from.
 
 install/upgrade:
   curl -fsSL https://raw.githubusercontent.com/heavy-duty/rig/main/install.sh | bash
+      Re-run any time: an installed version converges (no-op), a new one
+      installs side by side at <root>/versions/<v> and becomes the default.
 EOF
+}
+
+# --- the versioned install (box#79's layout, ported — #35) -------------------
+# install.sh lands each version at <install-root>/versions/<v>, with a
+# 'current' symlink naming the default and $BINDIR/rig pointing through it.
+# $ROOT (readlink -f, line 4) already resolved the whole chain, so a versioned
+# install always runs from .../versions/<v> — and a git checkout does not,
+# which is how these verbs know to refuse instead of uninstalling somebody's
+# working copy.
+install_root() {
+  local vdir; vdir="$(dirname "$ROOT")"
+  [ "$(basename "$vdir")" = versions ] || return 1
+  dirname "$vdir"
+}
+
+# A version is a DIRECTORY NAME under versions/ — nothing else. One strict
+# gate for every caller that builds a path from one (the installer's new_ver,
+# migration's flat_ver, and bin/rig's 'use'/single-version uninstall): only
+# [A-Za-z0-9._+-], no leading '.' or '-'. That forbids '/', '..'-escapes,
+# spaces and option-lookalikes by construction — a crafted version dies HERE,
+# never in an rm -rf or an ln. install.sh carries a byte-identical copy;
+# test/cli.sh diffs the two so the gates cannot drift.
+valid_version() {
+  case "$1" in
+    ''|.*|-*) return 1 ;;
+    *[!A-Za-z0-9._+-]*) return 1 ;;
+  esac
+  return 0
+}
+
+# The flip gate, rig's shape (#35): box refuses version flips under existing
+# boxes; rig's stake is the converged HOST — /etc/rig/role marks a box that
+# bootstrap has made into something. Switching the default rig under it
+# changes what a re-converge would do, which is worth a warning, not a
+# refusal: there is no user state a flip can strand, and flipping versions on
+# a bootstrapped host is the normal upgrade. RIG_ROLE_MARKER overrides the
+# path so tests point it at fixtures (repo precedent: the coolify marker
+# gate). install.sh carries a byte-identical copy; test/cli.sh diffs the two.
+warn_bootstrapped() {   # $1 = what is about to happen
+  local marker="${RIG_ROLE_MARKER:-/etc/rig/role}"
+  [ -e "$marker" ] || return 0
+  warn "this host is bootstrapped ($(head -n1 "$marker" 2>/dev/null || echo "role marker at $marker"))"
+  warn "$1 changes what a re-converge (rig bootstrap, users apply) would do — proceeding."
+}
+
+# The PATH symlinks that could ride this install: the one this invocation came
+# in on, RIG_BIN's, and the tier default's. Candidates only — every consumer
+# checks where a link actually points before touching it, so a symlink that is
+# somebody else's (another install root, a hand-rolled wrapper) is never moved.
+bin_links() {
+  local c=()
+  [ -L "${BASH_SOURCE[0]}" ] && c+=("${BASH_SOURCE[0]}")
+  [ -n "${RIG_BIN:-}" ] && c+=("$RIG_BIN/rig")
+  if [ "$(id -u)" -eq 0 ]; then c+=(/usr/local/bin/rig); else c+=("$HOME/.local/bin/rig"); fi
+  printf '%s\n' "${c[@]}" | awk '!seen[$0]++'
+}
+
+converge_bin_links() {   # $1 = install root: point our PATH symlinks through current
+  local ir="$1" p t
+  while IFS= read -r p; do
+    [ -L "$p" ] || continue
+    t="$(readlink -f "$p" 2>/dev/null || true)"
+    [ -n "$t" ] || t="$(readlink "$p" 2>/dev/null || true)"
+    case "$t" in
+      "$ir"/*) ln -sfn "$ir/current/bin/rig" "$p" ;;
+    esac
+  done < <(bin_links)
+}
+
+cmd_versions() {
+  local ir cur d v mark
+  ir="$(install_root)" || die "this rig runs from a working tree ($ROOT), not a versioned install — nothing to list"
+  cur="$(readlink -f "$ir/current" 2>/dev/null || true)"
+  echo "VERSIONS  ($ir)"
+  for d in "$ir/versions"/*/; do
+    [ -d "$d" ] || continue
+    v="$(basename "$d")"
+    mark=""
+    [ "$(readlink -f "$d")" = "$cur" ] && mark=" (current)"
+    [ "$(readlink -f "$d")" = "$ROOT" ] && mark="$mark (running)"
+    printf '  %s%s\n' "$v" "$mark"
+  done
+  echo
+  echo "switch the default:  rig use <version>"
+  echo "install another:     re-run install.sh (versions land side by side)"
+}
+
+cmd_use() {
+  local v="${1:-}" ir eff expect out
+  if [ -z "$v" ]; then
+    printf 'rig: use needs a version (see: rig versions)\n' >&2
+    usage >&2
+    exit 2
+  fi
+  ir="$(install_root)" || die "this rig runs from a working tree ($ROOT), not a versioned install — nothing to switch"
+  valid_version "$v" || die "not a sane version name: '$v' (a version is a directory name under versions/ — see 'rig versions')"
+  [ -d "$ir/versions/$v" ] || die "no such version: $v (see 'rig versions')"
+  warn_bootstrapped "switching the default rig version to $v"
+  # An atomic flip, not unlink+create: ln -sfn leaves a window where current
+  # is missing; a rename over it does not.
+  ln -sfn "versions/$v" "$ir/current.new.$$" && mv -Tf "$ir/current.new.$$" "$ir/current"
+  converge_bin_links "$ir"
+  # Assert the EFFECTIVE result, not the intent: current must resolve to the
+  # version asked for, and the chain's own binary must answer that version —
+  # a flip that "worked" while the operator's rig still runs the old tree is
+  # exactly the flakiness this verb exists to end.
+  eff="$(basename "$(readlink -f "$ir/current" 2>/dev/null || true)")"
+  [ "$eff" = "$v" ] || die "the flip did not take — current resolves to '${eff:-nothing}', not $v"
+  expect="$(cat "$ir/versions/$v/VERSION" 2>/dev/null || true)"
+  if [ -n "$expect" ]; then
+    out="$("$ir/current/bin/rig" --version 2>&1 || true)"
+    case "$out" in
+      *"$expect"*) : ;;
+      *) die "current/bin/rig answers '$out', not version $expect — the symlink chain is broken" ;;
+    esac
+  fi
+  log "switched to $v (current -> versions/$v)"
+}
+
+# The uninstall's own confirmation: --force, or RIG_YES=1, or a TTY. RIG_YES
+# is the installer-family consent contract — how automation says yes without
+# a terminal; without any of the three we refuse rather than assume consent.
+uninstall_confirm() {   # $1 = question
+  [ "$force" -eq 1 ] && return 0
+  [ -n "${RIG_YES:-}" ] && return 0
+  if [ ! -t 0 ]; then
+    printf 'rig: refusing to %s without --force (no terminal to confirm on; RIG_YES=1 also means yes)\n' "$1" >&2
+    exit 2
+  fi
+  local reply
+  printf 'rig: %s? [y/N] ' "$1"
+  read -r reply
+  case "$reply" in y|Y|yes|YES|Yes) return 0 ;; *) die "aborted." ;; esac
+}
+
+# 'rig uninstall' — the real uninstall, replacing the undocumented rm -rf
+# prose. Trees and symlinks, and it ENDS by PROVING the absence — the last
+# word is a re-check, not a hope.
+cmd_uninstall() {
+  local ir a ver="" all=0 force=0 cur p t leftover=""
+  local targets=()
+  for a in "$@"; do
+    case "$a" in
+      --all) all=1 ;;
+      --force) force=1 ;;
+      -*)
+        printf 'rig: unknown option: %s\n' "$a" >&2
+        usage >&2
+        exit 2
+        ;;
+      *)
+        if [ -n "$ver" ]; then
+          printf 'rig: uninstall takes one version, or --all\n' >&2
+          usage >&2
+          exit 2
+        fi
+        ver="$a"
+        ;;
+    esac
+  done
+  ir="$(install_root)" || die "this rig runs from a working tree ($ROOT), not a versioned install — nothing to uninstall (a checkout is removed with plain rm)"
+  [ -w "$ir" ] || die "cannot write $ir — uninstall as the user that installed it (or root: sudo rig uninstall)"
+
+  # -- one version -----------------------------------------------------------
+  if [ -n "$ver" ] && [ "$all" -eq 0 ]; then
+    valid_version "$ver" || die "not a sane version name: '$ver' (a version is a directory name under versions/ — see 'rig versions')"
+    [ -d "$ir/versions/$ver" ] || die "no such version: $ver (see 'rig versions')"
+    cur="$(basename "$(readlink -f "$ir/current" 2>/dev/null || true)")"
+    # A broken current makes the CURRENT guard below unfireable (cur empty
+    # when the link is missing; cur naming a non-directory when it dangles —
+    # readlink -f resolves a link whose last component does not exist). Heal
+    # first, then decide; never delete around a broken default.
+    { [ -n "$cur" ] && [ -d "$ir/versions/$cur" ]; } \
+      || die "current is dangling — 'rig use <version>' to repoint the default first (refusing to remove versions while it is broken)"
+    [ "$ver" != "$cur" ] || die "$ver is the CURRENT version — 'rig use <other>' first, or 'rig uninstall --all' for everything"
+    uninstall_confirm "remove rig version $ver from $ir"
+    # rm's exit code is not the verdict — the absence re-check below is (a
+    # half-removed tree must be reported as INCOMPLETE, not as a crash).
+    rm -rf "${ir:?}/versions/$ver" || true
+    if [ -e "$ir/versions/$ver" ] || [ -L "$ir/versions/$ver" ]; then
+      echo "rig: uninstall INCOMPLETE — still present: $ir/versions/$ver" >&2
+      exit 1
+    fi
+    log "removed version $ver (the default stays $cur)"
+    return 0
+  fi
+  if [ -n "$ver" ]; then
+    printf 'rig: a version and --all together is ambiguous\n' >&2
+    usage >&2
+    exit 2
+  fi
+
+  # -- everything (bare 'rig uninstall' and '--all' both mean all of it) -----
+  warn_bootstrapped "removing rig entirely"
+  uninstall_confirm "remove the ENTIRE rig install at $ir (every version)"
+
+  # The removal set, gathered BEFORE anything is deleted, so the absence
+  # assert below re-checks exactly what was promised gone. PATH symlinks are
+  # removed only when they resolve into (or dangle at) THIS install root.
+  targets+=("$ir")
+  while IFS= read -r p; do
+    [ -L "$p" ] || continue
+    t="$(readlink -f "$p" 2>/dev/null || true)"
+    [ -n "$t" ] || t="$(readlink "$p" 2>/dev/null || true)"
+    case "$t" in "$ir"/*) targets+=("$p") ;; esac
+  done < <(bin_links)
+  mapfile -t targets < <(printf '%s\n' "${targets[@]}" | awk '!seen[$0]++')
+
+  # rm's exit code is not the verdict — the absence assert below is (a
+  # half-removed tree must be reported as INCOMPLETE by name, not as a crash).
+  for p in "${targets[@]}"; do rm -rf "$p" || true; done
+
+  # END WITH THE ABSENCE ASSERT: every path re-checked — file, dir OR symlink.
+  # A leftover makes this exit 1 by name; "uninstalled" is a claim, and claims
+  # get verified.
+  for p in "${targets[@]}"; do
+    if [ -e "$p" ] || [ -L "$p" ]; then leftover="$leftover $p"; fi
+  done
+  if [ -n "$leftover" ]; then
+    echo "rig: uninstall INCOMPLETE — still present:$leftover" >&2
+    echo "rig: remove them by hand, and re-check each path is really gone." >&2
+    exit 1
+  fi
+  echo "rig: uninstalled — removed:"
+  for p in "${targets[@]}"; do echo "rig:   · $p"; done
 }
 
 cmd="${1:-}"
@@ -153,6 +405,22 @@ case "$cmd" in
         exit 2
         ;;
     esac
+    ;;
+  versions)
+    shift
+    cmd_versions "$@"
+    ;;
+  use)
+    shift
+    cmd_use "$@"
+    ;;
+  uninstall)
+    shift
+    cmd_uninstall "$@"
+    ;;
+  -V|--version)
+    version
+    exit 0
     ;;
   -h|--help|help)
     usage

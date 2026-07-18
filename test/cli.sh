@@ -774,6 +774,236 @@ rm -f "$DUMP_TMP"
 check "no main-shell os-release sourcing" 1 "" \
   grep -rnE '^[[:space:]]*\.[[:space:]]+/etc/os-release' "$ROOT/commands"
 
+# ---------------------------------------------------------------------------
+# The versioned install (box#79's layout, ported — #35). RIG_INSTALL_SOURCE
+# bypasses the network, so these are REAL runs of install.sh against throwaway
+# RIG_HOME/RIG_BIN roots — layout, symlink chain, flat-tree migration, symlink
+# healing, use and uninstall are all DRIVEN, not grepped. The bootstrapped-host
+# flip gate (rig's analog of box's #66 refusal: WARN, never refuse) is driven
+# too, through RIG_ROLE_MARKER fixtures — no root, no network, no real marker.
+# ---------------------------------------------------------------------------
+check "install.sh is valid bash" 0 "" bash -n "$ROOT/install.sh"
+VER="$(cat "$ROOT/VERSION")"
+check "--version answers the tree's own VERSION" 0 "rig $VER" "$ROOT/bin/rig" --version
+check "-V is --version" 0 "rig $VER" "$ROOT/bin/rig" -V
+check "help lists the versioned verbs" 0 "uninstall" "$ROOT/bin/rig" --help
+
+WORK="$(mktemp -d)"
+FAKEHOME="$WORK/home"; mkdir -p "$FAKEHOME"
+
+# A fabricated "newer release": the same CLI, a different VERSION — what an
+# upgrade actually is, from the installer's point of view.
+SRC9="$WORK/src-9.9.9"; mkdir -p "$SRC9/bin"
+cp "$ROOT/bin/rig" "$SRC9/bin/rig"; chmod +x "$SRC9/bin/rig"
+echo "9.9.9-drill" > "$SRC9/VERSION"
+SRC8="$WORK/src-8.8.8"; mkdir -p "$SRC8/bin"
+cp "$ROOT/bin/rig" "$SRC8/bin/rig"; chmod +x "$SRC8/bin/rig"
+echo "8.8.8-drill" > "$SRC8/VERSION"
+
+inst() {  # inst <rig_home> <rig_bin> [VAR=val ...] — run install.sh for real
+  local h="$1" b="$2"; shift 2
+  env HOME="$FAKEHOME" RIG_ROLE_MARKER="$WORK/no-marker" \
+      RIG_HOME="$h" RIG_BIN="$b" \
+      RIG_INSTALL_SOURCE="$ROOT" "$@" bash "$ROOT/install.sh"
+}
+irig() {  # irig [VAR=val ...] <cmd...> — run an installed rig, marker-free
+  env HOME="$FAKEHOME" RIG_ROLE_MARKER="$WORK/no-marker" "$@"
+}
+
+# --- fresh install: the layout and the chain --------------------------------
+H1="$WORK/h1"; B1="$WORK/b1"
+check "install: a fresh install runs clean" 0 "done" inst "$H1" "$B1"
+check "install: the tree lands in versions/<v>" 0 "" test -x "$H1/versions/$VER/bin/rig"
+check "install: 'current' points at versions/<v>" 0 "versions/$VER" readlink "$H1/current"
+check "install: the PATH symlink rides the chain" 0 "$H1/current/bin/rig" readlink "$B1/rig"
+check "install: rig --version answers through the whole chain" 0 "rig $VER" irig "$B1/rig" --version
+check "install: INSTALLED_FROM records the local source" 0 "local:" cat "$H1/versions/$VER/INSTALLED_FROM"
+
+# --- converge, don't clobber ------------------------------------------------
+touch "$H1/versions/$VER/CANARY"
+check "install: a same-version re-run is a no-op that says so" 0 "already installed" inst "$H1" "$B1"
+check "install: the no-op left the tree untouched" 0 "" test -e "$H1/versions/$VER/CANARY"
+check "install: RIG_REINSTALL=1 replaces that version's tree" 0 "reinstalled" inst "$H1" "$B1" RIG_REINSTALL=1
+check "install: the reinstall really replaced it (canary gone)" 1 "" test -e "$H1/versions/$VER/CANARY"
+
+# --- a second version: side-by-side, and the flip ---------------------------
+check "install: a second version installs side-by-side" 0 "" inst "$H1" "$B1" RIG_INSTALL_SOURCE="$SRC9"
+check "install: ...into its own versions dir" 0 "" test -x "$H1/versions/9.9.9-drill/bin/rig"
+check "install: ...and the old version stays" 0 "" test -d "$H1/versions/$VER"
+check "install: the default flips to the new version" 0 "rig 9.9.9-drill" irig "$B1/rig" --version
+
+# --- rig versions -----------------------------------------------------------
+check "versions: lists the installed versions" 0 "$VER" irig "$B1/rig" versions
+check "versions: marks the current default" 0 "(current)" irig "$B1/rig" versions
+check "versions: marks the running one" 0 "(running)" irig "$B1/rig" versions
+
+# --- rig use ----------------------------------------------------------------
+check "use: no argument is a usage error" 2 "use needs a version" irig "$B1/rig" use
+check "use: an unknown version is refused by name" 1 "no such version" irig "$B1/rig" use 1.2.3
+# A version is a directory NAME — a crafted one must die at the gate, never
+# reach the ln (current pointing outside the root) or an rm -rf.
+check "use: a path-traversal version dies at the gate" 1 "not a sane version name" \
+  irig "$B1/rig" use '../../tmp/evil'
+check "use: flips the default" 0 "switched to $VER" irig "$B1/rig" use "$VER"
+check "use: the flip is effective through the PATH chain" 0 "rig $VER" irig "$B1/rig" --version
+check "install: an installed-but-not-current version is a no-op too" 0 "already installed" \
+  inst "$H1" "$B1" RIG_INSTALL_SOURCE="$SRC9"
+check "install: ...and does not move the default" 0 "rig $VER" irig "$B1/rig" --version
+
+# --- the flip gate: a bootstrapped host WARNS, never refuses (#35) ----------
+# box refuses version flips under existing boxes; rig's stake is the converged
+# host itself — /etc/rig/role. The deliberate decision: warn and proceed.
+# Driven against a fixture marker; counting fires proves silence too.
+MARK="$WORK/role-marker"
+printf 'role=workload class=server host=no join=authkey\n' > "$MARK"
+H2="$WORK/h2"; B2="$WORK/b2"
+check "flip gate: baseline install" 0 "done" inst "$H2" "$B2"
+check "flip gate: an upgrade on a bootstrapped host WARNS" 0 "this host is bootstrapped" \
+  inst "$H2" "$B2" RIG_INSTALL_SOURCE="$SRC9" RIG_ROLE_MARKER="$MARK"
+check "flip gate: ...and still flips (warn, not refuse)" 0 "rig 9.9.9-drill" irig "$B2/rig" --version
+check "flip gate: 'rig use' on a bootstrapped host WARNS" 0 "this host is bootstrapped" \
+  irig RIG_ROLE_MARKER="$MARK" "$B2/rig" use "$VER"
+check "flip gate: ...and still flips" 0 "rig $VER" irig "$B2/rig" --version
+# Silence when no marker: warning every un-bootstrapped host would train
+# operators to ignore it.
+flip_warns() { # flip_warns <cmd...> — how many bootstrapped warnings fired
+  "$@" 2>&1 | grep -c "this host is bootstrapped" || true
+}
+check "flip gate: no marker, no warning (installer)" 0 "0" \
+  flip_warns inst "$H2" "$B2" RIG_INSTALL_SOURCE="$SRC9"
+check "flip gate: no marker, no warning (rig use)" 0 "0" \
+  flip_warns irig "$B2/rig" use "$VER"
+check "flip gate: a fresh install never warns (nothing changes under the host)" 0 "0" \
+  flip_warns inst "$WORK/h2f" "$WORK/b2f" RIG_ROLE_MARKER="$MARK"
+
+# --- migration: a flat pre-versioning tree becomes a versioned one ----------
+H3="$WORK/h3"; B3="$WORK/b3"; mkdir -p "$H3/bin" "$B3"
+cp "$ROOT/bin/rig" "$H3/bin/rig"; chmod +x "$H3/bin/rig"
+cp "$ROOT/VERSION" "$H3/VERSION"
+echo "test@flat" > "$H3/INSTALLED_FROM"
+ln -s "$H3/bin/rig" "$B3/rig"
+check "migrate: a flat tree is moved into versions/" 0 "migrating" inst "$H3" "$B3"
+check "migrate: the OPERATOR'S tree moved (not a fresh copy)" 0 "test@flat" \
+  cat "$H3/versions/$VER/INSTALLED_FROM"
+check "migrate: nothing flat remains at the root" 1 "" test -e "$H3/bin"
+check "migrate: current points at the migrated version" 0 "versions/$VER" readlink "$H3/current"
+check "migrate: the PATH symlink was re-pointed through current" 0 "$H3/current/bin/rig" readlink "$B3/rig"
+check "migrate: the migrated install answers --version" 0 "rig $VER" irig "$B3/rig" --version
+
+# ...and the seamless upgrade every REAL flat rig install takes: no VERSION
+# file at all (pre-rig#32), so it migrates as 0.0.0-unknown and the new
+# version lands beside it and becomes the default.
+H4="$WORK/h4"; B4="$WORK/b4"; mkdir -p "$H4/bin" "$B4"
+cp "$ROOT/bin/rig" "$H4/bin/rig"; chmod +x "$H4/bin/rig"
+ln -s "$H4/bin/rig" "$B4/rig"
+check "migrate: a VERSION-less flat tree migrates as 0.0.0-unknown" 0 "0.0.0-unknown" \
+  inst "$H4" "$B4" RIG_INSTALL_SOURCE="$SRC9"
+check "migrate+upgrade: both versions present" 0 "" \
+  bash -c "[ -d '$H4/versions/0.0.0-unknown' ] && [ -d '$H4/versions/9.9.9-drill' ]"
+check "migrate+upgrade: the new version is the default" 0 "rig 9.9.9-drill" \
+  irig "$B4/rig" --version
+
+# A broken current must halt the single-version uninstall BEFORE any decision:
+# the CURRENT guard keys off what current resolves to, and a dangling link
+# makes that answer a lie. Drive the version tree's own binary — the current
+# chain is exactly what is broken. Heal current afterwards.
+ln -sfn "versions/gone" "$H4/current"
+check "uninstall: refuses while current is dangling (heal before delete)" 1 "dangling" \
+  irig "$H4/versions/9.9.9-drill/bin/rig" uninstall 0.0.0-unknown --force
+check "uninstall: ...and both version trees survived the refusal" 0 "" \
+  bash -c "[ -d '$H4/versions/0.0.0-unknown' ] && [ -d '$H4/versions/9.9.9-drill' ]"
+ln -sfn "versions/9.9.9-drill" "$H4/current"
+
+# The migration reads VERSION off the old tree — disk data, not installer
+# data. A hostile value must refuse BEFORE the tree moves anywhere.
+H9="$WORK/h9"; B9="$WORK/b9"; mkdir -p "$H9/bin" "$B9"
+cp "$ROOT/bin/rig" "$H9/bin/rig"; chmod +x "$H9/bin/rig"
+printf '%s\n' '../pwn' > "$H9/VERSION"
+check "migrate: a hostile flat VERSION refuses to migrate" 1 "not a sane directory name" \
+  inst "$H9" "$B9"
+check "migrate: ...with the flat tree untouched where it was" 0 "" test -x "$H9/bin/rig"
+
+# --- healing: a wedged $BINDIR/rig must never block an install --------------
+H5="$WORK/h5"; B5="$WORK/b5"; mkdir -p "$B5"
+ln -s "$WORK/nowhere/rig" "$B5/rig"                    # dangling
+check "heal: a DANGLING \$BINDIR/rig does not wedge the install" 0 "done" inst "$H5" "$B5"
+check "heal: ...and got repointed" 0 "rig $VER" irig "$B5/rig" --version
+H6="$WORK/h6"; B6="$WORK/b6"; mkdir -p "$B6"
+ln -s /bin/true "$B6/rig"                              # stale, but resolvable
+check "heal: a STALE \$BINDIR/rig with no tree does not fake 'installed'" 0 "installing $VER" \
+  inst "$H6" "$B6"
+check "heal: ...the install is real and answers" 0 "rig $VER" irig "$B6/rig" --version
+
+# --- rig uninstall: one version ---------------------------------------------
+check "uninstall: refuses to remove the CURRENT version" 1 "CURRENT" \
+  irig "$B1/rig" uninstall "$VER" --force
+check "uninstall: an unknown version is refused by name" 1 "no such version" \
+  irig "$B1/rig" uninstall 5.5.5 --force
+check "uninstall: a path-traversal version dies at the gate (never an rm -rf)" 1 "not a sane version name" \
+  irig "$B1/rig" uninstall '../../../../etc' --force
+check "uninstall: a version plus --all is ambiguous (usage error)" 2 "ambiguous" \
+  irig "$B1/rig" uninstall 9.9.9-drill --all --force
+check "uninstall: an unknown flag is refused" 2 "unknown option" \
+  irig "$B1/rig" uninstall --nope
+check "uninstall: removes a non-current version" 0 "removed version" \
+  irig "$B1/rig" uninstall 9.9.9-drill --force
+check "uninstall: that version dir is gone" 1 "" test -e "$H1/versions/9.9.9-drill"
+check "uninstall: the current version still answers" 0 "rig $VER" irig "$B1/rig" --version
+
+# --- rig uninstall: everything ----------------------------------------------
+check "uninstall: refuses without --force when no terminal" 2 "refusing" \
+  irig bash -c "'$B1/rig' uninstall --all </dev/null"
+check "uninstall --all: warns on a bootstrapped host (never refuses)" 0 "this host is bootstrapped" \
+  irig RIG_ROLE_MARKER="$MARK" "$B1/rig" uninstall --all --force
+check "uninstall --all: removed the whole install" 0 "" bash -c "
+  [ ! -e '$H1' ] && [ ! -L '$H1' ] &&
+  [ ! -e '$B1/rig' ] && [ ! -L '$B1/rig' ]"
+# ...and RIG_YES=1 is the installer-family consent (no --force, no tty).
+check "uninstall --all: RIG_YES=1 is consent without a terminal" 0 "uninstalled" \
+  irig bash -c "RIG_YES=1 '$B2/rig' uninstall --all </dev/null"
+check "uninstall --all: ZERO residue — root and symlinks" 0 "" bash -c "
+  [ ! -e '$H2' ] && [ ! -L '$H2' ] &&
+  [ ! -e '$B2/rig' ] && [ ! -L '$B2/rig' ]"
+# The last word is a re-check: a survivor must turn into a loud INCOMPLETE,
+# never a cheerful "uninstalled". (Root ignores file modes, so this drill is
+# meaningful — and runnable — for a non-root runner only.)
+if [ "$(id -u)" -ne 0 ]; then
+  H7="$WORK/h7"; B7="$WORK/b7"
+  inst "$H7" "$B7" >/dev/null 2>&1
+  mkdir -p "$H7/versions/$VER/stuck"; touch "$H7/versions/$VER/stuck/pin"
+  chmod 555 "$H7/versions/$VER/stuck"
+  check "uninstall: a survivor makes it scream INCOMPLETE (exit 1)" 1 "INCOMPLETE" \
+    irig "$B7/rig" uninstall --all --force
+  chmod -R u+w "$H7" 2>/dev/null
+else
+  echo "skip: uninstall INCOMPLETE drill (root ignores file modes)"
+fi
+
+# --- the versioned verbs from a working tree: refuse, don't guess -----------
+check "uninstall: refuses from a working tree" 1 "not a versioned install" "$ROOT/bin/rig" uninstall --all --force
+check "versions: refuses from a working tree" 1 "not a versioned install" "$ROOT/bin/rig" versions
+check "use: refuses from a working tree" 1 "not a versioned install" "$ROOT/bin/rig" use 1.0.0
+
+# The version-name gate must be ONE decision: install.sh and bin/rig carry
+# byte-identical copies (the installer runs before any tree exists), and a
+# drifted copy is two gates pretending to be one — a version install.sh would
+# refuse must not be one 'rig use' accepts.
+VVBIN="$(mktemp)"; VVINST="$(mktemp)"
+awk '/^valid_version\(\) \{/,/^\}/' "$ROOT/bin/rig"     > "$VVBIN"
+awk '/^valid_version\(\) \{/,/^\}/' "$ROOT/install.sh"  > "$VVINST"
+check "valid_version: extracted from bin/rig (guards the awk)" 0 "A-Za-z0-9" cat "$VVBIN"
+check "valid_version: bin/rig and install.sh copies are byte-identical" 0 "" diff "$VVBIN" "$VVINST"
+rm -f "$VVBIN" "$VVINST"
+# Same discipline for the flip gate: one bootstrapped-host stance, two copies.
+WBBIN="$(mktemp)"; WBINST="$(mktemp)"
+awk '/^warn_bootstrapped\(\) \{/,/^\}/' "$ROOT/bin/rig"     > "$WBBIN"
+awk '/^warn_bootstrapped\(\) \{/,/^\}/' "$ROOT/install.sh"  > "$WBINST"
+check "warn_bootstrapped: extracted from bin/rig (guards the awk)" 0 "RIG_ROLE_MARKER" cat "$WBBIN"
+check "warn_bootstrapped: bin/rig and install.sh copies are byte-identical" 0 "" diff "$WBBIN" "$WBINST"
+rm -f "$WBBIN" "$WBINST"
+
+rm -rf "$WORK"
+
 echo "---"
 echo "$PASS passed, $FAIL failed"
 [ "$FAIL" -eq 0 ]

@@ -15,8 +15,56 @@ takes arguments, does its work, and stores no credential, ever.
 curl -fsSL https://raw.githubusercontent.com/heavy-duty/rig/main/install.sh | bash
 ```
 
-Installs the tree to `~/.local/share/rig` and links `rig` onto your
-PATH (`/usr/local/bin` when root). Re-run any time to upgrade.
+The layout, under the install root (`~/.local/share/rig`):
+
+```
+versions/<version>/          one full tree per installed version
+current -> versions/<v>      the tracked default
+$BINDIR/rig -> current/bin/rig    the PATH entry, riding the chain
+```
+
+`rig` lands on your PATH via `~/.local/bin` (`/usr/local/bin` when root).
+
+**Re-running is a safe converge.** Installing a version you already have
+changes nothing and says so (`RIG_REINSTALL=1` replaces that version's
+tree); a **new** version installs side by side and becomes the default — so
+"re-run any time to upgrade" stays true, and every version you had stays
+installed as the way back:
+
+```sh
+rig versions        # what is installed, which is current, which is running
+rig use <version>   # flip the default (atomic; asserts the flip took)
+```
+
+On a **bootstrapped host** (one where `/etc/rig/role` exists) switching the
+default — by upgrade or by `rig use` — prints a WARNING, because a
+different rig under a converged host changes what a re-converge
+(`rig bootstrap`, `rig users apply`) would do. It warns rather than
+refuses: unlike box (which protects live boxes), rig holds no user state a
+flip can strand, and upgrading a bootstrapped host is the normal case.
+
+A pre-versioning flat install is migrated into `versions/` automatically on
+the next installer run — the tree is moved, not re-downloaded, and
+preserved bit for bit. For scripting: `RIG_HOME`/`RIG_BIN` override the
+install root and bin dir, `RIG_INSTALL_SOURCE=<dir-or-tarball>` installs
+from a local tree instead of downloading (how the test suite proves the
+installer under review), and `RIG_YES=1` answers `rig uninstall`'s prompt
+in automation.
+
+### Uninstall
+
+`rig uninstall` is the real uninstall — no more "rm -rf two paths" prose —
+and it **ends with an absence assert**: every path it removed is
+re-checked, and any survivor makes it exit 1 naming the leftovers instead
+of reporting a clean uninstall that wasn't.
+
+```sh
+rig uninstall <version>    # one non-current version (side-by-side cleanup)
+rig uninstall --all        # everything: every version, current, the PATH symlinks
+```
+
+Asks before removing; `--force` or `RIG_YES=1` skips the prompt. The host
+itself is untouched — what bootstrap converged stays converged.
 
 ## Commands
 
@@ -717,6 +765,12 @@ to do" and exits 0.
 ## Testing
 
 `bash test/cli.sh` (dependency-free assertions) + shellcheck run in CI. The
+versioned install is proven by REAL installer runs: `RIG_INSTALL_SOURCE`
+points install.sh at the tree under review and the harness drives it against
+throwaway `RIG_HOME`/`RIG_BIN` roots — fresh install, converge, reinstall,
+side-by-side upgrade, `use`/rollback, flat-tree migration, symlink healing,
+the bootstrapped-host warning (via `RIG_ROLE_MARKER` fixtures), and both
+uninstalls with their absence asserts. The
 `rig users` family is covered the same way: the harness drives its refusal
 matrix — users-file parsing, the marker gates, the lexical drop-in-name
 assertion, the validate-then-apply ordering — through the sourced lib
