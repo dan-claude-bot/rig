@@ -89,12 +89,22 @@ check "changelog: an unknown version yields NOTHING (the refusal signal)" 0 "" \
 check "changelog: a date-stamped heading never matches by date" 0 "" \
   absent "$FIXCH" 2026-07-18
 
-# ...and the SHIPPED changelog fits the extractor: an Unreleased section the
-# release PR will stamp, extractable by the exact function release.yml runs.
-check "CHANGELOG.md: has an Unreleased section" 0 "" \
-  grep -qx "## Unreleased" "$ROOT/CHANGELOG.md"
-check "CHANGELOG.md: Unreleased extracts non-empty (the format fits the tool)" \
-  0 "#32" changelog_section "$ROOT/CHANGELOG.md" Unreleased
+# ...and the SHIPPED changelog fits the extractor. The real file has two
+# legitimate states, and the old check knew only one (#44, found the day the
+# first release PR turned CI red): BETWEEN releases there is an `## Unreleased`
+# section feature PRs append to; on a `release: X.Y.Z` tree — and on main
+# right after it, until the next feature PR — that section IS the stamped
+# `## X.Y.Z — date`. Demanding the literal heading (or, worse, an issue
+# number inside it) made the release PR of the ceremony unshippable by
+# construction. What the guard is FOR is format drift: whatever the top
+# section is called, the exact function release.yml runs must extract it
+# non-empty.
+# shellcheck disable=SC2016  # the $-refs are the inner bash -c's, deliberately
+check "CHANGELOG.md: has a top section (Unreleased or a stamped release)" 0 "" \
+  bash -c '[ -n "$(grep -m1 "^## " "$1")" ]' _ "$ROOT/CHANGELOG.md"
+# shellcheck disable=SC2016  # same: positional args resolve inside the inner shell
+check "CHANGELOG.md: the top section extracts non-empty (the format fits the tool)" 0 "" \
+  bash -c '. "$2/.github/scripts/release-lib.sh"; [ -n "$(changelog_section "$1" "$(grep -m1 "^## " "$1" | awk "{print \$2}")")" ]' _ "$ROOT/CHANGELOG.md" "$ROOT"
 
 # --- release.yml: the pins ---------------------------------------------------
 # The workflow itself runs only on a tag push upstream, so pin its

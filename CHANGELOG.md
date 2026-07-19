@@ -8,6 +8,18 @@ on the way to cutting its first release, and this file starts there.
 
 ### Fixed
 
+- **The release suite accepts the ceremony's own tree** (#44) —
+  `test/release.sh` demanded a literal `## Unreleased` heading in the real
+  `CHANGELOG.md`, extracting non-empty and containing `#32`. All three are
+  false by construction on the `release: X.Y.Z` tree the ceremony's own PR
+  produces (it stamps that heading into `## X.Y.Z — date`), so the first
+  real release PR turned CI red and the flow blocked itself — invisible to
+  both fork rehearsals, which tag a branch (`release.yml` runs; `ci.yml`
+  never does). The guard now asserts what it was for: whatever the TOP
+  `## ` section is — `Unreleased` between releases, the stamped version on
+  and right after one — the exact `changelog_section` the workflow runs
+  extracts it non-empty. The rotting issue-number grep is gone.
+
 - **Headless credential prompts refuse loudly instead of dying silently**
   (#42) — the interactive credential prompts (`TS_AUTHKEY` in `bootstrap`,
   `RUNNER_TOKEN` in `runner install`, `RUNNER_REMOVE_TOKEN` in
