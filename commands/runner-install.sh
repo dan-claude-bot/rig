@@ -120,8 +120,11 @@ fi
 # --- registration token — only when registration is actually pending -------
 if [ "$REG_PENDING" -eq 1 ]; then
   RUNNER_TOKEN="${RUNNER_TOKEN:-}"
+  # Prompt only on a tty: headless, a bare `read` dies under set -e with no
+  # message at all (drill-measured). Refuse loudly, naming the variable.
   if [ -z "$RUNNER_TOKEN" ]; then
-    read -rsp "runner registration token (short-lived): " RUNNER_TOKEN
+    [ -t 0 ] || die "RUNNER_TOKEN is unset and stdin is not a tty — set RUNNER_TOKEN to run unattended"
+    read -rsp "runner registration token (short-lived): " RUNNER_TOKEN || { echo; die "no registration token read (EOF) — set RUNNER_TOKEN to run unattended"; }
     echo
   fi
   [ -n "$RUNNER_TOKEN" ] || die "empty registration token"

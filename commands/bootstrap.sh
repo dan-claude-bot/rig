@@ -396,9 +396,15 @@ elif [ "$JOIN" = "login" ]; then
   tailscale up --hostname="$TS_HOSTNAME"
   verify_user_owned back-out
 else
-  # env override, else prompt; never touches disk
+  # env override, else prompt; never touches disk. The prompt only fires on a
+  # tty: with no terminal, a bare `read` exits non-zero and `set -e` would end
+  # the whole bootstrap with NO last word — the 2026-07-19 drill met exactly
+  # that, a log that stops mid-converge with exit 1 and nothing to grep. An
+  # unattended run gets the same refusal every other guard gives: loud, and
+  # naming the variable that unblocks it.
   if [ -z "${TS_AUTHKEY:-}" ]; then
-    read -rsp "tailscale pre-auth key (single-use, tagged, <=1h expiry): " TS_AUTHKEY
+    [ -t 0 ] || die "TS_AUTHKEY is unset and stdin is not a tty — set TS_AUTHKEY to run unattended"
+    read -rsp "tailscale pre-auth key (single-use, tagged, <=1h expiry): " TS_AUTHKEY || { echo; die "no pre-auth key read (EOF) — set TS_AUTHKEY to run unattended"; }
     echo
   fi
   [ -n "${TS_AUTHKEY:-}" ] || die "empty pre-auth key"
