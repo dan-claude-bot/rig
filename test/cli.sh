@@ -814,6 +814,156 @@ check "users apply: the incus want is gated on the host= verdict, not just the g
 check "users apply: a marker/reality mismatch warns and names the repair" 0 "" \
   grep -q "marker and this box's reality disagree" "$ROOT/commands/users-apply.sh"
 
+# --- dropping role box goes through box, not behind its back (#50) -----------
+# The 'incus' group is box's: box's setup-host creates it and `box revoke`
+# takes it back, warning that supplementary groups are read at LOGIN so a
+# session the user already holds keeps the socket until it dies. rig's old bare
+# `gpasswd -d` took the group and said nothing, so an operator watching apply
+# succeed believed VM access had ended when it had not.
+#
+# Both removal paths route through one function, so both are covered by the one
+# set of assertions below.
+check "users apply: both removal paths route incus through drop_incus" 0 "" \
+  test "$(grep -c 'drop_incus "\$' "$ROOT/commands/users-apply.sh")" -eq 2
+# Convergence removes access, never someone's running machines: '--purge'
+# deletes the user's boxes, images and project, and must stay an explicit admin
+# act. Asserted by the SHAPE of the one line that invokes box — a bare revoke
+# whose effective state is then checked — rather than by grepping the file for
+# '--purge', which the rationale comments and --help text mention on purpose,
+# to say where it does belong. The captures below prove the same thing at
+# runtime, on every path.
+# shellcheck disable=SC2016  # the literal source line is the pattern, unexpanded
+check "users apply: the box invocation is a bare revoke" 0 "" \
+  grep -qF 'if box revoke "$u" && ! in_group "$u" incus; then' \
+    "$ROOT/commands/users-apply.sh"
+
+# drop_incus is exercised, not argued about. users-apply.sh EXECUTES when
+# sourced (and dies at the root check), so the function is lifted out of the
+# real file verbatim — column-0 'drop_incus() {' through column-0 '}' — and
+# driven against stub log/warn/in_group and a stub PATH holding only box,
+# gpasswd and pgrep. The extraction is asserted first: if that shape ever
+# changes the lift comes back empty and every case below fails loudly rather
+# than passing vacuously.
+DROP_FN="$(sed -n '/^drop_incus() {/,/^}/p' "$ROOT/commands/users-apply.sh")"
+# shellcheck disable=SC2016  # $1 is the inner bash -c's positional, deliberately
+check "users apply: drop_incus lifts out of the real file whole" 0 "" \
+  bash -c '[ -n "$1" ] && printf %s "$1" | grep -q "^}$"' _ "$DROP_FN"
+
+# The driving shell is named by absolute path: PATH below is REPLACED by the
+# stub directory (not prefixed) so that 'absent' means absent even on a host
+# that really has box installed — which also puts bash itself out of reach of
+# a PATH lookup.
+BASH_BIN="$(command -v bash)"
+# drive_drop <ok|hollow|fail|absent> — run the real drop_incus against stubs.
+# 'ok': box revokes and the membership is gone afterwards. 'hollow': box exits
+# 0 and leaves the membership standing (the #12 lesson — an exit code is not
+# effective state). 'fail': box exits non-zero. 'absent': no box on the host.
+drive_drop() {
+  local mode="$1" d
+  d="$(mktemp -d)"
+  mkdir -p "$d/bin"
+  : > "$d/member"                     # 'dan is in incus' — removed when taken
+  # The stub reports on STDERR: the real call is 'gpasswd -d ... >/dev/null',
+  # so a stub that spoke on stdout would be silenced by the code under test and
+  # every fallback assertion below would pass vacuously.
+  # Each stub restores a real PATH for itself: the caller's PATH is REPLACED by
+  # the stub dir (that is what makes 'absent' mean absent), which would other-
+  # wise leave the stubs unable to find 'rm'.
+  cat > "$d/bin/gpasswd" <<EOF
+#!/bin/sh
+PATH=/usr/bin:/bin
+echo "CALL: gpasswd \$*" >&2
+rm -f "$d/member"
+EOF
+  printf '%s\n' '#!/bin/sh' 'exit 0' > "$d/bin/pgrep"   # dan holds a session
+  if [ "$mode" != absent ]; then
+    cat > "$d/bin/box" <<EOF
+#!/bin/sh
+PATH=/usr/bin:/bin
+echo "CALL: box \$*"
+case "$mode" in
+  ok)     rm -f "$d/member" ;;
+  hollow) : ;;
+  fail)   exit 1 ;;
+esac
+EOF
+  fi
+  chmod +x "$d"/bin/*
+  # shellcheck disable=SC2016  # $MEMBER/$* resolve inside the driving shell
+  MEMBER="$d/member" PATH="$d/bin" "$BASH_BIN" -c '
+    set -euo pipefail
+    log()  { printf "rig-users: %s\n" "$*"; }
+    warn() { printf "rig-users: WARNING: %s\n" "$*" >&2; }
+    in_group() { [ -e "$MEMBER" ]; }
+    '"$DROP_FN"'
+    drop_incus dan' 2>&1
+  rm -rf "$d"
+}
+DROP_OK="$(drive_drop ok)"
+DROP_HOLLOW="$(drive_drop hollow)"
+DROP_FAIL="$(drive_drop fail)"
+DROP_ABSENT="$(drive_drop absent)"
+in_out() { printf '%s' "$1" | grep -qF -e "$2"; }   # in_out <captured> <substr>
+
+# The happy path: box takes its own group back, bare, and rig does not reach
+# for gpasswd behind it.
+check "drop_incus: calls 'box revoke <user>'" 0 "" in_out "$DROP_OK" "CALL: box revoke dan"
+# Bare on EVERY path box is reached on, not just the one that works: a retry
+# or a fallback must never escalate to the destructive verb.
+check "drop_incus: the box call is bare — no --purge" 1 "" in_out "$DROP_OK" "--purge"
+check "drop_incus: a hollow success never retries with --purge" 1 "" in_out "$DROP_HOLLOW" "--purge"
+check "drop_incus: a failed revoke never retries with --purge" 1 "" in_out "$DROP_FAIL" "--purge"
+check "drop_incus: box's success needs no gpasswd" 1 "" in_out "$DROP_OK" "CALL: gpasswd"
+check "drop_incus: names box as the one that revoked" 0 "" in_out "$DROP_OK" "via 'box revoke'"
+
+# Effective state, not exit codes: a revoke that returns 0 with the membership
+# still standing has not closed the socket, and apply must not report that it
+# has.
+check "drop_incus: a hollow box success is caught" 0 "" \
+  in_out "$DROP_HOLLOW" "did not remove the incus group"
+check "drop_incus: a hollow box success falls back to gpasswd" 0 "" \
+  in_out "$DROP_HOLLOW" "CALL: gpasswd -d dan incus"
+check "drop_incus: a hollow box success never claims box did it" 1 "" \
+  in_out "$DROP_HOLLOW" "via 'box revoke'"
+check "drop_incus: a failing box revoke falls back to gpasswd" 0 "" \
+  in_out "$DROP_FAIL" "CALL: gpasswd -d dan incus"
+
+# No box on the host: rig takes the group itself and carries box's warning,
+# because the silence is the bug — an operator must not read "removed" as
+# "their sessions are gone too".
+check "drop_incus: no box on PATH still removes the group" 0 "" \
+  in_out "$DROP_ABSENT" "CALL: gpasswd -d dan incus"
+check "drop_incus: the fallback warns that groups are read at login" 0 "" \
+  in_out "$DROP_ABSENT" "group membership is read at login"
+check "drop_incus: the fallback hands over the remedy" 0 "" \
+  in_out "$DROP_ABSENT" "loginctl terminate-user dan"
+# Every fallback path carries it, not just the box-less one.
+check "drop_incus: the hollow-success fallback warns too" 0 "" \
+  in_out "$DROP_HOLLOW" "loginctl terminate-user dan"
+check "drop_incus: the failed-revoke fallback warns too" 0 "" \
+  in_out "$DROP_FAIL" "loginctl terminate-user dan"
+# box only warns when the user has live processes, and rig mirrors that — but
+# an absent pgrep means rig cannot tell, and a wrong belief about who reaches
+# the daemon costs more than one unnecessary command. Proven by running the
+# fallback with a PATH that has no pgrep at all.
+NOPGREP_D="$(mktemp -d)"
+mkdir -p "$NOPGREP_D/bin"
+printf '%s\n' '#!/bin/sh' 'PATH=/usr/bin:/bin' 'echo "CALL: gpasswd $*" >&2' \
+  "rm -f $NOPGREP_D/member" > "$NOPGREP_D/bin/gpasswd"
+chmod +x "$NOPGREP_D/bin/gpasswd"
+: > "$NOPGREP_D/member"
+# shellcheck disable=SC2016  # $MEMBER/$* resolve inside the driving shell
+DROP_NOPGREP="$(MEMBER="$NOPGREP_D/member" PATH="$NOPGREP_D/bin" "$BASH_BIN" -c '
+  set -euo pipefail
+  log()  { printf "rig-users: %s\n" "$*"; }
+  warn() { printf "rig-users: WARNING: %s\n" "$*" >&2; }
+  in_group() { [ -e "$MEMBER" ]; }
+  '"$DROP_FN"'
+  drop_incus dan' 2>&1)"
+check "drop_incus: an absent pgrep warns rather than guessing" 0 "" \
+  in_out "$DROP_NOPGREP" "loginctl terminate-user dan"
+rm -rf "$NOPGREP_D"
+
 # --- users close-root: the human-class root-door shutter ---------------------
 check "users close-root: --help exits 0"       0 "usage:"       "$ROOT/commands/users-close-root.sh" --help
 check "users close-root: unknown flag exits 2" 2 "unknown flag" "$ROOT/commands/users-close-root.sh" --nope

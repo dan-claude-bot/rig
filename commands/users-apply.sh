@@ -47,7 +47,10 @@ roles:
   admin   group rig-admin — full NOPASSWD sudo
   rig     group rig       — NOPASSWD sudo for /usr/local/bin/rig only
   box     group incus     — Incus restricted tier, no sudo (box's setup-host
-                            owns the Incus install; rig only asserts it)
+                            owns the Incus install; rig only asserts it).
+                            Dropping this role hands the group back through
+                            'box revoke' — never --purge: convergence removes
+                            access, never someone's running boxes.
 
 All passwords stay locked, always — the SSH key at the door is the
 authentication, and NOPASSWD sudo does not weaken it. Convergent: membership
@@ -222,6 +225,60 @@ fi
 
 in_group() { id -nG "$1" 2>/dev/null | tr ' ' '\n' | grep -qx "$2"; }
 
+# --- dropping role box: give the group back to the tool that owns it (#50) ---
+# rig-admin and rig are rig's own groups, and `gpasswd -d` is the whole story
+# for them. incus is not rig's: box's setup-host creates it, `box grant` hands
+# it out, and `box revoke` takes it back — doing strictly MORE than removing
+# the membership. It says out loud what removing the membership does not do:
+# supplementary groups are read at LOGIN, so a session the dropped operator
+# already holds keeps the Incus socket until that session dies, and the remedy
+# is `loginctl terminate-user <user>`. rig's bare `gpasswd -d` logged "removed
+# <user> from incus" and left it there, so an operator who dropped someone from
+# the users file and watched apply succeed believed the VM access was gone —
+# and was wrong for as long as that user held a session.
+#
+# So box takes its own group back. The fallback below exists for the host where
+# box is not installed (someone else built the Incus stack, or box was removed
+# from under it), and it carries the session warning ITSELF: the silence is the
+# bug being fixed, not the gpasswd call.
+#
+# NEVER --purge from here. A bare revoke ends access and leaves the user's
+# project and boxes intact — still RUNNING, because revoking a person does not
+# kill their workloads. Deleting them is irreversible and is not a convergence
+# step: an edit to the users file must never destroy someone's machines behind
+# an admin's back. `box revoke <user> --purge`, run deliberately, is where that
+# lives.
+#
+# The absent-group case needs no guard of its own: `id -nG` cannot report a
+# group that does not exist, so every caller's `in_group` test is already false
+# on a host=no box or one where `box setup-host` never ran — there is nothing
+# to revoke, and apply says nothing and moves on.
+drop_incus() { # drop_incus <user> — hand group 'incus' back to box
+  local u="$1"
+  if command -v box >/dev/null 2>&1; then
+    # Don't trust the exit code — prove the effective state (the #12 lesson,
+    # the same one bootstrap applies to box's installer). A revoke that exits
+    # 0 having left the membership in place would otherwise be reported as a
+    # removal; the membership is what closes the socket, so it gets checked.
+    if box revoke "$u" && ! in_group "$u" incus; then
+      log "removed $u from incus (via 'box revoke' — box owns that group)"
+      return 0
+    fi
+    warn "'box revoke $u' did not remove the incus group — removing it directly; check box on this host"
+  fi
+  if in_group "$u" incus; then
+    gpasswd -d "$u" incus >/dev/null
+    log "removed $u from incus"
+  fi
+  # box's warning, in rig's voice, because rig is the one that took the group
+  # here. pgrep decides whether it applies; if pgrep is absent rig cannot tell,
+  # and an unnecessary warning costs an operator one command while a missing
+  # one costs them a wrong belief about who can reach the daemon.
+  if ! command -v pgrep >/dev/null 2>&1 || pgrep -u "$u" >/dev/null 2>&1; then
+    warn "$u may hold live sessions, and group membership is read at login — those sessions keep the Incus socket until they end. To end them now: loginctl terminate-user $u"
+  fi
+}
+
 # --- converge each user ------------------------------------------------------
 for u in "${USERS[@]}"; do
   if ! id -u "$u" >/dev/null 2>&1; then
@@ -263,8 +320,12 @@ for u in "${USERS[@]}"; do
         fi ;;
       *)
         if in_group "$u" "$g"; then
-          gpasswd -d "$u" "$g" >/dev/null
-          log "removed $u from $g"
+          if [ "$g" = incus ]; then
+            drop_incus "$u"
+          else
+            gpasswd -d "$u" "$g" >/dev/null
+            log "removed $u from $g"
+          fi
           CHANGED=1
         fi ;;
     esac
@@ -324,8 +385,19 @@ if [ -r "$LEDGER" ]; then
     if [ -f "$prevhome/.ssh/authorized_keys" ]; then
       mv "$prevhome/.ssh/authorized_keys" "$prevhome/.ssh/authorized_keys.revoked-by-rig"
     fi
+    # incus goes back through box here too — a user dropped from the file
+    # entirely is exactly the offboarding this warning was written for, and it
+    # would be perverse for the full revocation to be the quiet one. It fires
+    # once, on the transition: the membership is gone on the next run, so
+    # in_group is false and an already-revoked user stays a clean no-op.
     for g in rig-admin rig incus; do
-      if in_group "$prev" "$g"; then gpasswd -d "$prev" "$g" >/dev/null; fi
+      if in_group "$prev" "$g"; then
+        if [ "$g" = incus ]; then
+          drop_incus "$prev"
+        else
+          gpasswd -d "$prev" "$g" >/dev/null
+        fi
+      fi
     done
     REVOKED+=("$prev")
     # Warn on the TRANSITION only: an already-revoked user is converged above

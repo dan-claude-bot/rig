@@ -784,6 +784,20 @@ apply dies pointing at `box setup-host` rather than conjure a group nothing
 would consult. `incus-admin` is deliberately **not** a role: that group is
 host-root-equivalent, break-glass by hand only.
 
+Losing the `box` role goes back through box, too. `rig-admin` and `rig` are
+rig's groups and a `gpasswd -d` is the whole story for them; `incus` is box's,
+and `box revoke` does more with it than remove a membership — it says out loud
+that supplementary groups are read **at login**, so a session the dropped
+operator already holds keeps the Incus socket until it dies, and names
+`loginctl terminate-user <user>` as the way to end it now. So apply calls
+`box revoke` and lets box speak. Never `--purge`: that deletes the user's
+boxes, images and project, and destroying someone's running machines is not a
+convergence step — `box revoke <user> --purge` stays a deliberate admin act.
+Where box is not installed (or the revoke returns success with the membership
+still standing — an exit code is not effective state) rig removes the group
+itself **and carries the session warning**, because a silent removal is what
+lets an operator believe access ended when it has not.
+
 **All passwords stay locked, always** — created or found. The SSH key at the
 door is the authentication, and NOPASSWD sudo does not weaken it: there was
 never a password to guess or rotate.

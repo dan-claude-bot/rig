@@ -4,7 +4,7 @@ History before 0.1.0 lives in git — rig grew its version surface (`VERSION`,
 `rig --version`, the side-by-side `versions/<v>` install layout; #35/#36)
 on the way to cutting its first release, and this file starts there.
 
-## 0.1.0 — 2026-07-19
+## Unreleased
 
 ### Fixed
 
@@ -27,6 +27,29 @@ on the way to cutting its first release, and this file starts there.
   exact-membership convergence now strips box-role users out of `incus`, on
   the same reasoning: a membership inherited from a previous life is the same
   half-grant as a freshly added one.
+- **Dropping the box role revokes through `box`, not behind its back**
+  (#50) — `users apply` converged group `incus` with a bare `gpasswd -d`,
+  the same move it makes for `rig-admin` and `rig`. Those two are rig's;
+  `incus` is box's, and `box revoke` does strictly more with it: it says
+  out loud that supplementary groups are read at LOGIN, so a session the
+  dropped operator already holds keeps the Incus socket until it dies, and
+  hands over `loginctl terminate-user <user>` as the remedy. rig logged
+  `removed <user> from incus` and moved on, so an operator who dropped
+  someone from the users file and watched apply succeed believed the VM
+  access was gone — and was wrong for as long as that user held a session.
+  Both removal paths (the per-user convergence and the dropped-user sweep)
+  now call `box revoke`, which keeps one owner for the group. Never
+  `--purge`: that deletes the user's boxes, images and project, and
+  destroying someone's running machines is not a convergence step — it
+  stays an explicit admin act. The exit code is not trusted (#12's lesson):
+  a revoke that returns 0 with the membership still standing has not closed
+  the socket, and rig falls back to removing the group itself, as it also
+  does where box is not installed. Every fallback path carries the session
+  warning, because the silence was the bug.
+
+## 0.1.0 — 2026-07-19
+
+### Fixed
 
 - **The release suite accepts the ceremony's own tree** (#44) —
   `test/release.sh` demanded a literal `## Unreleased` heading in the real
