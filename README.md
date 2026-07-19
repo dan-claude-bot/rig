@@ -98,20 +98,75 @@ second run changes nothing. (The box TENANT roles — `claude`, `codex`,
 tenants* below.)
 
 ```sh
-rig bootstrap control-plane --hostname my-coolify-box
-rig bootstrap workload --hostname my-prod-box
-rig bootstrap runner --hostname my-ci-box
-rig bootstrap dev --hostname my-dev-box
-rig bootstrap workstation --hostname my-laptop
-rig bootstrap custom --hostname my-vm-host --class server --host yes --join authkey
+rig bootstrap control-plane --hostname my-coolify-box --users ./users
+rig bootstrap workload --hostname my-prod-box --users ./users
+rig bootstrap runner --hostname my-ci-box --users ./users
+rig bootstrap dev --hostname my-dev-box --users ./users
+rig bootstrap workstation --hostname my-laptop --users ./users
+rig bootstrap custom --hostname my-vm-host --class server --host yes --join authkey --users ./users
 ```
 
+- `--users <path>` / `--no-users` — **required**, one or the other: the users
+  file this box's operators come from, converged as bootstrap's last phase
+  (see *One command, box ready* below)
 - `--hostname <name>` — system + tailnet hostname (default: the role name;
   `custom` has no default and requires it)
 - `--class <human|server>` — who lives here; decides root SSH's fate after
-  `rig users apply` (see *The identity model* below)
+  the users phase (see *The identity model* below)
 - `--host <yes|no>` — does this box host VMs (box/Incus)
 - `--join <authkey|login>` — how it enters the tailnet
+
+#### One command, box ready — `--users` is required
+
+`rig bootstrap` already knows everything else about what a box *is* — class,
+host, join, hostname — and writes `/etc/rig/role` to say so. The users file
+was the last piece of that answer it did not take, so bring-up was two
+commands and the second one was easy to forget. Now it takes it, and
+**requires** it:
+
+```sh
+rig bootstrap dev --hostname my-dev-box --users ./users   # one command, people included
+rig bootstrap dev --hostname my-dev-box --no-users        # deliberately root-only
+```
+
+`--users <path>` runs exactly what `rig users apply --file <path>` runs, as
+bootstrap's **final phase** — after the traits are set, after the tailnet
+join is verified, and after `/etc/rig/role` is written, because apply *reads*
+that marker (`class=` picks its root-SSH note, `host=` decides what a missing
+`incus` group means). On a `host=yes` box it also lands after the `box`
+install, so box-role users find the `incus` group box's `setup-host` built.
+The file is passed per invocation and **never persisted** — bootstrap reads
+it through apply and keeps nothing; `--users -` is refused, because
+bootstrap's stdin belongs to the pre-auth key prompt.
+
+Required on **every** role, `class=server` included. A bootstrapped box with
+no users converges to a box only root can enter — on `class=human` a
+half-built machine, and on `class=server` something worse than half-built: a
+machine nobody logs into routinely is exactly where shared-root access rots,
+and per-human accounts keep attribution intact for the times someone does go
+in. So the complete path is the default path, and skipping it is a deliberate
+`--no-users` rather than an omission that looks identical to forgetting.
+Omitting both is a usage error naming both flags; passing both is a usage
+error too — rig will not silently pick a winner.
+
+A bad users file is caught **up front**, in the same breath as a bad
+`--class`: bootstrap pre-flights it with the same parser apply uses, before
+`apt`, before the hostname change, and before a single-use pre-auth key is
+spent. And on `host=yes` with `RIG_SKIP_BOX_INSTALL=1`, a box-role user with
+no `incus` group refuses immediately rather than a hundred lines later —
+that is the one case where the outcome is already certain, since the run has
+been told it will not install box. rig still **never** installs Incus or runs
+`box setup-host` on its own account; the box CLI's own installer does that
+(see the `host` trait), and every other way that step can fail lands in
+apply's existing refusal at the end.
+
+`--users` does **not** reach the box TENANT roles (`claude`, `codex`, `grok`,
+`staging`). A tenant is a box-minted *guest*: box auto-runs its bootstrap at
+mint, non-interactively, with no file to hand it; the guest never joins the
+tailnet and has no SSH door of its own — you enter with `box shell`, gated by
+the **host's** `incus` grants, which the host's own users file already
+converged. A fleet-wide operator file has nothing to converge in there, and
+requiring one would break the mint-time path outright.
 
 **Roles are presets over three orthogonal traits**, nothing more — every
 per-role behavior keys off a trait, so any flag overrides its trait without
@@ -332,7 +387,8 @@ files, so a PATH export alone is invisible to it.
 prompt, in the shipped script). The one creds-holding step a staging guest
 eventually needs — the tailnet workload join — stays **operator-run**, exactly
 as box#69 designed it: `box shell` → `sudo rig bootstrap workload --hostname
-<name>` with a single-use tagged pre-auth key. After that join, re-running
+<name> --users <path>` (or `--no-users` — a guest's door is `box shell`, gated
+by the host's grants) with a single-use tagged pre-auth key. After that join, re-running
 `rig bootstrap staging` still converges docker + hardening and leaves the
 workload marker alone — the machine role is the truer statement of what the
 box became.
@@ -581,7 +637,7 @@ Runner box only, run after `rig bootstrap runner` (the same two-step rhythm
 as `bootstrap control-plane` → `coolify install`):
 
 ```sh
-rig bootstrap runner --hostname my-ci-box
+rig bootstrap runner --hostname my-ci-box --users ./users
 rig runner install --repo acme/widgets
 ```
 
@@ -711,6 +767,10 @@ and never asks for a token.
 Converges named operator accounts from a declarative users file — on **every**
 class (see *The identity model*). Run as root. Convergent: a second identical
 run says "already converged; no changes".
+
+This is also what `rig bootstrap --users <path>` runs as its last phase, so on
+a fresh box you rarely call it by hand — it is the *re-converge* verb (a key
+added, an operator revoked, a `--no-users` box growing people later).
 
 ```
 # user   roles       ssh public key
