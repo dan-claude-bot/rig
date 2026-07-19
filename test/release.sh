@@ -102,9 +102,93 @@ check "changelog: a date-stamped heading never matches by date" 0 "" \
 # shellcheck disable=SC2016  # the $-refs are the inner bash -c's, deliberately
 check "CHANGELOG.md: has a top section (Unreleased or a stamped release)" 0 "" \
   bash -c '[ -n "$(grep -m1 "^## " "$1")" ]' _ "$ROOT/CHANGELOG.md"
-# shellcheck disable=SC2016  # same: positional args resolve inside the inner shell
-check "CHANGELOG.md: the top section extracts non-empty (the format fits the tool)" 0 "" \
-  bash -c '. "$2/.github/scripts/release-lib.sh"; [ -n "$(changelog_section "$1" "$(grep -m1 "^## " "$1" | awk "{print \$2}")")" ]' _ "$ROOT/CHANGELOG.md" "$ROOT"
+
+# --- the arming rule: is main's changelog ready for a late merge? ------------
+# #66: stamping the Unreleased heading DISARMS the file. A PR authored before
+# a release and merged after it wrote its entry under `## Unreleased`; once
+# that heading has become `## X.Y.Z — date`, git lands the entry under the
+# release that already shipped — cleanly, no conflict, nothing for the author
+# to notice. It happened here: #60's #58 entry landed inside `## 0.1.0` at
+# 67386b4, repaired two minutes later by 0ff520c.
+#
+# The check above cannot see this, and #44 is why: demanding a literal
+# `## Unreleased` is FALSE BY CONSTRUCTION on the tree the ceremony's own PR
+# produces, which made the release PR unshippable. That relaxation must not
+# be undone.
+#
+# What distinguishes the two states the old guard collapsed is VERSION.
+# A stamped top section is legal exactly when VERSION is bare — the ceremony
+# PR, and main until the -dev bump lands. The moment VERSION carries -dev,
+# main is a place feature PRs merge into, and the top section MUST be
+# `## Unreleased` or the next late merge is misfiled.
+#
+# Note the asymmetry, which is deliberate: on a BARE version the top heading
+# is not constrained at all. The ceremony re-arms in the same PR
+# (CONTRIBUTING step 1), so its tree legitimately carries an EMPTY
+# `## Unreleased` above the section it just stamped — and an empty top
+# section is exactly what the old non-empty assert would have rejected.
+# What must extract non-empty on a bare VERSION is the section that SHIPS,
+# which is the same assert release.yml makes before it publishes.
+#
+# changelog_armed <version> <changelog-file> — 0 armed, 1 disarmed.
+changelog_armed() {
+  local ver="$1" file="$2" top
+  top="$(grep -m1 '^## ' "$file")"
+  [ -n "$top" ] || return 1
+  case "$ver" in
+    *-dev) [ "$top" = "## Unreleased" ] ;;
+    *)     [ -n "$(changelog_section "$file" "$ver")" ] ;;
+  esac
+}
+
+# The guard itself, against the real tree.
+check "CHANGELOG.md: armed for the VERSION it carries (#66)" 0 "" \
+  changelog_armed "$(cat "$ROOT/VERSION")" "$ROOT/CHANGELOG.md"
+
+# ...and the rule proven against trees built for the purpose, because a guard
+# that is only ever run against a passing tree has not been shown to fail.
+# Each is a real VERSION + CHANGELOG.md pair the flow actually produces.
+armtree() { # armtree <name> <version> <changelog-body...>  -> prints the dir
+  local d="$WORK/arm-$1"; mkdir -p "$d"; printf '%s\n' "$2" > "$d/VERSION"
+  shift 2; printf '%s\n' "$@" > "$d/CHANGELOG.md"; printf '%s' "$d"
+}
+armed() { changelog_armed "$(cat "$1/VERSION")" "$1/CHANGELOG.md"; }
+
+# The ceremony PR's own tree, re-armed per CONTRIBUTING step 1: VERSION bare,
+# an empty Unreleased sitting above the section it just stamped. GREEN — this
+# is the case #44 was about, and the empty section must not break it.
+T="$(armtree ceremony 0.2.0 '# Changelog' '' '## Unreleased' '' '## 0.2.0 — 2026-07-19' '' '- **A shipped thing** (#1) — prose.')"
+check "arming: the re-armed ceremony tree passes (#44 stays fixed)" 0 "" armed "$T"
+
+# The same ceremony WITHOUT the re-arm — old-style, stamped straight over the
+# heading. Also GREEN: VERSION is bare, so a stamped top is legal. The guard
+# refuses to make the ceremony unshippable, which is the whole #44 lesson.
+T="$(armtree ceremony-old 0.2.0 '# Changelog' '' '## 0.2.0 — 2026-07-19' '' '- **A shipped thing** (#1) — prose.')"
+check "arming: an un-re-armed ceremony tree still passes (bare VERSION)" 0 "" armed "$T"
+
+# main AFTER release.yml's -dev bump, with the changelog left disarmed. This
+# is #66 exactly, and the state cast sat in at the time of writing. RED.
+T="$(armtree disarmed 0.2.1-dev '# Changelog' '' '## 0.2.0 — 2026-07-19' '' '- **A shipped thing** (#1) — prose.')"
+check "arming: a -dev main with a stamped top section FAILS (#66)" 1 "" armed "$T"
+
+# The same main, re-armed. The Unreleased section is EMPTY — no feature PR has
+# merged since the release — and that is a correct, expected state. GREEN.
+T="$(armtree rearmed 0.2.1-dev '# Changelog' '' '## Unreleased' '' '## 0.2.0 — 2026-07-19' '' '- **A shipped thing** (#1) — prose.')"
+check "arming: a -dev main with an EMPTY Unreleased passes (no entries yet)" 0 "" armed "$T"
+
+# Steady state between releases: entries accumulating under Unreleased.
+T="$(armtree steady 0.2.1-dev '# Changelog' '' '## Unreleased' '' '### Fixed' '' '- **A pending thing** (#2) — prose.' '' '## 0.2.0 — 2026-07-19' '' '- **A shipped thing** (#1) — prose.')"
+check "arming: the normal between-releases tree passes" 0 "" armed "$T"
+
+# A release PR that bumped VERSION but forgot to stamp: the version it claims
+# to ship has no section, so release.yml would publish empty notes. RED here,
+# one round earlier than the workflow's own refusal.
+T="$(armtree unstamped 0.3.0 '# Changelog' '' '## Unreleased' '' '- **A pending thing** (#2) — prose.')"
+check "arming: a bare VERSION whose section was never stamped FAILS" 1 "" armed "$T"
+
+# And a file with no '## ' heading at all is disarmed, not silently fine.
+T="$(armtree headless 0.2.1-dev '# Changelog' '' 'no sections here')"
+check "arming: a changelog with no sections FAILS" 1 "" armed "$T"
 
 # --- release.yml: the pins ---------------------------------------------------
 # The workflow itself runs only on a tag push upstream, so pin its
