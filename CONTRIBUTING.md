@@ -61,9 +61,12 @@ top of #32/box#83's tag flow):
    box's tag scheme) and publishes the GitHub release with that section as
    the body. No assets — the source tarball for the tag is the package
    `install.sh` downloads.
-3. A follow-up (or the next feature PR) bumps main's `VERSION` to
-   `X.Y.(Z+1)-dev`, so a dev install never impersonates the release in the
-   `versions/<v>` layout.
+3. The release re-arms main itself: the same workflow run bumps `VERSION`
+   to `X.Y.(Z+1)-dev` and pushes the commit straight to main — no
+   follow-up PR (it opens one only if branch protection refuses the
+   direct push, loudly). A dev install therefore never impersonates the
+   release in the `versions/<v>` layout. On the *manual* tag path the
+   bump stays yours: open the one-line PR after publishing.
 
 Manual fallback (and backfill): if the merge-path run fails, fix what it
 named, then tag the merge commit `X.Y.Z` by hand and push the tag — the
