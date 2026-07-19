@@ -213,6 +213,46 @@ check "bootstrap: the invalid-file refusal carries the parser's own line error" 
 # ('--no-users' then apply by hand) named.
 check "bootstrap: --users - is refused, naming the pre-auth key prompt" 2 "pre-auth key prompt" \
   "$ROOT/commands/bootstrap.sh" workload --users -
+# A file that parses to ZERO users (#57). Not a parse error — the parser is
+# right to accept empty, comments-only and whitespace-only files — but it walks
+# straight through #51's requirement: `--users ./empty` and `--no-users`
+# converge the identical root-only box, and only one of them says so. All three
+# shapes are tested separately because they take different paths through the
+# parser's skip rules, and an implementation that checked, say, file size alone
+# would pass one and fail the others.
+: > "$BOOT_USERS/empty"
+cat > "$BOOT_USERS/comments" <<'USERS'
+# the operators for this box
+#dan     admin      ssh-ed25519 AAAAC3fixture dan@laptop
+USERS
+printf '   \n\t\n\n' > "$BOOT_USERS/blank"
+check "bootstrap: an empty users file exits 2" 2 "names no users" \
+  "$ROOT/commands/bootstrap.sh" workload --users "$BOOT_USERS/empty"
+check "bootstrap: a comments-only users file exits 2" 2 "names no users" \
+  "$ROOT/commands/bootstrap.sh" workload --users "$BOOT_USERS/comments"
+check "bootstrap: a whitespace-only users file exits 2" 2 "names no users" \
+  "$ROOT/commands/bootstrap.sh" workload --users "$BOOT_USERS/blank"
+# The refusal must name --no-users, for the same reason the missing-flag one
+# does: the root-only box IS reachable, it just has to be said out loud. An
+# error that only reported "no users" would leave the operator who genuinely
+# wants root-only with no named way to ask for it.
+check "bootstrap: the zero-user refusal names --no-users as the way to say it" 2 "pass --no-users to leave this box root-only" \
+  "$ROOT/commands/bootstrap.sh" workload --users "$BOOT_USERS/empty"
+# It must NOT over-refuse: a file that names even one operator passes pre-flight
+# untouched. Reaching the root check (exit 1) is the proof — same idiom as the
+# incus precondition's negative cases below.
+if [ "$(id -u)" -ne 0 ]; then
+  check "bootstrap: a users file naming operators still passes pre-flight" 1 "must run as root" \
+    env TS_AUTHKEY=x "$ROOT/commands/bootstrap.sh" workload --users "$BOOT_USERS/ok"
+fi
+# Scope guard (#57): the refusal is BOOTSTRAP's contract, not the parser's and
+# not apply's. A standalone `rig users apply` against an emptied file is a real
+# de-provisioning operation and must stay possible — greps that find nothing
+# (exit 1) are the pass, the repo's negative-law idiom.
+check "users apply: an empty file is still a legal de-provisioning input" 1 "" \
+  grep -nE 'names no users' "$ROOT/commands/users-apply.sh"
+check "users-config: zero users stays bootstrap policy, not a parser error" 1 "" \
+  grep -nE 'names no users' "$ROOT/commands/lib/users-config.sh"
 # The host=yes box-role precondition, surfaced EARLY — but only where the
 # outcome is already proven: RIG_SKIP_BOX_INSTALL=1 means this run will not
 # install box, so a missing incus group can no longer be rescued by the install

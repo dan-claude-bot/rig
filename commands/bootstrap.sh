@@ -227,6 +227,37 @@ if [ -n "$USERS_FILE" ]; then
   if ! USERS_PARSED="$(parse_users_file "$USERS_FILE")"; then
     die "invalid users file: $USERS_FILE — every error is listed above; nothing was changed" 2
   fi
+  # A file that parses to ZERO users is not a parse error — empty, comments-only
+  # and whitespace-only files are all perfectly valid input, and the parser is
+  # right to accept them. But they walk straight through the requirement #51
+  # built: `--users ./empty-file` and `--no-users` converge the identical
+  # root-only box, and only one of them says so. The ambiguity the required flag
+  # exists to kill would survive in a narrower form — an operator who pointed at
+  # the wrong path and one who meant root-only would again produce indis-
+  # tinguishable boxes, which is precisely the state the flag was made to end.
+  #
+  # Refuse, and name --no-users: the outcome is reachable, it just has to be
+  # said out loud. That is the whole shape of #51's contract — both answers are
+  # available, neither is a side effect of what you did not type.
+  #
+  # The sharper reason this belongs at pre-flight rather than nowhere: against a
+  # box that ALREADY has operators, a truncated file does not converge nothing,
+  # it revokes every one of them. That is apply's correct and documented
+  # drop-semantics and it warns per user, so it is loud rather than silent — but
+  # a stray '>' is all it takes to produce that file, and every other failure
+  # mode on this command was deliberately made to fail before apt, the hostname
+  # change, or a spent pre-auth key. This one should not be the exception that
+  # fails after them.
+  #
+  # Deliberately scoped to BOOTSTRAP, not to the parser and not to apply. The
+  # lib stays a parser — "zero users is not allowed here" is bootstrap's policy,
+  # not a property of the file format — and a standalone `rig users apply`
+  # against an emptied file remains a real de-provisioning operation that must
+  # keep working. Bootstrap is where the claim "this box's people are these" is
+  # being made, so bootstrap is where an empty answer is a contradiction.
+  if [ -z "$USERS_PARSED" ]; then
+    die "users file names no users: $USERS_FILE parsed to zero operators (it is empty, or only comments and blank lines). Bootstrapping with it would converge a box only root can enter — the same outcome as --no-users, reached by the flag that exists to guarantee the opposite. Check the path, or pass --no-users to leave this box root-only deliberately" 2
+  fi
   # Does anyone in the file carry role box? That single fact decides whether the
   # incus precondition below applies at all — a users file naming only admins
   # converges perfectly well on a host that has never seen Incus, and refusing

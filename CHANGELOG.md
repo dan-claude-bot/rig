@@ -104,6 +104,16 @@ on the way to cutting its first release, and this file starts there.
   the socket, and rig falls back to removing the group itself, as it also
   does where box is not installed. Every fallback path carries the session
   warning, because the silence was the bug.
+- **`rig bootstrap` refuses a users file that names no users** (#57) — an
+  empty, comments-only or whitespace-only file is not a parse error, so it
+  passed pre-flight, converged nothing, and left the box root-only: the exact
+  outcome `--no-users` exists to make explicit, reached by the flag added to
+  guarantee the opposite. Bootstrap's pre-flight now catches the zero-user
+  parse — before `apt`, the hostname change, or a spent pre-auth key — and
+  refuses, naming `--no-users` as the way to ask for a root-only box out loud.
+  Scoped to `rig bootstrap`'s contract only: a standalone `rig users apply`
+  against an emptied file is a real de-provisioning operation and is
+  unchanged.
 
 ## 0.1.0 — 2026-07-19
 

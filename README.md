@@ -152,13 +152,20 @@ error too — rig will not silently pick a winner.
 A bad users file is caught **up front**, in the same breath as a bad
 `--class`: bootstrap pre-flights it with the same parser apply uses, before
 `apt`, before the hostname change, and before a single-use pre-auth key is
-spent. And on `host=yes` with `RIG_SKIP_BOX_INSTALL=1`, a box-role user with
-no `incus` group refuses immediately rather than a hundred lines later —
-that is the one case where the outcome is already certain, since the run has
-been told it will not install box. rig still **never** installs Incus or runs
-`box setup-host` on its own account; the box CLI's own installer does that
-(see the `host` trait), and every other way that step can fail lands in
-apply's existing refusal at the end.
+spent. A file that names **no users** is refused there too — empty,
+comments-only and whitespace-only files all parse fine, but bootstrapping
+with one converges the same root-only box `--no-users` asks for, via the
+flag that exists to guarantee the opposite. The refusal names `--no-users`,
+because that box is reachable; it just has to be asked for out loud. This is
+bootstrap's contract only: `rig users apply` against an emptied file is a
+genuine de-provisioning operation and stays available. And on `host=yes`
+with `RIG_SKIP_BOX_INSTALL=1`, a box-role user with no `incus` group refuses
+immediately rather than a hundred lines later — that is the one case where
+the outcome is already certain, since the run has been told it will not
+install box. rig still **never** installs Incus or runs `box setup-host` on
+its own account; the box CLI's own installer does that (see the `host`
+trait), and every other way that step can fail lands in apply's existing
+refusal at the end.
 
 `--users` does **not** reach the box TENANT roles (`claude`, `codex`, `grok`,
 `staging`). A tenant is a box-minted *guest*: box auto-runs its bootstrap at
