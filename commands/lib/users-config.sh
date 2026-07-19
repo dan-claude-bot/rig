@@ -146,6 +146,55 @@ assert_marker_human() {
   esac
 }
 
+# assert_marker_hosts_vms <marker_path> — the box role's gate: return 0,
+# silently, only when the marker says host=yes; otherwise print the reason on
+# stdout and return 1 (the caller decides whether that is a warn or a die).
+# Same shape and same reason as assert_marker_human above: the policy is a
+# pure marker->verdict function so the harness can prove every arm against
+# fixture markers, non-root, while the CLI path sits behind the root check.
+#
+# The MARKER decides, not the machine (#58). Apply used to consult host= only
+# when group incus was ABSENT — so a box whose marker said host=no but which
+# happened to carry the group (box's setup-host ran, then the box was
+# re-bootstrapped with different traits, or given --host no) handed box-role
+# users a bare `usermod -aG incus`: the socket with no tier behind it. That is
+# the worst of the three states, because incus-user answers a socket it is
+# given by lazily creating an UNHARDENED project for whoever opens it —
+# incusbr-<uid>, NAT on v4 and v6, no ACL, no dns.mode=none, no port
+# isolation. The alternative considered was to let the group's presence win
+# and converge anyway with a warning, on the theory that a real incus install
+# is evidence the machine really does host VMs. It was rejected: the marker is
+# what this box CLAIMS to be, and every other host= decision in the family
+# already treats it as authoritative rather than as a hint to be second-
+# guessed by probing the machine. A box that lies about itself gets its lie
+# taken seriously and gets told, loudly, to re-run bootstrap — which is a
+# cheap repair — instead of rig quietly provisioning a VM-host tier on a box
+# that does not claim to be one. Deciding from the marker alone also means the
+# verdict is the SAME whether or not the group exists, which is the property
+# that was missing.
+#
+# No marker, and a marker with no host= trait, both land here as "not a VM
+# host" for the same fail-closed reason: rig cannot tell an unbootstrapped box
+# from a repurposed one, and the safe error is withholding VM access that can
+# be granted by a re-run, not granting VM access that cannot be un-granted
+# once a project exists under it.
+assert_marker_hosts_vms() {
+  local marker
+  marker="$(read_role_marker "$1")"
+  case "$marker" in
+    *host=yes*) return 0 ;;
+    *host=no*)
+      printf '%s\n' "this box does not host VMs (host=no)"
+      return 1 ;;
+    "")
+      printf '%s\n' "no /etc/rig/role marker, so this box names no host= trait — re-run rig bootstrap so it knows whether it hosts VMs"
+      return 1 ;;
+    *)
+      printf '%s\n' "the role marker names no host= trait (${marker}) — re-run rig bootstrap so this box knows whether it hosts VMs"
+      return 1 ;;
+  esac
+}
+
 # deny_verdict <user> <denyusers token...>
 #
 # Judge sshd's effective DenyUsers list against ONE candidate, fail closed.

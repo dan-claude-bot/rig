@@ -750,6 +750,56 @@ check "users apply: revoked keys are renamed, never deleted" 0 "" \
 check "users apply: box role skips on a host=no box" 0 "" \
   grep -q "box role skipped" "$ROOT/commands/users-apply.sh"
 
+# --- the box role's host= gate (#58) -----------------------------------------
+# The gate is a pure marker->verdict lib function for the same reason
+# assert_marker_human is: apply's box arm sits behind the root check, so every
+# arm is proven HERE against fixture markers, non-root.
+#
+# What #58 fixed: the trait used to be consulted only when group incus was
+# ABSENT, so a host=no (or marker-less) box that happened to CARRY the group
+# handed box-role users a bare `usermod -aG incus` — the socket with no tier,
+# which incus-user answers by lazily building an unhardened project under
+# whoever opens it. The load-bearing property below is that the verdict comes
+# from the marker ALONE and is therefore identical whether or not the group
+# exists; the group only decides whether a box that does claim host=yes is
+# ready to serve the role.
+hostvm_gate() { # hostvm_gate <marker_path>
+  bash -c 'set -euo pipefail
+    . "$1/commands/lib/users-config.sh"
+    assert_marker_hosts_vms "$2"' _ "$ROOT" "$1"
+}
+HOSTVM_FIX="$(mktemp -d)"
+printf 'role=dev class=human host=yes join=authkey\n'      > "$HOSTVM_FIX/yes"
+printf 'role=workload class=server host=no join=authkey\n' > "$HOSTVM_FIX/no"
+# A marker that predates the host= trait (or was hand-edited): present, but it
+# names no host=. Distinct from an ABSENT marker and it must not read as yes.
+printf 'role=workload class=server join=authkey\n'         > "$HOSTVM_FIX/traitless"
+check "users apply: host=yes passes the box-role gate" \
+  0 "" hostvm_gate "$HOSTVM_FIX/yes"
+check "users apply: host=no fails the box-role gate" \
+  1 "does not host VMs" hostvm_gate "$HOSTVM_FIX/no"
+# The marker-less case gets its own answer rather than falling through to
+# either yes or no: rig cannot tell an unbootstrapped box from a repurposed
+# one, so it withholds (recoverable by a re-run) and names the repair.
+check "users apply: an absent marker fails the box-role gate, names bootstrap" \
+  1 "re-run rig bootstrap" hostvm_gate "$HOSTVM_FIX/absent"
+check "users apply: a marker with no host= trait fails the gate, names bootstrap" \
+  1 "re-run rig bootstrap" hostvm_gate "$HOSTVM_FIX/traitless"
+rm -rf "$HOSTVM_FIX"
+# The gate must actually be WIRED to the wanted-groups decision, not merely
+# exist: this is the line #58 reported, where the box arm used to test group
+# presence alone. Pin both operands on that arm — a revert to the INCUS_OK-only
+# test must not ship green. It is a gate on whether the ROLE APPLIES, kept
+# separate from the mechanism of the add on purpose, so it survives #53 moving
+# the add itself into `box grant`.
+check "users apply: the incus want is gated on the host= verdict, not just the group" 0 "" \
+  grep -qE '\*,box,\*\).*BOX_ROLE_OK.*INCUS_OK.*want incus' "$ROOT/commands/users-apply.sh"
+# Marker says no, machine says yes: the skip must NAME the contradiction and
+# the one-line repair. The cost of believing the marker is a genuine VM host
+# that stops provisioning, and that is only acceptable while it is loud.
+check "users apply: a marker/reality mismatch warns and names the repair" 0 "" \
+  grep -q "marker and this box's reality disagree" "$ROOT/commands/users-apply.sh"
+
 # --- users close-root: the human-class root-door shutter ---------------------
 check "users close-root: --help exits 0"       0 "usage:"       "$ROOT/commands/users-close-root.sh" --help
 check "users close-root: unknown flag exits 2" 2 "unknown flag" "$ROOT/commands/users-close-root.sh" --nope
