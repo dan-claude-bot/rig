@@ -177,6 +177,20 @@ check "README: no stale heavy-duty/claudebox links" 1 "" \
   grep -n "heavy-duty/claudebox" "$ROOT/README.md"
 check "README: points at heavy-duty/box" 0 "" \
   grep -q "github.com/heavy-duty/box" "$ROOT/README.md"
+
+# The users-apply section is the operator's reference for what the box role
+# does, and #58 inverted its central claim: the trait decides in BOTH
+# directions now, and the group's presence never overrides it. A reference
+# that still says "when the incus group is absent, the host= trait decides"
+# asserts the very bypass that was the bug. Pinned in both directions — the
+# current sentence present, the superseded one gone — so the prose cannot
+# drift back to describing a semantics the code no longer has.
+check "README: the trait gates the box role regardless of the group" 0 "" \
+  grep -q "the \`incus\` group never overrides it" "$ROOT/README.md"
+check "README: documents the mismatch strip on host=no" 0 "" \
+  grep -q "half-grant is the same defect as a fresh one" "$ROOT/README.md"
+check "README: no stale 'group absent decides' semantics" 1 "" \
+  grep -n "when the \`incus\` group is absent, the \`host=\` trait decides" "$ROOT/README.md"
 if [ "$(id -u)" -ne 0 ]; then
   check "bootstrap: refuses non-root"      1 "must run as root" env TS_AUTHKEY=x "$ROOT/commands/bootstrap.sh" workload
   check "bootstrap: runner role parses, refuses non-root" 1 "must run as root" env TS_AUTHKEY=x "$ROOT/commands/bootstrap.sh" runner
