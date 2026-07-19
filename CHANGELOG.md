@@ -8,6 +8,26 @@ on the way to cutting its first release, and this file starts there.
 
 ### Fixed
 
+- **A `host=no` box with an `incus` group no longer hands out the bare
+  socket** (#58) — `users apply` consulted the `host=` trait only when group
+  `incus` was ABSENT (die on `host=yes`, skip on `host=no`). When the group
+  was PRESENT the trait was never asked, so a `host=no` or marker-less box
+  that nonetheless carried the group — `box setup-host` ran, then the box was
+  re-bootstrapped with other traits — gave every box-role user a bare
+  `usermod -aG incus`: the socket with no tier behind it, which `incus-user`
+  answers by lazily building an UNHARDENED project under whoever opens it
+  (`incusbr-<uid>`, NAT on v4 and v6, no ACL, no `dns.mode=none`, no port
+  isolation). The marker now decides in BOTH directions, through one new pure
+  gate (`assert_marker_hosts_vms`, testable against fixture markers non-root
+  like `assert_marker_human`): the box role applies only where the box CLAIMS
+  to host VMs, so the verdict is identical whether or not the group exists.
+  The machine deliberately does not overrule the marker — but the skip is not
+  silent either: when the group exists and the trait disagrees, the warning
+  names the contradiction and `rig bootstrap` as the repair. On such a box
+  exact-membership convergence now strips box-role users out of `incus`, on
+  the same reasoning: a membership inherited from a previous life is the same
+  half-grant as a freshly added one.
+
 - **The release suite accepts the ceremony's own tree** (#44) —
   `test/release.sh` demanded a literal `## Unreleased` heading in the real
   `CHANGELOG.md`, extracting non-empty and containing `#32`. All three are

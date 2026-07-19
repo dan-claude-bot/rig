@@ -165,23 +165,59 @@ fi
 # --- groups ------------------------------------------------------------------
 groupadd -f rig-admin
 groupadd -f rig
-# rig NEVER installs Incus: box's setup-host owns the daemon and its group. An
-# absent incus group means that never ran — but what that MEANS is the host=
-# trait's call. The box role binds where VMs live; a users file is fleet-wide,
-# its box grants are not. So on host=yes an absent group is a broken VM host
-# (refuse, point at setup-host), while on host=no it is simply not this box's
-# role to converge — skip it, never abort the admins the file also carries.
+# rig NEVER installs Incus: box's setup-host owns the daemon and its group.
+#
+# Whether the box role applies AT ALL is the host= trait's call, decided here,
+# once, from the marker alone — never from what groups happen to exist on the
+# machine (#58). The box role binds where VMs live; a users file is fleet-wide,
+# its box grants are not. Apply used to ask the trait only when group incus was
+# ABSENT, which meant a host=no or marker-less box that nonetheless carried the
+# group (setup-host ran, then the box was re-bootstrapped with other traits)
+# handed box-role users a bare `usermod -aG incus` — the socket with no tier
+# behind it, and incus-user answers a socket it is given by lazily creating an
+# UNHARDENED project under whoever opens it. The trait now decides the same way
+# in both directions: BOX_ROLE_OK is the single gate, and the group's presence
+# only ever answers the narrower question of whether a box that DOES claim to
+# host VMs is ready to.
+#
+# The rejected alternative was letting the machine overrule the marker — treat
+# a real incus group as evidence the box hosts VMs and converge anyway, warning
+# that the marker disagrees. It reads reasonable, but it inverts what the rest
+# of this family does with host=: the marker is the box's declared identity, and
+# bootstrap is the one thing that writes it. Provisioning a VM-host tier onto a
+# box that does not claim to be a VM host is rig deciding it knows better than
+# the declaration, on evidence (a leftover group) that survives exactly the
+# repurposing that makes the marker right and the group stale. The cost of
+# choosing the marker is a genuine VM host mislabelled host=no that stops
+# provisioning — so this does not do it SILENTLY: the skip warning below names
+# the contradiction and names `rig bootstrap` as the one-line repair.
+#
+# Consequence worth stating plainly: on such a box the exact-membership
+# convergence below will now STRIP box-role users out of incus rather than
+# leave them there. That is the same call, not a second one. A membership
+# inherited from a previous life is the identical half-grant state as one
+# freshly added — socket, no tier — and rig's promise for its three managed
+# groups is exactness, not "exact except where drift got there first".
 INCUS_OK=0
 if getent group incus >/dev/null; then INCUS_OK=1; fi
-if [ "$NEED_INCUS" -eq 1 ] && [ "$INCUS_OK" -eq 0 ]; then
-  case "$(read_role_marker "${RIG_ROLE_MARKER:-/etc/rig/role}")" in
-    *host=yes*)
-      die "a user carries role box and this box hosts VMs (host=yes) but group incus is absent — install the box CLI and run 'box setup-host' first; rig never installs Incus" ;;
-    *host=no*)
-      warn "box role skipped for ${BOX_USERS[*]}: this box does not host VMs (host=no); everything else converges" ;;
-    *)
-      warn "box role skipped for ${BOX_USERS[*]}: the role marker names no host= trait — re-run rig bootstrap so this box knows whether it hosts VMs" ;;
-  esac
+BOX_ROLE_OK=0
+BOX_ROLE_WHY=""
+if BOX_ROLE_WHY="$(assert_marker_hosts_vms "${RIG_ROLE_MARKER:-/etc/rig/role}")"; then
+  BOX_ROLE_OK=1
+fi
+if [ "$NEED_INCUS" -eq 1 ] && [ "$BOX_ROLE_OK" -eq 0 ]; then
+  # The group being present while the trait says otherwise is the marker/reality
+  # mismatch — the case that used to slip through — so it gets its own sentence
+  # rather than the generic skip. Never a die: a fleet-wide users file naming a
+  # box-role user somewhere must not abort the admins it also carries here.
+  if [ "$INCUS_OK" -eq 1 ]; then
+    warn "box role skipped for ${BOX_USERS[*]}: $BOX_ROLE_WHY — yet group incus EXISTS here, so this box's marker and this box's reality disagree. rig believes the marker and grants nothing (the group alone is only the socket; without the tier behind it incus-user would lazily build an unhardened project under whoever opens it). If this machine really does host VMs, re-run rig bootstrap with --host yes and apply again; everything else converges"
+  else
+    warn "box role skipped for ${BOX_USERS[*]}: $BOX_ROLE_WHY; everything else converges"
+  fi
+fi
+if [ "$NEED_INCUS" -eq 1 ] && [ "$BOX_ROLE_OK" -eq 1 ] && [ "$INCUS_OK" -eq 0 ]; then
+  die "a user carries role box and this box hosts VMs (host=yes) but group incus is absent — install the box CLI and run 'box setup-host' first; rig never installs Incus"
 fi
 
 in_group() { id -nG "$1" 2>/dev/null | tr ' ' '\n' | grep -qx "$2"; }
@@ -206,10 +242,17 @@ for u in "${USERS[@]}"; do
   want=""
   case ",$roles," in *,admin,*) want="$want rig-admin" ;; esac
   case ",$roles," in *,rig,*)   want="$want rig" ;; esac
-  # incus joins the wanted set only when the group exists (host=no boxes
-  # skipped it above): converging membership in a conjured group would hand
-  # the daemon's arrival an audience it never granted.
-  case ",$roles," in *,box,*) if [ "$INCUS_OK" -eq 1 ]; then want="$want incus"; fi ;; esac
+  # incus joins the wanted set only when the box role APPLIES to this box —
+  # the host= trait's call, made once above — and only when the group is
+  # actually there. Deliberately a gate on whether the role applies, not on
+  # the add: it is the same question no matter who performs the add, so it
+  # keeps answering correctly if the add itself later moves elsewhere (#53
+  # defers it to `box grant`). BOX_ROLE_OK=1 already implies the group exists
+  # (the arm above dies otherwise), but INCUS_OK is kept in the condition
+  # because converging membership in a conjured group would hand the daemon's
+  # arrival an audience it never granted, and that must not depend on a
+  # neighbouring branch staying fatal.
+  case ",$roles," in *,box,*) if [ "$BOX_ROLE_OK" -eq 1 ] && [ "$INCUS_OK" -eq 1 ]; then want="$want incus"; fi ;; esac
   for g in rig-admin rig incus; do
     case " $want " in
       *" $g "*)

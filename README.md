@@ -761,14 +761,27 @@ silently root-equivalent through the very tool it scopes. Direct root — a
 bring-up shell, before any admin exists — proceeds.
 
 `box` binds where VMs live, and a users file is fleet-wide — its box grants
-are not. rig never installs Incus — box's `setup-host` owns the daemon — so
-when the `incus` group is absent, the `host=` trait decides: on `host=yes`
-apply dies pointing at `box setup-host` (a VM host missing Incus is a real
-problem) rather than conjure a group the (nonexistent) daemon would never
-consult; on `host=no` the box role is **skipped with a warning** and
-everything else — admins included — still converges, because one box-role
-user somewhere in the fleet must not stop apply everywhere VMs don't live.
-`incus-admin` is deliberately **not** a role: that group is
+are not. **The `host=` trait decides whether the box role applies here, and
+the `incus` group never overrides it.** On `host=no` — or a marker that names
+no `host=` at all, or no marker — the role is **skipped with a warning** and
+everything else, admins included, still converges: one box-role user
+somewhere in the fleet must not stop apply everywhere VMs don't live. The
+verdict is the same whether or not the group happens to exist.
+
+That last part is the point. rig never installs Incus — box's `setup-host`
+owns the daemon — so a `host=no` box can still carry a leftover `incus`
+group from a previous life. Adding someone to it there would hand out the
+socket with no tier behind it, and incus-user would lazily build them an
+**unhardened** project on first contact: `incusbr-<uid>`, NAT on v4 *and*
+v6, no ACL, no `dns.mode=none`, no port isolation. So on that mismatch apply
+warns — naming the contradiction and `rig bootstrap --host yes` as the
+repair — and **strips** box-role users out of `incus`, because an inherited
+half-grant is the same defect as a fresh one.
+
+The group's presence matters only once the trait already said yes: on
+`host=yes` an absent `incus` group means the daemon was never set up, so
+apply dies pointing at `box setup-host` rather than conjure a group nothing
+would consult. `incus-admin` is deliberately **not** a role: that group is
 host-root-equivalent, break-glass by hand only.
 
 **All passwords stay locked, always** — created or found. The SSH key at the
