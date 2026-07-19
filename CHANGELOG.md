@@ -66,6 +66,40 @@ on the way to cutting its first release, and this file starts there.
 
 ### Fixed
 
+- **A release no longer disarms the changelog under the PRs still in
+  flight** (#67) — the ceremony stamps `## Unreleased` to
+  `## X.Y.Z — YYYY-MM-DD` and stops. Every PR authored before that merge
+  wrote its entry under `## Unreleased`; with the heading gone, git files
+  the entry under whatever now occupies the position — the release that
+  already shipped. There is no conflict, because the stamped heading and
+  the incoming entry never overlap textually, so the one signal an author
+  relies on ("git told me to look") is absent exactly when the outcome is
+  wrong. It happened here: #60's #58 entry landed inside `## 0.1.0` at
+  `67386b4` and was repaired two minutes later by `0ff520c`; #54 would
+  have filed a **BREAKING** entry the same way. The published release body
+  is never affected — `release.yml` extracts it from the tree at the tag,
+  before the late merges land — so the only file that drifts is the one
+  only maintainers read, which is why it survived a whole release batch
+  unnoticed. Fixed in both halves the failure has. The ceremony now
+  **re-arms**: it adds a fresh empty `## Unreleased` above the section it
+  just stamped, so a late merge has somewhere correct to land with no
+  author action. That belongs to the ceremony step in
+  [CONTRIBUTING.md](CONTRIBUTING.md), not to `release.yml` — no workflow
+  has ever touched the heading; the stamping was always by hand, and the
+  `-dev` re-arm the workflow does perform was only ever about `VERSION`.
+  And `test/release.sh` now keys its guard to `VERSION` rather than
+  demanding a literal heading: a stamped top section is legal exactly when
+  `VERSION` is bare, and the moment it carries `-dev` — main, where
+  feature PRs merge — the top section must be `## Unreleased`. That
+  distinguishes the two states the old check collapsed into one, so it
+  catches a disarmed main **without** re-breaking the ceremony's own tree
+  the way the pre-#44 guard did. The rule is proven against seven
+  constructed `VERSION` + `CHANGELOG.md` pairs, including a re-armed
+  ceremony whose top section is legitimately empty — the state the old
+  non-empty assert would have rejected. box and cast carry the same flow
+  and the same exposure (`heavy-duty/box#96`); cast is disarmed on `main`
+  as of this writing and is getting the sibling fix.
+
 - **A `host=no` box with an `incus` group no longer hands out the bare
   socket** (#58) — `users apply` consulted the `host=` trait only when group
   `incus` was ABSENT (die on `host=yes`, skip on `host=no`). When the group

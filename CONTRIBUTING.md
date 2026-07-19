@@ -51,7 +51,19 @@ top of #32/box#83's tag flow):
 
 1. A small PR — `release: X.Y.Z`, carrying the `release` label — bumps
    `VERSION` from `X.Y.Z-dev` and stamps `CHANGELOG.md`'s Unreleased
-   section as `## X.Y.Z — YYYY-MM-DD`. CI green on it, same loop as any PR.
+   section as `## X.Y.Z — YYYY-MM-DD`. **Then re-arm the file in the same
+   PR**: add a fresh, empty `## Unreleased` immediately above the section
+   you just stamped (#66). Stamping alone *disarms* main — a PR authored
+   before the release and merged after it wrote its entry under
+   `## Unreleased`, and with that heading gone git files the entry under
+   whatever now occupies the position, which is the release that already
+   shipped. It lands cleanly, with no conflict and nothing for the author
+   to notice, so the empty section is the only thing standing between a
+   late merge and a changelog that misattributes a shipped release. No
+   workflow does this for you: `release.yml` re-arms `VERSION`, never the
+   changelog. `test/release.sh` enforces the pairing — whenever `VERSION`
+   ends in `-dev` the top section must be `## Unreleased`. CI green on it,
+   same loop as any PR.
 2. Merge it — that IS the ship decision. `release.yml`'s
    `release-on-merge` job asserts, in order, fail-loud, creating nothing:
    the merged tree's `VERSION` is non-`-dev`; this PR is the one that
