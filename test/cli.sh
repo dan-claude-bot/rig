@@ -977,6 +977,56 @@ else
   echo "skip: runner status/remove/repoint non-root refusals (running as root)"
 fi
 
+# ---------------------------------------------------------------------------
+# rig platform (#64). Unusually testable for this repo: it needs no root, no
+# network and no fixtures, and it WRITES NOTHING — so unlike every other
+# command here the harness can RUN it for real on the machine running the
+# tests and assert on the actual answer, instead of proving arg-parse
+# refusals and grepping the rest.
+# ---------------------------------------------------------------------------
+check "platform: --help exits 0"           0 "usage:"      "$ROOT/commands/platform.sh" --help
+check "platform: unknown flag exits 2"     2 "unknown flag" "$ROOT/commands/platform.sh" --nope
+check "platform: dispatches through bin/rig" 0 "PLATFORM"  "$ROOT/bin/rig" platform
+
+# The real run: exit 0 and every field present, as the running user.
+check "platform: runs as this user, exit 0" 0 "PLATFORM" "$ROOT/bin/rig" platform
+for f in HOSTNAME OS KERNEL CPU MEMORY DISK VIRT; do
+  check "platform: reports $f" 0 "$f" "$ROOT/bin/rig" platform
+done
+# Not just the labels — the VALUES have to describe THIS machine. uname -r and
+# the hostname are the two the harness can independently compute and compare,
+# which is what separates "it printed a table" from "it read the machine".
+check "platform: KERNEL is this kernel"   0 "$(uname -r)" "$ROOT/bin/rig" platform
+check "platform: HOSTNAME is this host"   0 "$(uname -n)" "$ROOT/bin/rig" platform
+# MemAvailable/df rendered, not left as the 'unknown' fallback: a numfmt or
+# /proc parse that silently broke would still print the labels above.
+check "platform: MEMORY carries real numbers" 0 "total," "$ROOT/bin/rig" platform
+
+# Provenance degrades on a machine rig never converged — #61's manifest does
+# not exist yet, so 'not bootstrapped' is the state of the world today and the
+# command must ship complete without it. Both paths driven against fixtures.
+PLATWORK="$(mktemp -d)"
+printf 'version=9.9.9\nbootstrapped=2026-07-19T14:24:51Z\n' > "$PLATWORK/manifest"
+check "platform: no manifest reads 'not bootstrapped'" 0 "RIG        not bootstrapped" \
+  env RIG_MANIFEST="$PLATWORK/absent" RIG_ROLE_MARKER="$PLATWORK/absent" "$ROOT/bin/rig" platform
+check "platform: no role marker reads 'not bootstrapped'" 0 "ROLE       not bootstrapped" \
+  env RIG_MANIFEST="$PLATWORK/absent" RIG_ROLE_MARKER="$PLATWORK/absent" "$ROOT/bin/rig" platform
+# A manifest that DOES exist is read, never written — the forward-compatible
+# half, so #61 landing needs no change here.
+check "platform: reads the manifest version" 0 "9.9.9" \
+  env RIG_MANIFEST="$PLATWORK/manifest" RIG_ROLE_MARKER="$PLATWORK/absent" "$ROOT/bin/rig" platform
+check "platform: reads the manifest timestamp" 0 "bootstrapped 2026-07-19T14:24:51Z" \
+  env RIG_MANIFEST="$PLATWORK/manifest" RIG_ROLE_MARKER="$PLATWORK/absent" "$ROOT/bin/rig" platform
+printf 'role=dev class=human host=yes join=authkey\n' > "$PLATWORK/role"
+check "platform: renders the role marker's traits" 0 "dev (class=human host=yes join=authkey)" \
+  env RIG_MANIFEST="$PLATWORK/absent" RIG_ROLE_MARKER="$PLATWORK/role" "$ROOT/bin/rig" platform
+# The defining property: it writes NOTHING. Not the manifest it just reported
+# missing, not the marker, not anything else in the fixture directory — the
+# whole design rests on this, so assert it rather than trust it.
+env RIG_MANIFEST="$PLATWORK/absent" RIG_ROLE_MARKER="$PLATWORK/absent" "$ROOT/bin/rig" platform >/dev/null 2>&1
+check "platform: writes nothing (no manifest created)" 1 "" test -e "$PLATWORK/absent"
+rm -rf "$PLATWORK"
+
 check "bare users shows usage, exit 2"    2 "usage:"        "$ROOT/bin/rig" users
 check "users: bad subcommand exits 2"     2 "usage:"        "$ROOT/bin/rig" users frobnicate
 
