@@ -179,6 +179,12 @@ check "release.yml: the merge job API-creates the tag itself" 0 "" \
   mjob_has "git/refs"
 # shellcheck disable=SC2016  # the $-string is a literal in the target file
 check "release.yml: ...at the pushed main head (github.sha = the merge commit)" 0 "" mjob_has 'sha="$MERGE_SHA"' 
+# The release re-arms main itself: the post-release -dev bump is arithmetic,
+# not judgment, so it rides the same job — direct push, PR fallback.
+check "release.yml: the release bumps main to the next -dev itself" 0 "" \
+  grep -qF "bump main to the next -dev" "$RY"
+check "release.yml: ...with a PR fallback when the direct push is refused" 0 "" \
+  grep -qF "opening the bump PR instead" "$RY"
 check "release.yml: ...and publishes in the SAME job" 0 "" \
   mjob_has "gh release create"
 # Ordering, the marker-then-box idiom again: the last assert's refusal must
