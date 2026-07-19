@@ -26,6 +26,44 @@ on the way to cutting its first release, and this file starts there.
   `incus-admin` member is warned, not fatal — `box grant` refuses them today,
   which heavy-duty/box#99 fixes box-side with no rig change needed.
 
+### Changed
+
+- **BREAKING: `rig bootstrap` takes the users file, and requires it** (#51) —
+  bootstrap already knew everything else about what a box *is* (class, host,
+  join, hostname) and wrote `/etc/rig/role` to say so; the users file was the
+  last piece of that answer it did not take, so bring-up was two commands and
+  the second was the forgettable one. `--users <path>` now runs the `users
+  apply` convergence as bootstrap's **final phase** — after the traits, after
+  the verified tailnet join, after the role marker (apply *reads* that
+  marker), and after the `host=yes` box install (so box-role users find the
+  `incus` group box's own `setup-host` built). One command, and the box has
+  its people on it. The file is still passed per invocation and **never
+  persisted**; `--users -` is refused, because bootstrap's stdin belongs to
+  the pre-auth key prompt.
+
+  **Migration: every existing `rig bootstrap` invocation must add `--users
+  <path>` or `--no-users`.** Omitting both is now a usage error (exit 2)
+  naming both flags, and passing both is a usage error too. Scripted
+  bring-up that already ran `rig users apply` as a separate step can either
+  fold it in (`--users ./users`, and drop the separate call) or keep the old
+  shape verbatim by adding `--no-users`. Required on `class=server` as well
+  as `class=human`: a server nobody logs into routinely is exactly where
+  shared-root access rots, and per-human accounts keep attribution intact
+  for the times someone does go in — so the complete path is the default
+  path, and skipping it is deliberate rather than an omission that looks
+  identical to forgetting. The box TENANT roles (`claude|codex|grok|
+  staging`) take neither flag: a guest is minted non-interactively by box,
+  never joins the tailnet, and has no SSH door of its own — entry is `box
+  shell`, gated by the host's `incus` grants.
+
+  A bad users file is caught **up front** now (the same parser apply uses,
+  before `apt`, the hostname change, and any spent pre-auth key), and on
+  `host=yes` with `RIG_SKIP_BOX_INSTALL=1` a box-role user with no `incus`
+  group refuses immediately instead of a hundred lines later — the one case
+  where the outcome is already certain. rig still never installs Incus and
+  never calls `box setup-host` on its own account; every other way that step
+  can fail lands in `users apply`'s existing refusal, unchanged.
+
 ### Fixed
 
 - **A `host=no` box with an `incus` group no longer hands out the bare

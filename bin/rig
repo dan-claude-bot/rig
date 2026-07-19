@@ -14,10 +14,16 @@ usage: rig <command> [args]
 
 commands:
   bootstrap <control-plane|workload|runner|dev|workstation|custom>
+            (--users <path> | --no-users)
             [--hostname <name>] [--class <human|server>] [--host <yes|no>]
             [--join <authkey|login>]
       OS plumbing on a pristine Debian box: hardening, unattended-upgrades,
-      tailscale join. Roles are presets over the three traits; any flag
+      tailscale join, then this box's operators. --users is REQUIRED on
+      every role — it converges the users file as bootstrap's last phase
+      (identical to 'rig users apply --file <path>', marker written first)
+      so one command leaves a box with its people on it; --no-users is the
+      deliberate opt-out and leaves root as the only door. The tenant roles
+      below take neither. Roles are presets over the three traits; any flag
       overrides its trait, and custom states all of them. Prompts for a
       single-use TAGGED tailnet pre-auth key (TS_AUTHKEY env overrides the
       prompt); the key's tags are the tailnet tag, verified after join —

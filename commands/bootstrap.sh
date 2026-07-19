@@ -8,6 +8,13 @@ HERE="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")" && pwd)"
 . "$HERE/lib/runner-config.sh"   # json_field / json_string_array read the netmap
 # shellcheck source=SCRIPTDIR/lib/sshd.sh
 . "$HERE/lib/sshd.sh"            # harden_sshd — shared with the staging tenant
+# shellcheck source=SCRIPTDIR/lib/users-config.sh
+. "$HERE/lib/users-config.sh"    # parse_users_file — the --users PRE-FLIGHT only
+# The users lib is sourced for validation, never for convergence: `users apply`
+# stays the single owner of what a users file DOES to a box (#51). Bootstrap
+# borrows the parser so a typo'd users file is caught in the same breath as a
+# bad --class — before apt, before the tailnet join, before a pre-auth key is
+# spent — instead of at the very end of a run the operator already paid for.
 
 log()  { printf 'rig-bootstrap: %s\n' "$*"; }
 warn() { printf 'rig-bootstrap: WARNING: %s\n' "$*" >&2; }
@@ -16,18 +23,39 @@ die()  { printf 'rig-bootstrap: ERROR: %s\n' "$1" >&2; exit "${2:-1}"; }
 usage() {
   cat <<'EOF'
 usage: rig bootstrap <control-plane|workload|runner|dev|workstation|custom>
+                     (--users <path> | --no-users)
                      [--hostname <name>] [--class <human|server>]
                      [--host <yes|no>] [--join <authkey|login>]
        rig bootstrap <claude|codex|grok|staging> [--user <name>]
-                     (the box TENANT roles — see their own --help)
+                     (the box TENANT roles — see their own --help; they take
+                      no --users, see below)
 
+  --users     the users file this box's operators come from — REQUIRED. It is
+              applied as bootstrap's last phase, exactly as `rig users apply
+              --file <path>` would, so one command leaves a box with its
+              people on it. Passed per invocation and never persisted.
+  --no-users  the deliberate opt-out — bootstrap converges the OS and the
+              tailnet and leaves the box with root as its only door.
   --hostname  system + tailnet hostname (default: the role name; custom has
               no default and requires it)
   --class     who lives here — human|server. Decides root SSH's fate after
-              `rig users apply`: human closes it, server keeps it as the
-              control plane's automation door.
+              the users phase: human closes it (`rig users close-root`),
+              server keeps it as the control plane's automation door.
   --host      does this box host VMs (box/Incus) — yes|no
   --join      how it enters the tailnet — authkey|login
+
+One of --users/--no-users is required on every role, class=server included:
+a box nobody logs into routinely is exactly where shared-root access rots,
+and per-human accounts keep attribution intact for the times someone does go
+in. So the complete path is the default path and skipping it is a deliberate
+--no-users, not an omission.
+
+--users does NOT reach the box TENANT roles (claude|codex|grok|staging). A
+tenant is a box-minted GUEST: box auto-runs its bootstrap at mint,
+non-interactively, with no file to hand it; the guest never joins the tailnet
+and has no SSH door of its own — entry is `box shell`, gated by the HOST's
+incus grants, which the host's own users file already converged. A fleet-wide
+operator file has nothing to converge in there.
 
 Roles are presets over the three traits; any flag overrides its trait.
 custom presets nothing and requires --hostname plus all three traits.
@@ -92,8 +120,15 @@ esac
 # custom has no hostname default: a made-up name on a made-up shape helps nobody.
 TS_HOSTNAME="$ROLE"
 [ "$ROLE" = "custom" ] && TS_HOSTNAME=""
+USERS_FILE=""
+NO_USERS=0
 while [ $# -gt 0 ]; do
   case "$1" in
+    --users)
+      [ $# -ge 2 ] || die "--users needs a value" 2
+      USERS_FILE="$2"; shift 2 ;;
+    --no-users)
+      NO_USERS=1; shift ;;
     --hostname)
       [ $# -ge 2 ] || die "--hostname needs a value" 2
       TS_HOSTNAME="$2"; shift 2 ;;
@@ -148,6 +183,90 @@ fi
 # ignoring a credential is how the wrong join path ships unnoticed.
 if [ "$JOIN" = "login" ] && [ -n "${TS_AUTHKEY:-}" ]; then
   die "join=login is interactive: unset TS_AUTHKEY or pass --join authkey" 2
+fi
+
+# --- who lives here (#51) -----------------------------------------------------
+# The users file is the last piece of "what this box is" that bootstrap did not
+# take, and it is REQUIRED rather than optional: a bootstrapped box with no
+# users converges to a box only root can enter, and on class=human that is a
+# half-built machine waiting for a second command the operator has to remember
+# (`rig users close-root` is itself gated behind "once your admin key works" —
+# which needs an admin to exist). class=server gets the same requirement on
+# purpose: a server nobody logs into routinely is exactly where shared-root
+# access rots, and per-human accounts keep attribution intact for the times
+# someone does go in.
+#
+# The opt-out is a FLAG, not a default. Both states are then something the
+# operator said out loud, which is the whole point — an omitted --users used to
+# be indistinguishable from "I meant to and forgot", and the box that resulted
+# looked identical either way. Contradicting yourself is a usage error too:
+# --users and --no-users together is not a precedence puzzle rig should silently
+# resolve, because whichever way it resolved would be the wrong one half the
+# time.
+if [ -n "$USERS_FILE" ] && [ "$NO_USERS" -eq 1 ]; then
+  die "--users and --no-users are contradictory: pass the file, or say --no-users, not both" 2
+fi
+if [ -z "$USERS_FILE" ] && [ "$NO_USERS" -eq 0 ]; then
+  die "one of --users <path> or --no-users is required: bootstrap converges this box's operators as its last phase, and a box with no named users is one only root can enter. Pass --users <path>, or --no-users to leave it root-only deliberately" 2
+fi
+
+# The users file is PRE-FLIGHTED here and applied at the very end: everything
+# below this point costs the operator something — apt, a hostname change, a
+# single-use pre-auth key — and a users file with a typo in it must not be
+# discovered after all of that was already spent. Same reason every other flag
+# is validated before the root check: errors belong at the top of the run.
+USERS_HAS_BOX_ROLE=0
+if [ -n "$USERS_FILE" ]; then
+  # '-' (stdin) is apply's own convenience and cannot survive the trip through
+  # bootstrap: stdin here belongs to the pre-auth key prompt, and a users file
+  # piped in would either eat that prompt or be eaten by it. Refuse the token
+  # rather than let the two credentials-shaped reads fight over one pipe.
+  [ "$USERS_FILE" != "-" ] \
+    || die "--users needs a real path: bootstrap's stdin is the pre-auth key prompt's, so it cannot also carry the users file. Write it to a file, or run 'rig users apply --file -' separately after --no-users" 2
+  [ -r "$USERS_FILE" ] || die "cannot read users file: $USERS_FILE" 2
+  if ! USERS_PARSED="$(parse_users_file "$USERS_FILE")"; then
+    die "invalid users file: $USERS_FILE — every error is listed above; nothing was changed" 2
+  fi
+  # Does anyone in the file carry role box? That single fact decides whether the
+  # incus precondition below applies at all — a users file naming only admins
+  # converges perfectly well on a host that has never seen Incus, and refusing
+  # it there would be rig inventing a prerequisite its own apply does not have.
+  if printf '%s\n' "$USERS_PARSED" | cut -d'|' -f2 | grep -qE '(^|,)box(,|$)'; then
+    USERS_HAS_BOX_ROLE=1
+  fi
+fi
+
+# host=yes + a box-role user + no incus group = the refusal `users apply` already
+# owns ("rig NEVER installs Incus: box's setup-host owns the daemon and its
+# group"). rig does not build that stack here and does not call setup-host —
+# whether rig should install box on a VM host is an open boundary question, and
+# resolving it by accident inside a users change would be the worst way to
+# answer it. What bootstrap CAN do is stop early instead of late.
+#
+# Early only where the outcome is already PROVEN, though. The ordinary host=yes
+# path installs box further down, and box's own installer runs setup-host — so
+# the group that is missing now will exist by the time the users phase runs, and
+# an unconditional refusal here would reject the exact bring-up this issue is
+# about. RIG_SKIP_BOX_INSTALL=1 is the one case with no such rescue: the
+# operator has said this run will not touch box, so the group's absence is final
+# and the run is doomed a hundred lines before it notices. The other failure
+# shapes (no network, box's installer breaking) are not knowable this early and
+# land in apply's own refusal at the end — the same message, one phase later.
+#
+# #49 (merged) added a SECOND host-level refusal to apply: the box CLI itself
+# missing on host=yes, because the group is only the socket and the tier is
+# `box grant`, which apply calls rather than reimplements. Under
+# RIG_SKIP_BOX_INSTALL=1 that absence is just as final and just as knowable
+# now as the group's, so the early check mirrors both rather than being a
+# weaker proxy for one of them. Either one alone dooms the run.
+if [ "$USERS_HAS_BOX_ROLE" -eq 1 ] && [ "$HOST" = "yes" ] \
+    && [ "${RIG_SKIP_BOX_INSTALL:-}" = "1" ]; then
+  if ! getent group incus >/dev/null 2>&1; then
+    die "a user carries role box and this box hosts VMs (host=yes) but group incus is absent and RIG_SKIP_BOX_INSTALL=1 means this run will not install box — install the box CLI and run 'box setup-host' first; rig never installs Incus. (Or drop RIG_SKIP_BOX_INSTALL and let bootstrap install box as it normally does.)" 2
+  fi
+  if ! command -v box >/dev/null 2>&1; then
+    die "a user carries role box and this box hosts VMs (host=yes) but the box CLI is not on PATH and RIG_SKIP_BOX_INSTALL=1 means this run will not install it — the incus group is only the socket; the restricted tier is 'box grant', which rig calls rather than reimplements. Install the box CLI first. (Or drop RIG_SKIP_BOX_INSTALL and let bootstrap install box as it normally does.)" 2
+  fi
 fi
 
 # --- guards ------------------------------------------------------------------
@@ -520,6 +639,38 @@ if [ "$HOST" = "yes" ]; then
   fi
 fi
 
+# --- users (the last phase, and it must be last) -------------------------------
+# Ordering is a correctness property, not a preference. `users apply` READS
+# /etc/rig/role: class= decides which root-SSH note it prints, and host= decides
+# what an absent incus group means (refuse on yes, skip the box role with a
+# warning on no). Run before the marker write, apply would see no marker at all
+# and warn "re-run rig bootstrap so this box knows what it is" — in the middle
+# of the very bootstrap that is teaching it. Run before the box install, a
+# host=yes box would refuse its own box-role users for a group arriving twenty
+# lines later. So: traits, then join, then marker, then box, then people.
+#
+# NOT persisted. rig takes the path, reads it once through apply, and keeps
+# nothing — the users file lives in your private infra repo and is passed per
+# invocation (README: "rig never persists it"). Taking it as a bootstrap flag
+# must not quietly turn it into box state, so nothing here copies it anywhere,
+# and /etc/rig keeps only the ledger of NAMES apply already wrote.
+#
+# Invoked as a child, not exec'd: bootstrap still owns the last word (the
+# next-steps below), and a failing apply must fail the bootstrap — under
+# `set -e` a non-zero apply ends the run right here, which is correct. The box
+# is already hardened and joined at this point; what failed is one named phase,
+# and it is re-runnable on its own with `rig users apply --file <path>`.
+#
+# A child also keeps apply's INVOKER gate intact, which is the point: SUDO_USER
+# rides through, so `sudo rig bootstrap --users <file-naming-me-admin>` by a
+# role-rig user refuses exactly as `sudo rig users apply` would. Bootstrap must
+# not become a laundering path around the one gate that stops rig's scoped sudo
+# from being root-equivalent. Bring-up runs as real root and is unaffected.
+if [ -n "$USERS_FILE" ]; then
+  log "converging operators from ${USERS_FILE} (rig users apply)"
+  "$HERE/users-apply.sh" --file "$USERS_FILE"
+fi
+
 log "done — role ${ROLE}, hostname ${TS_HOSTNAME}"
 if [ "$ROLE" = "control-plane" ]; then
   log "next: rig coolify install --version <pin>"
@@ -528,9 +679,19 @@ elif [ "$ROLE" = "runner" ]; then
 fi
 # Every class gets operators: humans always enter as themselves and elevate via
 # sudo — a shared root login is unattributable. What differs by class is root
-# SSH's fate once named users exist.
-if [ "$CLASS" = "human" ]; then
-  log "next: rig users apply --file <users-file>, then 'rig users close-root' once your admin key works"
+# SSH's fate once named users exist. With --users the accounts exist already, so
+# the note that used to point at the missing command now points at what is left
+# to do; --no-users still owes the box its people, and says so.
+if [ -n "$USERS_FILE" ]; then
+  if [ "$CLASS" = "human" ]; then
+    log "next: 'rig users close-root' once your admin key works — verify you can SSH in as an admin FIRST"
+  else
+    log "operators are converged; root SSH stays — it is the control plane's automation door"
+  fi
 else
-  log "next: rig users apply --file <users-file> for named operator logins; root SSH stays — it is the control plane's automation door"
+  if [ "$CLASS" = "human" ]; then
+    log "--no-users: this box has no named operators — root is its only door. When you want them: rig users apply --file <users-file>, then 'rig users close-root' once your admin key works"
+  else
+    log "--no-users: this box has no named operators — root SSH is its only door, and it stays (the control plane's automation door). For named logins: rig users apply --file <users-file>"
+  fi
 fi

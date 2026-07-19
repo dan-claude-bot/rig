@@ -168,6 +168,169 @@ check "bootstrap: the claim follows the doctor gate" \
   0 "" test "${doctor_at:-999999}" -lt "${claim_at:-0}"
 check "bootstrap: a failed doctor warns without claiming the host" 0 "" \
   grep -q "the CLI landed, the host stack is unproven" "$ROOT/commands/bootstrap.sh"
+# --- the users phase (#51): --users is required, --no-users is the opt-out ----
+# Bootstrap takes the users file and applies it as its LAST phase, so one
+# command leaves a box with its people on it. Everything about the FLAG is
+# provable here — the whole surface sits before the root check, deliberately,
+# because a users file with a typo must not be discovered after apt, a hostname
+# change and a spent pre-auth key.
+BOOT_USERS="$(mktemp -d)"
+cat > "$BOOT_USERS/ok" <<'USERS'
+dan      admin      ssh-ed25519 AAAAC3fixture dan@laptop
+maria    rig        ssh-ed25519 AAAAC3fixture maria@mac
+USERS
+printf '%s\n' 'dan admin,box ssh-ed25519 AAAAC3fixture dan@laptop' > "$BOOT_USERS/box"
+printf '%s\n' 'maria ops ssh-ed25519 AAAA maria@mac'               > "$BOOT_USERS/bad"
+# The REQUIREMENT, and the message that carries it: omitting both flags must
+# name BOTH ways out, because an operator who forgot the file and one who meant
+# to skip it type the identical command — the error is the only place rig can
+# tell them apart.
+check "bootstrap: omitting --users and --no-users exits 2" 2 "one of --users <path> or --no-users is required" \
+  "$ROOT/commands/bootstrap.sh" workload
+check "bootstrap: the requirement names --no-users as the way out" 2 "--no-users to leave it root-only" \
+  "$ROOT/commands/bootstrap.sh" dev --hostname b
+check "bootstrap: the requirement holds on class=server too" 2 "one of --users" \
+  "$ROOT/commands/bootstrap.sh" control-plane --hostname cp
+check "bootstrap: --users needs a value" 2 "needs a value" \
+  "$ROOT/commands/bootstrap.sh" workload --users
+# MUTUAL EXCLUSION, both orders: rig refuses to pick a winner rather than let a
+# precedence rule decide who may enter the box. Both orders, because a
+# "last flag wins" implementation would pass one of them silently.
+check "bootstrap: --users with --no-users exits 2" 2 "contradictory" \
+  "$ROOT/commands/bootstrap.sh" workload --users "$BOOT_USERS/ok" --no-users
+check "bootstrap: --no-users with --users exits 2 (either order)" 2 "contradictory" \
+  "$ROOT/commands/bootstrap.sh" workload --no-users --users "$BOOT_USERS/ok"
+# Pre-flight: an unreadable or invalid file dies at the top of the run, exit 2,
+# before the root check — the same contract every other flag here has.
+check "bootstrap: an unreadable users file exits 2" 2 "cannot read users file" \
+  "$ROOT/commands/bootstrap.sh" workload --users "$BOOT_USERS/nope"
+check "bootstrap: an invalid users file exits 2 with the parser's errors" 2 "invalid users file" \
+  "$ROOT/commands/bootstrap.sh" workload --users "$BOOT_USERS/bad"
+check "bootstrap: the invalid-file refusal carries the parser's own line error" 2 "valid roles: admin rig box" \
+  "$ROOT/commands/bootstrap.sh" workload --users "$BOOT_USERS/bad"
+# '-' is apply's stdin convenience and cannot survive the trip through
+# bootstrap: stdin here is the pre-auth key prompt's. Refused, with the split
+# ('--no-users' then apply by hand) named.
+check "bootstrap: --users - is refused, naming the pre-auth key prompt" 2 "pre-auth key prompt" \
+  "$ROOT/commands/bootstrap.sh" workload --users -
+# The host=yes box-role precondition, surfaced EARLY — but only where the
+# outcome is already proven: RIG_SKIP_BOX_INSTALL=1 means this run will not
+# install box, so a missing incus group can no longer be rescued by the install
+# further down. The group's presence is a property of whatever machine runs
+# this harness, so it is driven with a shim `getent` instead — both directions,
+# on any machine (repo precedent: the install.sh getent shim below).
+#
+# The box CLI's presence is the SECOND half of the precondition (#49 merged a
+# matching die into apply), and it is a property of the runner in exactly the
+# same way — this machine happens to have box on PATH, a CI runner may not. So
+# it is shimmed in both directions too, and `box` is deliberately NOT inherited
+# from the real PATH in these runs: a test that passes only where box happens
+# to be installed proves nothing about the machine where it isn't.
+INCUS_SHIM_NO="$BOOT_USERS/shim-no"; INCUS_SHIM_YES="$BOOT_USERS/shim-yes"
+BOXLESS_SHIM="$BOOT_USERS/shim-nobox"
+mkdir -p "$INCUS_SHIM_NO" "$INCUS_SHIM_YES" "$BOXLESS_SHIM"
+# Answer only the `group incus` question; everything else falls through to the
+# real getent, so the shim cannot quietly change some other lookup's answer.
+cat > "$INCUS_SHIM_NO/getent" <<'SHIM'
+#!/bin/sh
+if [ "$1" = group ] && [ "$2" = incus ]; then exit 2; fi
+exec /usr/bin/getent "$@"
+SHIM
+cat > "$INCUS_SHIM_YES/getent" <<'SHIM'
+#!/bin/sh
+if [ "$1" = group ] && [ "$2" = incus ]; then echo "incus:x:900:"; exit 0; fi
+exec /usr/bin/getent "$@"
+SHIM
+# Group present, box absent — the shape #49's die now owns, and the one the
+# old group-only precondition let through to fail a hundred lines later.
+cat > "$BOXLESS_SHIM/getent" <<'SHIM'
+#!/bin/sh
+if [ "$1" = group ] && [ "$2" = incus ]; then echo "incus:x:900:"; exit 0; fi
+exec /usr/bin/getent "$@"
+SHIM
+# A `box` that exists, for the satisfied case — so INCUS_SHIM_YES proves the
+# precondition passes on its own terms rather than on the runner's luck.
+printf '#!/bin/sh\nexit 0\n' > "$INCUS_SHIM_YES/box"
+chmod +x "$INCUS_SHIM_NO/getent" "$INCUS_SHIM_YES/getent" \
+         "$BOXLESS_SHIM/getent" "$INCUS_SHIM_YES/box"
+check "bootstrap: host=yes + box role + no incus + skipped box install exits 2" 2 "group incus is absent" \
+  env RIG_SKIP_BOX_INSTALL=1 PATH="$INCUS_SHIM_NO:$PATH" \
+      "$ROOT/commands/bootstrap.sh" dev --hostname h --users "$BOOT_USERS/box"
+check "bootstrap: that refusal points at box setup-host, not at rig" 2 "rig never installs Incus" \
+  env RIG_SKIP_BOX_INSTALL=1 PATH="$INCUS_SHIM_NO:$PATH" \
+      "$ROOT/commands/bootstrap.sh" dev --hostname h --users "$BOOT_USERS/box"
+# The group can be there while the CLI is not — #49's die owns that shape, and
+# under the skip it is just as final and just as knowable now. PATH is built
+# WITHOUT the real one so the absence is the test's, not the machine's.
+check "bootstrap: host=yes + box role + incus group + no box CLI + skip exits 2" 2 "box CLI is not on PATH" \
+  env RIG_SKIP_BOX_INSTALL=1 PATH="$BOXLESS_SHIM:/usr/bin:/bin" \
+      "$ROOT/commands/bootstrap.sh" dev --hostname h --users "$BOOT_USERS/box"
+check "bootstrap: that refusal names the tier, not just the socket" 2 "the restricted tier is 'box grant'" \
+  env RIG_SKIP_BOX_INSTALL=1 PATH="$BOXLESS_SHIM:/usr/bin:/bin" \
+      "$ROOT/commands/bootstrap.sh" dev --hostname h --users "$BOOT_USERS/box"
+if [ "$(id -u)" -ne 0 ]; then
+  # It must NOT fire in the three shapes that are not doomed. A users file with
+  # no box-role user converges fine on a host that never saw Incus (refusing it
+  # would be rig inventing a prerequisite apply does not have); an incus group
+  # that exists satisfies it outright; and WITHOUT RIG_SKIP_BOX_INSTALL the
+  # missing group is the box install's to create further down — refusing there
+  # would reject the exact one-command bring-up this flag is for. Reaching the
+  # root check (exit 1) is the proof each passed the precondition.
+  check "bootstrap: no box-role user means no incus precondition" 1 "must run as root" \
+    env TS_AUTHKEY=x RIG_SKIP_BOX_INSTALL=1 PATH="$INCUS_SHIM_NO:$PATH" \
+        "$ROOT/commands/bootstrap.sh" dev --hostname h --users "$BOOT_USERS/ok"
+  check "bootstrap: an existing incus group satisfies the precondition" 1 "must run as root" \
+    env TS_AUTHKEY=x RIG_SKIP_BOX_INSTALL=1 PATH="$INCUS_SHIM_YES:$PATH" \
+        "$ROOT/commands/bootstrap.sh" dev --hostname h --users "$BOOT_USERS/box"
+  check "bootstrap: without the skip, the box install is left to create the group" 1 "must run as root" \
+    env TS_AUTHKEY=x PATH="$INCUS_SHIM_NO:$PATH" \
+        "$ROOT/commands/bootstrap.sh" dev --hostname h --users "$BOOT_USERS/box"
+  # host=no is the other side of apply's host= rule — the box role is skipped
+  # with a warning there, never refused, so bootstrap must not refuse it either.
+  check "bootstrap: host=no never gets the incus precondition" 1 "must run as root" \
+    env TS_AUTHKEY=x RIG_SKIP_BOX_INSTALL=1 PATH="$INCUS_SHIM_NO:$PATH" \
+        "$ROOT/commands/bootstrap.sh" workload --users "$BOOT_USERS/box"
+fi
+# rig does NOT resolve the open "should rig install box" question here: the
+# precondition refuses, it never calls setup-host itself. A grep that finds
+# nothing (exit 1) is the pass — same shape as the never-apt-install-incus law.
+check "bootstrap: the users phase never runs box setup-host itself" 1 "" \
+  grep -nE '^[[:space:]]*box setup-host' "$ROOT/commands/bootstrap.sh"
+# ORDERING is a correctness property, not taste: apply READS /etc/rig/role
+# (class= picks its root-SSH note, host= decides what a missing incus group
+# means), and on host=yes it needs the group box's installer built. So the
+# users phase must sit after BOTH the marker write and the box install. Line
+# numbers, same idiom as the marker/box-install ordering asserts above;
+# defaults fail closed. The apply call is grepped as a literal — single quotes
+# intended, $HERE/$USERS_FILE are the script's own.
+# shellcheck disable=SC2016
+users_apply_at="$(grep -n '"$HERE/users-apply.sh" --file "$USERS_FILE"' "$ROOT/commands/bootstrap.sh" | head -n1 | cut -d: -f1)"
+check "bootstrap: the users phase invokes users apply" 0 "" \
+  test -n "$users_apply_at"
+check "bootstrap: the users phase runs after the role marker write" \
+  0 "" test "${box_marker_at:-999999}" -lt "${users_apply_at:-0}"
+check "bootstrap: the users phase runs after the box install" \
+  0 "" test "${box_install_at:-999999}" -lt "${users_apply_at:-0}"
+# The users file is passed per invocation and NEVER persisted (README: "rig
+# never persists it"). Taking it as a bootstrap flag must not quietly turn it
+# into box state, so nothing may copy it anywhere. A grep that finds nothing
+# (exit 1) is the pass — same shape as the never-apt-install-incus law.
+check "bootstrap: the users file is never copied onto the box" 1 "" \
+  grep -nE '^[[:space:]]*(cp|install|mv|tee|cat)[[:space:]].*USERS_FILE' "$ROOT/commands/bootstrap.sh"
+# Usage must carry both flags: an operator hitting the new requirement reads
+# --help next, and finding only --users there would leave the opt-out a secret.
+check "bootstrap: usage documents --users"    0 "--users"    "$ROOT/commands/bootstrap.sh" --help
+check "bootstrap: usage documents --no-users" 0 "--no-users" "$ROOT/commands/bootstrap.sh" --help
+check "rig usage documents the bootstrap users flags" 0 "(--users <path> | --no-users)" \
+  "$ROOT/bin/rig" --help
+# The TENANT family takes neither flag. Dispatch happens before this parser
+# runs, so --users lands in the tenant script's own unknown-flag refusal — the
+# decision (a box-minted guest has no SSH door of its own; entry is `box shell`,
+# gated by the HOST's incus grants) is documented in usage and the README.
+check "bootstrap: --users does not reach the tenant roles" 2 "unknown flag" \
+  "$ROOT/commands/bootstrap.sh" claude --users "$BOOT_USERS/ok"
+check "bootstrap: usage explains why tenants take no --users" 0 "box-minted GUEST" \
+  "$ROOT/commands/bootstrap.sh" --help
 # --- README: the box rename (#12) --------------------------------------------
 # The philosophy line must point at heavy-duty/box — the old claudebox slug
 # only works through a GitHub redirect that one squatted rename away from
@@ -192,8 +355,14 @@ check "README: documents the mismatch strip on host=no" 0 "" \
 check "README: no stale 'group absent decides' semantics" 1 "" \
   grep -n "when the \`incus\` group is absent, the \`host=\` trait decides" "$ROOT/README.md"
 if [ "$(id -u)" -ne 0 ]; then
-  check "bootstrap: refuses non-root"      1 "must run as root" env TS_AUTHKEY=x "$ROOT/commands/bootstrap.sh" workload
-  check "bootstrap: runner role parses, refuses non-root" 1 "must run as root" env TS_AUTHKEY=x "$ROOT/commands/bootstrap.sh" runner
+  # Every machine-role invocation now states its users answer — the flag is
+  # required (#51), so reaching the root check at all proves it was accepted.
+  # --no-users here keeps these asserts about the ROOT CHECK; the --users path
+  # gets its own root-check assert below, against a valid fixture.
+  check "bootstrap: refuses non-root"      1 "must run as root" env TS_AUTHKEY=x "$ROOT/commands/bootstrap.sh" workload --no-users
+  check "bootstrap: --users file reaches the root check" 1 "must run as root" \
+    env TS_AUTHKEY=x "$ROOT/commands/bootstrap.sh" workload --users "$BOOT_USERS/ok"
+  check "bootstrap: runner role parses, refuses non-root" 1 "must run as root" env TS_AUTHKEY=x "$ROOT/commands/bootstrap.sh" runner --no-users
   # staging dispatches to the tenant mechanism now; reaching ITS root check
   # through bootstrap.sh proves the dispatch and the tenant arg pass in one go.
   # RIG_ROLE_MARKER points at an absent fixture: the tenant marker guard runs
@@ -201,10 +370,10 @@ if [ "$(id -u)" -ne 0 ]; then
   # a real /etc/rig/role of its own.
   check "bootstrap: staging dispatches to the tenant mechanism, refuses non-root" 1 "must run as root" \
     env RIG_ROLE_MARKER=/nonexistent/rig-role "$ROOT/commands/bootstrap.sh" staging
-  check "bootstrap: dev role parses, refuses non-root" 1 "must run as root" env TS_AUTHKEY=x "$ROOT/commands/bootstrap.sh" dev
-  check "bootstrap: workstation parses, refuses non-root" 1 "must run as root" env -u TS_AUTHKEY "$ROOT/commands/bootstrap.sh" workstation
+  check "bootstrap: dev role parses, refuses non-root" 1 "must run as root" env TS_AUTHKEY=x "$ROOT/commands/bootstrap.sh" dev --no-users
+  check "bootstrap: workstation parses, refuses non-root" 1 "must run as root" env -u TS_AUTHKEY "$ROOT/commands/bootstrap.sh" workstation --no-users
   check "bootstrap: custom parses, refuses non-root" 1 "must run as root" \
-    env TS_AUTHKEY=x "$ROOT/commands/bootstrap.sh" custom --hostname b --class server --host no --join authkey
+    env TS_AUTHKEY=x "$ROOT/commands/bootstrap.sh" custom --hostname b --class server --host no --join authkey --no-users
 else
   echo "skip: bootstrap non-root refusals (running as root)"
 fi
