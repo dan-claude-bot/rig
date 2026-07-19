@@ -4,7 +4,7 @@ History before 0.1.0 lives in git — rig grew its version surface (`VERSION`,
 `rig --version`, the side-by-side `versions/<v>` install layout; #35/#36)
 on the way to cutting its first release, and this file starts there.
 
-## Unreleased
+## 0.1.0 — 2026-07-19
 
 ### Fixed
 
@@ -20,6 +20,16 @@ on the way to cutting its first release, and this file starts there.
   and right after one — the exact `changelog_section` the workflow runs
   extracts it non-empty. The rotting issue-number grep is gone.
 
+- **The installer survives an environment with no `$HOME`** (#39) —
+  cloud-init's `runcmd` runs `install.sh` with no `$HOME` set, and under
+  `set -u` the first expansion died with a bash unbound-variable stack
+  instead of an install — found live by box#88's template seed, which
+  pins `HOME=/root` as its own scar. The installer now derives the home
+  from `getent` for the effective user (root included) before any path
+  is built from `$HOME`, and when getent has no answer either it refuses
+  by name. Driven with a shim getent both ways: the derived-home install
+  lands, the no-answer refusal is pinned. (#41 — merged without its
+  entry; restored here at the release gate.)
 - **Headless credential prompts refuse loudly instead of dying silently**
   (#42) — the interactive credential prompts (`TS_AUTHKEY` in `bootstrap`,
   `RUNNER_TOKEN` in `runner install`, `RUNNER_REMOVE_TOKEN` in
