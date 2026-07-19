@@ -6,6 +6,8 @@ on the way to cutting its first release, and this file starts there.
 
 ## Unreleased
 
+## 0.2.0 — 2026-07-19
+
 ### Added
 
 - **`users apply` grants the box *tier*, not just its socket** (#49) — role
