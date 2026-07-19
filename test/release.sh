@@ -141,10 +141,22 @@ check "release.yml: only a MERGED PR releases (closed-unmerged never fires)" 0 "
   grep -qF "github.event.pull_request.merged == true" "$RY"
 check "release.yml: only the 'release' label carries the intent" 0 "" \
   grep -qF "contains(github.event.pull_request.labels.*.name, 'release')" "$RY"
-check "release.yml: assert 1 — a still-dev VERSION refuses" 0 "" \
-  grep -qF "refusing to release a dev tree" "$RY"
-check "release.yml: assert 2 — an unchanged VERSION refuses (the mislabel interlock)" 0 "" \
-  grep -qF "VERSION did not change in this PR" "$RY"
+# The decide step tells the label's two meanings apart (LABELS.md gives
+# `release` to release-flow WORK as well as to the ceremony PR): work under
+# the label is a green NOTICE no-op — in the -dev steady state and in the
+# post-release window (bare, unchanged, already released) — while every
+# half-ceremony refuses. Pin each verdict's message and the gating output.
+check "release.yml: decide — dev-tree work no-ops green (not a red run per infra PR)" 0 "" \
+  grep -qF "release-flow work under the release label, not a ceremony" "$RY"
+check "release.yml: decide — a half-ceremony (-dev but changed) refuses" 0 "" \
+  grep -qF "half a ceremony" "$RY"
+check "release.yml: decide — post-release-window work no-ops green" 0 "" \
+  grep -qF "release-flow work merged in the post-release window" "$RY"
+check "release.yml: decide — bare, unchanged, never released refuses to guess" 0 "" \
+  grep -qF "Refusing to guess" "$RY"
+# shellcheck disable=SC2016  # the $-refs are the inner bash -c's, deliberately
+check "release.yml: decide gates every later step on ceremony=yes" 0 "" \
+  bash -c '[ "$(grep -cF "if: steps.decide.outputs.ceremony == '\''yes'\''" "$1")" -ge 3 ]' _ "$RY"
 check "release.yml: assert 3 — an empty section refuses to publish" 0 "" \
   grep -qF "refusing to publish an empty release" "$RY"
 check "release.yml: assert 4 — an existing tag or release refuses (idempotent)" 0 "" \

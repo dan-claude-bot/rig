@@ -88,32 +88,57 @@ jobs:
           # base-side VERSION is readable for the interlock below.
           ref: ${{ github.event.pull_request.merge_commit_sha }}
           fetch-depth: 0
-      # Assert 1 — the merged tree says it is a release. A `-dev` VERSION
-      # here means the label lied (or the ceremony PR forgot the bump).
-      - name: assert the merged tree is a release (non-dev VERSION)
-        run: |
-          ver="$(cat VERSION)"
-          case "$ver" in
-            *-dev)
-              echo "VERSION '$ver' is still -dev — a release PR ships a bare X.Y.Z; refusing to release a dev tree" >&2
-              exit 1 ;;
-          esac
-      # Assert 2 — THIS PR is the one that changed VERSION (base vs merge).
-      # The `-dev` transition as a safety interlock: an ordinary PR someone
-      # mislabels `release` fails here loudly instead of shipping main
-      # under a version some earlier PR minted.
-      - name: assert VERSION changed in this PR (the mislabel interlock)
+      # The decide step — asserts 1+2 fused, because the `release` label
+      # carries TWO legitimate meanings (LABELS.md: "release flow and
+      # version/packaging work"): the ceremony PR that ships a version, and
+      # ordinary work ON the release machinery — this very PR included.
+      # The version tells them apart. A `-dev` VERSION left UNTOUCHED by the
+      # PR is release-flow work: a green no-op, not a red run on main every
+      # time the flow itself is improved. Everything in between is a
+      # half-ceremony and dies loudly:
+      #   -dev, unchanged   → work under the label: NOTICE + green no-op
+      #   -dev, changed     → a bump that forgot to leave -dev: refuse
+      #   bare, unchanged,
+      #     already released → work merged in the post-release window
+      #                       (ceremony landed, the -dev bump has not):
+      #                       NOTICE + green no-op
+      #   bare, unchanged,
+      #     never released   → the label says ship, the tree names an
+      #                       unshipped version this PR did not mint:
+      #                       genuinely ambiguous, refuse
+      #   bare, changed     → the ceremony: proceed
+      - name: 'decide: ceremony, or release-flow work under the label?'
+        id: decide
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: |
           ver="$(cat VERSION)"
           base_ver="$(git show "$BASE_SHA:VERSION")"
+          case "$ver" in
+            *-dev)
+              if [ "$base_ver" = "$ver" ]; then
+                echo "NOTICE: VERSION '$ver' is -dev and unchanged by this PR — release-flow work under the release label, not a ceremony. Nothing to publish."
+                echo "ceremony=no" >> "$GITHUB_OUTPUT"
+                exit 0
+              fi
+              echo "VERSION changed ('$base_ver' -> '$ver') but is still -dev — half a ceremony; a release PR ships a bare X.Y.Z. Refusing." >&2
+              exit 1 ;;
+          esac
           if [ "$base_ver" = "$ver" ]; then
-            echo "VERSION did not change in this PR ('$ver' before and after) — a 'release'-labeled PR must be the ceremony PR that bumps it; refusing to release" >&2
+            if gh release view "$ver" -R "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+              echo "NOTICE: VERSION '$ver' is already released and unchanged by this PR — release-flow work merged in the post-release window (before the -dev bump). Nothing to publish."
+              echo "ceremony=no" >> "$GITHUB_OUTPUT"
+              exit 0
+            fi
+            echo "VERSION '$ver' is bare, unchanged by this PR, and never released — the label says ship but this PR did not mint the version. Refusing to guess." >&2
             exit 1
           fi
+          echo "ceremony=yes" >> "$GITHUB_OUTPUT"
       # Assert 3 — the changelog names exactly this version, and the one
       # extractor (shared with the tag job and test/release.sh) gets a
       # non-empty body out of it. The notes are kept for the publish.
       - name: assert the changelog section for this version extracts
+        if: steps.decide.outputs.ceremony == 'yes'
         run: |
           . .github/scripts/release-lib.sh
           ver="$(cat VERSION)"
@@ -126,6 +151,7 @@ jobs:
       # Assert 4 — nothing exists yet, tag or release: a re-run of this job
       # (or a manual tag that beat it) must refuse, not clobber.
       - name: assert no tag and no release exist yet (idempotent re-runs)
+        if: steps.decide.outputs.ceremony == 'yes'
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
@@ -142,6 +168,7 @@ jobs:
       # assert 3 extracted. (GITHUB_TOKEN-created tag: no recursive
       # workflow runs — see the job comment.)
       - name: tag the merge commit and publish the release
+        if: steps.decide.outputs.ceremony == 'yes'
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
