@@ -130,6 +130,81 @@ create_at="$(grep -n "gh release create" "$RY" | head -n1 | cut -d: -f1)"
 check "release.yml: the assert precedes the create" \
   0 "" test "${assert_at:-999999}" -lt "${create_at:-0}"
 
+# --- release.yml, the merge path: the pins (#47; box#96's design) ------------
+# Merging the release-labeled ceremony PR IS the release. Same grep-pin
+# treatment for the merge path's load-bearing pieces: the gate, the four
+# fail-loud asserts, the same-job tag+publish, and the surviving tag-push
+# fallback.
+# The merge door rides pushes to MAIN, not pull_request events: a fork PR's
+# pull_request run gets a read-only GITHUB_TOKEN (permissions: cannot raise
+# it), and every ceremony PR this org merges is cross-repo from the bot
+# fork — the tag create would 403 after green asserts (#48 round 1). The
+# label — the operator's intent — is read via the API off the merge commit.
+check "release.yml: the merge door rides pushes to main (fork-token-proof)" 0 "" \
+  grep -qF "branches: [main]" "$RY"
+# YAML maps are last-key-wins: a second sibling push: key silently replaces
+# the first and kills a door (grok's round-2 catch — the tag fallback had
+# stopped triggering). Exactly ONE push key may exist.
+check "release.yml: exactly one on.push key (duplicate keys drop a door)" 0 "1" \
+  grep -cE '^  push:' "$RY"
+check "release.yml: ...and the doors split on the ref (tag door takes tags)" 0 "" \
+  grep -qF "startsWith(github.ref, 'refs/tags/')" "$RY"
+# shellcheck disable=SC2016  # the $-string is a literal in the target file
+check "release.yml: the release label is read via the API off the merge commit" 0 "" \
+  grep -qF 'commits/$MERGE_SHA/pulls' "$RY"
+check "release.yml: a transition without a labeled PR refuses" 0 "" \
+  grep -qF "no merged, release-labeled PR is behind this commit" "$RY"
+# The decide step tells the label's two meanings apart (LABELS.md gives
+# `release` to release-flow WORK as well as to the ceremony PR): work under
+# the label is a green NOTICE no-op — in the -dev steady state and in the
+# post-release window (bare, unchanged, already released) — while every
+# half-ceremony refuses. Pin each verdict's message and the gating output.
+check "release.yml: decide — dev-tree work no-ops green (not a red run per infra PR)" 0 "" \
+  grep -qF "release-flow work under the release label, not a ceremony" "$RY"
+check "release.yml: decide — a -dev endstate is always work (the bump PR no-ops green)" 0 "" \
+  grep -qF "a dev tree is by definition not a release" "$RY"
+check "release.yml: decide — post-release-window work no-ops green" 0 "" \
+  grep -qF "release-flow work merged in the post-release window" "$RY"
+check "release.yml: decide — bare, unchanged, never released refuses to guess" 0 "" \
+  grep -qF "Refusing to guess" "$RY"
+# shellcheck disable=SC2016  # the $-refs are the inner bash -c's, deliberately
+check "release.yml: decide gates every later step on ceremony=yes" 0 "" \
+  bash -c '[ "$(grep -cF "if: steps.decide.outputs.ceremony == '\''yes'\''" "$1")" -ge 3 ]' _ "$RY"
+check "release.yml: assert 3 — an empty section refuses to publish" 0 "" \
+  grep -qF "refusing to publish an empty release" "$RY"
+check "release.yml: assert 4 — an existing tag or release refuses (idempotent)" 0 "" \
+  grep -qF "refusing to re-release" "$RY"
+# Same-job matters: a GITHUB_TOKEN-created tag fires no tag-push workflow,
+# so the publish must live NEXT TO the tag creation. The workflow keeps
+# release-on-merge as its last job (pinned by comment there) so the awk
+# range runs to EOF; both acts must land inside it.
+MJOB="$(awk '/^  release-on-merge:/,0' "$RY")"
+mjob_has() { printf '%s' "$MJOB" | grep -qF -e "$1"; }
+check "release.yml: the merge job API-creates the tag itself" 0 "" \
+  mjob_has "git/refs"
+# shellcheck disable=SC2016  # the $-string is a literal in the target file
+check "release.yml: ...at the pushed main head (github.sha = the merge commit)" 0 "" mjob_has 'sha="$MERGE_SHA"' 
+# The release re-arms main itself: the post-release -dev bump is arithmetic,
+# not judgment, so it rides the same job — direct push, PR fallback.
+check "release.yml: the release bumps main to the next -dev itself" 0 "" \
+  grep -qF "bump main to the next -dev" "$RY"
+check "release.yml: ...with a PR fallback when the direct push is refused" 0 "" \
+  grep -qF "opening the bump PR instead" "$RY"
+check "release.yml: ...and publishes in the SAME job" 0 "" \
+  mjob_has "gh release create"
+# Ordering, the marker-then-box idiom again: the last assert's refusal must
+# precede the tag creation (asserts first, acts last; defaults fail closed).
+massert_at="$(grep -n "refusing to re-release" "$RY" | head -n1 | cut -d: -f1)"
+mtag_at="$(grep -n "git/refs" "$RY" | head -n1 | cut -d: -f1)"
+check "release.yml: the merge-path asserts precede the tag" \
+  0 "" test "${massert_at:-999999}" -lt "${mtag_at:-0}"
+# ...and the manual path SURVIVES: tag-push trigger plus a push-gated job,
+# the documented fallback and backfill.
+check "release.yml: the tag-push trigger survives (manual fallback intact)" 0 "" \
+  grep -qF "tags: ['**']" "$RY"
+check "release.yml: the fallback job is gated to push events" 0 "" \
+  grep -qF "github.event_name == 'push'" "$RY"
+
 # --- the installer's ref logic, extracted ------------------------------------
 # install.sh must stay a single curl|bash file, so its channel functions live
 # inline; extract them here and drive them for real (the valid_version awk

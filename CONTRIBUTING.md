@@ -46,19 +46,33 @@ labels tell you where everything is without opening anything.
 
 ## Releasing
 
-A release is a PR, then a tag (#32; box#83's design):
+A release is a PR, and merging it is the release (#47; box#96's design, on
+top of #32/box#83's tag flow):
 
-1. A small PR — `release: X.Y.Z` — bumps `VERSION` from `X.Y.Z-dev` and
-   stamps `CHANGELOG.md`'s Unreleased section as `## X.Y.Z — YYYY-MM-DD`.
-   CI green on it, same loop as any PR.
-2. Merge, tag the merge commit bare `X.Y.Z` (no `v` prefix — box's tag
-   scheme), push the tag. `release.yml` asserts tag == `VERSION` (a
-   mismatch fails loudly and creates nothing) and creates the GitHub
-   release with that version's changelog section as the body. No assets —
-   the source tarball for the tag is the package `install.sh` downloads.
-3. A follow-up (or the next feature PR) bumps main's `VERSION` to
-   `X.Y.(Z+1)-dev`, so a dev install never impersonates the release in the
-   `versions/<v>` layout.
+1. A small PR — `release: X.Y.Z`, carrying the `release` label — bumps
+   `VERSION` from `X.Y.Z-dev` and stamps `CHANGELOG.md`'s Unreleased
+   section as `## X.Y.Z — YYYY-MM-DD`. CI green on it, same loop as any PR.
+2. Merge it — that IS the ship decision. `release.yml`'s
+   `release-on-merge` job asserts, in order, fail-loud, creating nothing:
+   the merged tree's `VERSION` is non-`-dev`; this PR is the one that
+   changed it (a mislabeled ordinary PR fails here); the changelog section
+   for that version extracts non-empty; no tag or release exists yet.
+   Then, same job, it tags the merge commit bare `X.Y.Z` (no `v` prefix —
+   box's tag scheme) and publishes the GitHub release with that section as
+   the body. No assets — the source tarball for the tag is the package
+   `install.sh` downloads.
+3. The release re-arms main itself: the same workflow run bumps `VERSION`
+   to `X.Y.(Z+1)-dev` and pushes the commit straight to main — no
+   follow-up PR (it opens one only if branch protection refuses the
+   direct push, loudly). A dev install therefore never impersonates the
+   release in the `versions/<v>` layout. On the *manual* tag path the
+   bump stays yours: open the one-line PR after publishing.
+
+Manual fallback (and backfill): if the merge-path run fails, fix what it
+named, then tag the merge commit `X.Y.Z` by hand and push the tag — the
+original tag-push job still turns any correct tag into the release, and
+the merge path's nothing-exists-yet assert keeps the two from
+double-publishing.
 
 ## Labels — who sets what
 
