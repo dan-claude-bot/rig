@@ -6,6 +6,22 @@ on the way to cutting its first release, and this file starts there.
 
 ## Unreleased
 
+### Fixed
+
+- **Headless credential prompts refuse loudly instead of dying silently**
+  (#42) — the interactive credential prompts (`TS_AUTHKEY` in `bootstrap`,
+  `RUNNER_TOKEN` in `runner install`, `RUNNER_REMOVE_TOKEN` in
+  `runner remove`, and both tokens in `runner repoint` — a site the new
+  no-bare-read test caught after the issue counted three) were bare
+  `read -rsp`: with stdin not a tty (CI,
+  `box exec`, any script), `read` fails, `set -e` ends the run, and the
+  log just *stops* — exit 1, no last word, measured live in the
+  2026-07-19 release drill. Each prompt now checks for a tty first and
+  dies naming the variable that unblocks an unattended run (`runner
+  remove` also names `--local`), and every `read` is `|| die`-guarded so
+  EOF at a real prompt gets the same courtesy. `db.sh` already held the
+  line here; now all of rig does.
+
 ### Added
 
 - **Tagged releases, and an installer that installs them** (#32) — the rig

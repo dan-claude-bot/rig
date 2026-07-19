@@ -461,6 +461,27 @@ fi
 
 check "runner: bad subcommand exits 2"   2 "usage:"           "$ROOT/bin/rig" runner frobnicate
 
+# --- headless prompts refuse loudly (issue #42) ------------------------------
+# The three credential prompts (TS_AUTHKEY, RUNNER_TOKEN, RUNNER_REMOVE_TOKEN)
+# used to be bare `read -rsp`: with no tty, read exits non-zero and `set -e`
+# ends the script with NO output at all — the drill watched a bootstrap die
+# mid-converge with exit 1 and nothing to grep. Each prompt now refuses first,
+# naming its variable. The prompts live behind the root check (and, for the
+# runner pair, behind a real registration), so the harness cannot reach them
+# non-root; grep the guards so a deleted one cannot ship green (repo
+# precedent: the login-path tag refusals above).
+check "bootstrap: headless TS_AUTHKEY prompt refuses loudly" 0 "" \
+  grep -q 'TS_AUTHKEY is unset and stdin is not a tty' "$ROOT/commands/bootstrap.sh"
+check "runner install: headless token prompt refuses loudly" 0 "" \
+  grep -q 'RUNNER_TOKEN is unset and stdin is not a tty' "$ROOT/commands/runner-install.sh"
+check "runner remove: headless token prompt refuses loudly" 0 "" \
+  grep -q 'RUNNER_REMOVE_TOKEN is unset and stdin is not a tty' "$ROOT/commands/runner-remove.sh"
+# The EOF-at-the-prompt path (Ctrl-D on a real tty) must also die with a last
+# word rather than ride set -e into silence: every read is `|| die`-guarded,
+# so a bare `read -rsp` (no `||` on its line) must not exist anywhere.
+check "prompts: no bare read -rsp remains" 1 "" \
+  grep -RE 'read -rsp[^|]*$' "$ROOT/commands/"
+
 # --- runner install: --repo must agree with what the box is already on -------
 # The bug: `install --repo B` on a box registered to repo A skipped configure,
 # restarted the service on A, and reported success — --repo accepted, validated,

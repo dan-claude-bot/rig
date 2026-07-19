@@ -128,8 +128,11 @@ log "labels: ${LABELS}"
 # while the runner is still registered and working.
 if [ "$LOCAL" -eq 0 ]; then
   RUNNER_REMOVE_TOKEN="${RUNNER_REMOVE_TOKEN:-}"
+  # Prompt only on a tty — headless, a bare `read` dies under set -e with no
+  # message (issue #42; same cure as runner-install/remove).
   if [ -z "$RUNNER_REMOVE_TOKEN" ]; then
-    read -rsp "removal token for ${CURRENT_URL} (short-lived): " RUNNER_REMOVE_TOKEN
+    [ -t 0 ] || die "RUNNER_REMOVE_TOKEN is unset and stdin is not a tty — set RUNNER_REMOVE_TOKEN to run unattended, or use --local"
+    read -rsp "removal token for ${CURRENT_URL} (short-lived): " RUNNER_REMOVE_TOKEN || { echo; die "no removal token read (EOF) — set RUNNER_REMOVE_TOKEN to run unattended, or use --local"; }
     echo
   fi
   [ -n "$RUNNER_REMOVE_TOKEN" ] || die "empty removal token"
@@ -138,7 +141,8 @@ fi
 
 RUNNER_TOKEN="${RUNNER_TOKEN:-}"
 if [ -z "$RUNNER_TOKEN" ]; then
-  read -rsp "registration token for ${TARGET_URL} (short-lived): " RUNNER_TOKEN
+  [ -t 0 ] || die "RUNNER_TOKEN is unset and stdin is not a tty — set RUNNER_TOKEN to run unattended"
+  read -rsp "registration token for ${TARGET_URL} (short-lived): " RUNNER_TOKEN || { echo; die "no registration token read (EOF) — set RUNNER_TOKEN to run unattended"; }
   echo
 fi
 [ -n "$RUNNER_TOKEN" ] || die "empty registration token"
