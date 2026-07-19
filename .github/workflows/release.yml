@@ -35,7 +35,7 @@ on:
     branches: [main]
 
 permissions:
-  contents: write # tag ref + gh release create + the bump push
+  contents: write # the tag ref, the release publish, the bump push
   # Two consumers (a declared permissions: block zeroes every unspecified
   # scope): the decide step's label read (commits/<sha>/pulls) and the bump
   # fallback's `gh pr create --label`.
