@@ -964,6 +964,86 @@ check "drop_incus: an absent pgrep warns rather than guessing" 0 "" \
   in_out "$DROP_NOPGREP" "loginctl terminate-user dan"
 rm -rf "$NOPGREP_D"
 
+# --- the box role grants the TIER, not just the socket (#49) -----------------
+# Group incus is step 1 of the five 'box grant' performs; without the rest the
+# user's first 'box new' refuses for want of a box-net profile. Running the
+# real thing needs root, an Incus daemon and real accounts, so these assert the
+# CALL and its guard rails in the source — the same way every other root-only
+# refusal in this harness is pinned.
+# The $-refs below are literals we grep FOR in the script — single quotes
+# are the point, as in the bootstrap ordering checks above.
+# shellcheck disable=SC2016
+check "users apply: box role calls 'box grant', not just usermod" 0 "" \
+  grep -qE '^[[:space:]]*box grant "\$u"' "$ROOT/commands/users-apply.sh"
+# Ordering is the safety property (repo precedent: bootstrap's marker-then-box
+# assert): 'box grant' opens with a getent passwd and refuses an unknown user,
+# so the call must come AFTER useradd, never before. Defaults fail closed.
+useradd_at="$(grep -nE '^[[:space:]]*useradd -m' "$ROOT/commands/users-apply.sh" | head -n1 | cut -d: -f1)"
+# shellcheck disable=SC2016
+grant_at="$(grep -nE '^[[:space:]]*box grant "\$u"' "$ROOT/commands/users-apply.sh" | head -n1 | cut -d: -f1)"
+check "users apply: 'box grant' runs after useradd (grant refuses unknown users)" \
+  0 "" test "${useradd_at:-999999}" -lt "${grant_at:-0}"
+# Failure granularity, both halves. A HOST-level fact — box-role users on a
+# host=yes box with no box CLI — dies, like the missing-incus-group die beside
+# it. A PER-USER grant failure warns and continues, because one box-role user
+# somewhere in the fleet must not stop apply everywhere VMs don't live.
+check "users apply: a missing box CLI on host=yes is a die, not a warning" 0 "" \
+  grep -qF 'die "a user carries role box and this box hosts VMs (host=yes) but the box CLI is not on PATH' \
+  "$ROOT/commands/users-apply.sh"
+# shellcheck disable=SC2016
+check "users apply: a per-user grant failure warns and continues" 0 "" \
+  grep -qF 'warn "box grant $u exited $grant_rc:' "$ROOT/commands/users-apply.sh"
+# The grant is host=yes only: a tier converged into a daemon that is not there
+# to enforce it is not policy. Read the guard's own block — BOX_GRANT=0 up to
+# the line that sets it to 1 — rather than the file at large, so a host=yes
+# match borrowed from the die above cannot pass this for free.
+# shellcheck disable=SC2016  # $1 resolves inside the inner bash -c
+check "users apply: the grant is gated on host=yes" 0 "" \
+  bash -c 'awk "/^BOX_GRANT=0\$/,/BOX_GRANT=1 ;;/" "$1" | grep -q "[*]host=yes[*])"' \
+  _ "$ROOT/commands/users-apply.sh"
+# The incus-admin case is blocked on heavy-duty/box#99: grant refuses those
+# members today, and rig must NOT turn that refusal into a failed apply. The
+# branch names the blocker so whoever reads the warning can find the fix.
+# shellcheck disable=SC2016
+check "users apply: an incus-admin grant refusal is warned, not fatal" 0 "" \
+  grep -q 'elif in_group "$u" incus-admin; then' "$ROOT/commands/users-apply.sh"
+check "users apply: the incus-admin warning cites the box-side blocker" 0 "" \
+  grep -q "heavy-duty/box#99" "$ROOT/commands/users-apply.sh"
+# The group ADD is deferred to grant so a failed grant can take the socket back
+# with it (grant only rolls back a membership THAT RUN added). But incus must
+# stay in the WANTED set, or the exact-convergence loop's other arm would strip
+# a box-role user's socket on the very run that granted it — assert both, since
+# either alone is a bug.
+# shellcheck disable=SC2016
+check "users apply: the incus group add is deferred to 'box grant'" 0 "" \
+  grep -qF 'if [ "$g" = incus ] && [ "$BOX_GRANT" -eq 1 ]; then continue; fi' \
+  "$ROOT/commands/users-apply.sh"
+# The wanted-set arm gained #58's BOX_ROLE_OK gate on rebase, and the two
+# conditions answer different questions: BOX_ROLE_OK is "does the box role
+# apply on this box at all" (the marker's call), INCUS_OK is "is the group
+# there to converge". Both must hold, and `incus` must still ENTER the wanted
+# set when they do — otherwise the exact-convergence else-arm below would
+# strip a box-role user's socket on the very run that granted it, which is
+# the hazard this PR exists to remove. Pinned as the composed line so a
+# regression in either operand fails here.
+# shellcheck disable=SC2016
+check "users apply: role box still puts incus in the wanted set" 0 "" \
+  grep -qF 'case ",$roles," in *,box,*) if [ "$BOX_ROLE_OK" -eq 1 ] && [ "$INCUS_OK" -eq 1 ]; then want="$want incus"; fi ;; esac' \
+  "$ROOT/commands/users-apply.sh"
+# The deferral must be an ADD-side skip only. Landing it on the removal arm
+# would leave a de-roled user's socket open forever, so prove the guard sits
+# above the usermod -aG and below the wanted-set case, not in the else branch.
+# shellcheck disable=SC2016
+defer_at="$(grep -nF 'if [ "$g" = incus ] && [ "$BOX_GRANT" -eq 1 ]; then continue; fi' "$ROOT/commands/users-apply.sh" | head -n1 | cut -d: -f1)"
+# shellcheck disable=SC2016
+strip_at="$(grep -nE '^[[:space:]]*gpasswd -d "\$u" "\$g"' "$ROOT/commands/users-apply.sh" | head -n1 | cut -d: -f1)"
+check "users apply: the deferral sits on the add arm, not the removal arm" \
+  0 "" test "${defer_at:-999999}" -lt "${strip_at:-0}"
+# rig still never installs Incus (the #12/#25 design law, asserted for
+# bootstrap above): calling box's grant is invocation, not installation.
+check "users apply: never apt-installs incus (box owns the daemon)" 1 "" \
+  grep -nE 'apt-get install.* incus' "$ROOT/commands/users-apply.sh"
+
 # --- users close-root: the human-class root-door shutter ---------------------
 check "users close-root: --help exits 0"       0 "usage:"       "$ROOT/commands/users-close-root.sh" --help
 check "users close-root: unknown flag exits 2" 2 "unknown flag" "$ROOT/commands/users-close-root.sh" --nope

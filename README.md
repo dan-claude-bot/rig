@@ -750,7 +750,7 @@ holds nothing secret anyway: usernames, roles, and *public* keys.
 |---------|----------------------------------------------|-------------|
 | `admin` | full NOPASSWD sudo                           | `rig-admin` |
 | `rig`   | NOPASSWD sudo for `/usr/local/bin/rig` only  | `rig`       |
-| `box`   | Incus **restricted** tier, no sudo           | `incus`     |
+| `box`   | Incus **restricted** tier, no sudo           | `incus` + `box grant` |
 
 **The honest limit of the `rig` role:** its sudo grant is binary-scoped, not
 argument-scoped — it trusts its holder with every rig verb *except* identity
@@ -783,6 +783,22 @@ The group's presence matters only once the trait already said yes: on
 apply dies pointing at `box setup-host` rather than conjure a group nothing
 would consult. `incus-admin` is deliberately **not** a role: that group is
 host-root-equivalent, break-glass by hand only.
+
+**The group is the socket; the tier is `box grant`.** On `host=yes`, apply
+calls `box grant <user>` for every box-role user — the `incus` group is only
+the first of the five steps that grant performs (the `user-<uid>` project,
+its narrowing to `boxnet` and *only* `boxnet`, the snapshot and backup
+allowances `box clone` and `box export` ride, and the shipped `box-net`
+profile installed into that project). rig calls box's own grant rather than
+reimplementing four fifths of it: the "rig never installs Incus" boundary is
+about installation, not invocation, and deferring here respects it harder
+than a rig-side copy would. The group ADD is left to grant too, so a grant
+that fails partway can take the socket back with it — rig opening the socket
+first would leave a user with live access to an *un-narrowed* project, which
+is worse than no grant at all. A grant that fails **warns and continues**:
+one box-role user's project must not stop apply for the fleet. A missing
+`box` CLI on `host=yes` **dies**, like the missing `incus` group — that is a
+broken VM host, not a per-user accident.
 
 Losing the `box` role goes back through box, too. `rig-admin` and `rig` are
 rig's groups and a `gpasswd -d` is the whole story for them; `incus` is box's,

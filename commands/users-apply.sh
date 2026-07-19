@@ -46,11 +46,16 @@ follows it to the user. Apply dies if root has no authorized_keys to seed.
 roles:
   admin   group rig-admin — full NOPASSWD sudo
   rig     group rig       — NOPASSWD sudo for /usr/local/bin/rig only
-  box     group incus     — Incus restricted tier, no sudo (box's setup-host
-                            owns the Incus install; rig only asserts it).
-                            Dropping this role hands the group back through
+  box     group incus     — Incus restricted tier, no sudo. On host=yes apply
+                            calls 'box grant <user>', which is the tier: the
+                            group is only its socket, the user-<uid> project,
+                            the boxnet-only narrowing, snapshots, backups and
+                            the box-net profile are the rest of it. Dropping
+                            the role hands the group back through
                             'box revoke' — never --purge: convergence removes
-                            access, never someone's running boxes.
+                            access, never someone's running boxes. box's
+                            setup-host owns the Incus install; rig only
+                            asserts it, and defers BOTH directions to box.
 
 All passwords stay locked, always — the SSH key at the door is the
 authentication, and NOPASSWD sudo does not weaken it. Convergent: membership
@@ -223,6 +228,40 @@ if [ "$NEED_INCUS" -eq 1 ] && [ "$BOX_ROLE_OK" -eq 1 ] && [ "$INCUS_OK" -eq 0 ];
   die "a user carries role box and this box hosts VMs (host=yes) but group incus is absent — install the box CLI and run 'box setup-host' first; rig never installs Incus"
 fi
 
+# --- the box TIER, not just its socket (#49) ---------------------------------
+# Group incus is step 1 of the five 'box grant' performs: the group is the
+# SOCKET, while the tier is the per-user convergence behind it — the
+# user-<uid> project, its narrowing to boxnet and only boxnet, the snapshot
+# and backup allowances clone and 'box export' ride, and the shipped box-net
+# profile installed into that project. rig doing step 1 alone left every
+# box-role user's first 'box new' refusing ("your project has no box-net
+# profile"), so apply's promise — the users file is the fleet's source of
+# truth — was not kept for this role. It is kept by CALLING box's own grant
+# rather than reimplementing four fifths of it: 'box grant' is idempotent,
+# root-or-sudo (which apply already is), stdin-pinned so no incus client can
+# wedge waiting on an answer, and does its own run-as-the-user touch, so the
+# granted user never has to log in first for the lazy project to exist.
+#
+# Only on host=yes. The box role binds where VMs live, and the two other
+# arms of the host= decision above are deliberately untouched: host=no keeps
+# its skip-with-warning, and a marker with no host= trait keeps its own.
+# Granting a tier on a box that does not host VMs would be converging policy
+# into a daemon that is not there to enforce it.
+#
+# The box CLI's ABSENCE is a host-level fact, so it dies here, in the same
+# register and for the same reason as the missing-incus-group die above: a
+# host=yes box carrying box-role users but no box CLI is a broken VM host,
+# not a per-user accident, and no amount of continuing converges it.
+BOX_GRANT=0
+if [ "$NEED_INCUS" -eq 1 ] && [ "$INCUS_OK" -eq 1 ]; then
+  case "$(read_role_marker "${RIG_ROLE_MARKER:-/etc/rig/role}")" in
+    *host=yes*)
+      command -v box >/dev/null 2>&1 \
+        || die "a user carries role box and this box hosts VMs (host=yes) but the box CLI is not on PATH — the incus group is only the socket; the restricted tier is 'box grant', which rig calls rather than reimplements. Install the box CLI (rig bootstrap does it on host=yes) and re-run"
+      BOX_GRANT=1 ;;
+  esac
+fi
+
 in_group() { id -nG "$1" 2>/dev/null | tr ' ' '\n' | grep -qx "$2"; }
 
 # --- dropping role box: give the group back to the tool that owns it (#50) ---
@@ -313,6 +352,30 @@ for u in "${USERS[@]}"; do
   for g in rig-admin rig incus; do
     case " $want " in
       *" $g "*)
+        # incus stays in the WANTED set — that is what keeps the exact
+        # convergence below from stripping a box-role user's socket — but on
+        # a host where we are about to run 'box grant', the ADD is deferred to
+        # grant itself. Two reasons, both load-bearing:
+        #
+        # Grant's rollback only reaches a membership THAT RUN added: a user it
+        # finds already in incus keeps it when a later step trips
+        # (box/host/grant-user.sh's was_member branch), by design — stripping
+        # a membership it did not add could break a working user over a failed
+        # re-run. So if rig opens the socket first, grant can no longer close
+        # it, and a grant that fails midway leaves the user holding live
+        # access to an UN-narrowed project: the stock unhardened incusbr-<uid>
+        # one --network flag away. That state is strictly worse than no grant
+        # at all, which is the sharp end of #49. Deferring makes the socket and
+        # the tier land together or fail together.
+        #
+        # And grant is the authority on whether the group belongs at all: for
+        # an incus-admin member it deliberately does NOT add incus (admin
+        # membership already wins at the socket, so the row would only mislead
+        # whoever reads the group list later). rig adding it here would put a
+        # membership on that user which box has decided against — not a loop
+        # that oscillates, but rig overruling box on box's own tier, which is
+        # exactly the boundary this whole change is respecting.
+        if [ "$g" = incus ] && [ "$BOX_GRANT" -eq 1 ]; then continue; fi
         if ! in_group "$u" "$g"; then
           usermod -aG "$g" "$u"
           log "added $u to $g"
@@ -330,6 +393,55 @@ for u in "${USERS[@]}"; do
         fi ;;
     esac
   done
+
+  # The tier itself. AFTER the account exists — 'box grant' opens with a
+  # getent passwd and refuses an unknown user — and after the other groups,
+  # so a user whose grant fails still lands with everything rig owns outright.
+  #
+  # Per-user failures WARN and continue, matching the governing call the
+  # host= split above already makes: one box-role user somewhere in the fleet
+  # must not stop apply everywhere VMs don't live, and a project that would
+  # not converge is exactly that shape of local fact. Host-level facts still
+  # die, but they die before this loop — the missing group and the missing
+  # CLI both. What is left here (project creation refused, an instance still
+  # parked on the private bridge blocking the narrowing, an incus-user socket
+  # that will not answer) is per-user by construction.
+  if [ "$BOX_GRANT" -eq 1 ]; then
+    case ",$roles," in
+      *,box,*)
+        had_socket=0
+        if in_group "$u" incus; then had_socket=1; fi
+        log "granting $u the box restricted tier (box grant $u)"
+        grant_rc=0
+        box grant "$u" || grant_rc=$?
+        if [ "$grant_rc" -eq 0 ]; then
+          # CHANGED is a claim about what apply DID, and the only part of the
+          # grant rig can observe from out here is the group transition —
+          # every other step converges inside incus's own state, with no cheap
+          # "already converged?" probe short of redoing the work. So report
+          # the transition when it happens and stay silent otherwise: a
+          # convergent call that changed nothing must not turn "already
+          # converged; no changes" into a permanent lie on every host=yes box.
+          if [ "$had_socket" -eq 0 ] && in_group "$u" incus; then
+            log "granted $u the restricted tier (incus group, user-$(id -u "$u") project, boxnet-only, box-net profile)"
+            CHANGED=1
+          fi
+        elif in_group "$u" incus-admin; then
+          # Today 'box grant' refuses incus-admin members outright — it reads
+          # their admin membership as "there is nothing tighter to grant",
+          # which conflates permission with provisioning: they hold the full
+          # socket but have no project of their own. heavy-duty/box#99 makes
+          # grant provision them instead of refusing, at which point this
+          # branch simply stops being reached — no rig change needed, because
+          # rig asks for the tier and lets box decide what that means. Until
+          # then the honest report is that nothing was lost: they still hold
+          # strictly more access than the tier would give them.
+          warn "box grant $u exited $grant_rc and $u is in incus-admin, which box refuses to grant today — they keep the full socket (incus-admin is strictly stronger than the tier), but they get no user-<uid> project of their own and land in the shared default project alongside every other admin. Blocked on heavy-duty/box#99; everything else converged, and a later apply picks the tier up once box stops refusing"
+        else
+          warn "box grant $u exited $grant_rc: $u has their account, keys and rig groups, but NOT the box restricted tier — no user-<uid> project, no boxnet narrowing, no box-net profile, so their 'box new' will refuse. box's own output above names the cause; fix it and re-run apply (or 'box grant $u' by hand). Every other user still converged — one box-role user must not stop apply for the fleet"
+        fi ;;
+    esac
+  fi
 
   # authorized_keys becomes exactly the file's keys — only the content WRITE
   # is cmp-guarded, so an unchanged file is a clean no-op. Ownership and mode

@@ -6,6 +6,26 @@ on the way to cutting its first release, and this file starts there.
 
 ## Unreleased
 
+### Added
+
+- **`users apply` grants the box *tier*, not just its socket** (#49) — role
+  `box` resolved to exactly one action, `usermod -aG incus`. That is the
+  socket; it is step 1 of the five `box grant` performs, so every box-role
+  user still needed an admin to run `box grant <user>` by hand before their
+  first `box new` would do anything but refuse ("your project has no box-net
+  profile"), and until that admin arrived they held an `incus` membership
+  with no converged project — incus-user would lazily hand them a stock
+  unhardened NAT bridge, which is worse than no grant at all. On `host=yes`
+  apply now calls `box grant` per box-role user, after `useradd` (grant
+  refuses an unknown account) and with the group ADD deferred to grant, so a
+  grant that fails partway can take the socket back with it. Failures split
+  the way the `host=` guard beside them already splits: a missing `box` CLI
+  on `host=yes` dies (a broken VM host), a per-user grant failure warns and
+  continues (one box-role user must not stop apply for the fleet). `host=no`
+  and marker-less boxes keep their existing skip-with-warning. An
+  `incus-admin` member is warned, not fatal — `box grant` refuses them today,
+  which heavy-duty/box#99 fixes box-side with no rig change needed.
+
 ### Fixed
 
 - **A `host=no` box with an `incus` group no longer hands out the bare
