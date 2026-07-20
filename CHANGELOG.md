@@ -45,6 +45,37 @@ on the way to cutting its first release, and this file starts there.
   limits or the host's totals depends on whether `lxcfs` is in play — it is
   unverified, so those two lines are unreliable there.
 
+- **`/etc/rig/manifest` records which rig converged a machine, and when**
+  (#61) — the entire durable output of a bootstrap run was one line in
+  `/etc/rig/role`, and that line is about what the box *is*, never about what
+  built it. `VERSION` was read in exactly one place (`bin/rig:9`, for
+  `--version`) and that reports the *currently installed* tree, not the one
+  that ran; there was no timestamp anywhere in the codebase. SSH into a
+  control plane six months on and a machine converged by `0.1.0-dev` was
+  indistinguishable from one converged by `0.4.0`. Bootstrap — both the
+  machine roles and the box tenant roles — now stamps a second file beside
+  the marker: `schema=1`, `bootstrapped_by`/`bootstrapped_at` (the rig that
+  *first* converged this machine, pinned forever) and
+  `converged_by`/`converged_at` (the newest rig to have converged it), read
+  back with a new `rig manifest [<key>]`. `key=value`, one per line, `0644` —
+  never JSON or YAML, because this is the one file that must stay readable on
+  the most broken machine in the fleet and a rig-bootstrapped box has no YAML
+  parser and no `jq`.
+
+  Only **decided** facts go in, which is what keeps `bootstrap.sh:3`'s
+  contract ("a second run changes nothing", enforced by cmp-guards at nine
+  sites) intact: `bootstrapped_*` is first-write-wins, and `converged_*`
+  updates **only when the version actually differs** — it is the time the
+  converging version last changed, not the time of the last run. A naive
+  timestamp would have made every re-run a diff and had rig report a change it
+  did not make. **Observed** facts — cores, RAM, disk, kernel — are
+  deliberately absent: they go stale without rig doing anything, so they
+  belong to `rig platform` (#64), which computes them fresh and stores
+  nothing. `/etc/rig/role` is untouched — the marker holds traits and has six
+  readers; the manifest holds provenance. Readers must ignore keys they do not
+  know, and the writer preserves lines it does not own, so a manifest written
+  by a newer rig stays readable to (and survives a rewrite by) an older one.
+
 ### Changed
 
 - **BREAKING: `--class human|server` is now `--root-door closed|open`** (#77) —

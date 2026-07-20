@@ -247,6 +247,13 @@ the marker later (`rig users` keys root policy off `root-door=`). Written
 post-join and cmp-guarded, so a marker never describes a box that failed to
 become what it claims.
 
+Immediately after it, bootstrap stamps `/etc/rig/manifest` — **provenance**:
+which rig converged this box and when (see [`rig
+manifest`](#rig-manifest)). Same discipline, same guarantee, and the two files
+stay consistent because they land together. The marker says what the box *is*;
+the manifest says what *built* it. The tenant roles stamp it too — a
+box-minted guest is a machine rig converged.
+
 **`join=login` inverts the tag assertion.** A workstation joins as a
 user-owned device: there is no pre-auth key — a set `TS_AUTHKEY` is a loud
 usage error (exit 2; unset it, or pass `--join authkey`) — `tailscale up`
@@ -1108,6 +1115,61 @@ them back, fresh keys and all. And the sudoers rules land in
 `/etc/sudoers.d/rig-roles` only after `visudo -c` passes on the candidate — a
 bad file under `/etc/sudoers.d` can take down *all* of sudo, locking every
 admin out of the very escalation path apply just granted.
+
+### `rig manifest`
+
+```sh
+rig manifest                 # the whole provenance record
+rig manifest converged_by    # one value, for a shell caller
+```
+
+Prints `/etc/rig/manifest` — **which rig converged this machine, and when**.
+`rig bootstrap` writes it as its last durable act, beside the role marker;
+this command only reads, needs no root (the file is `0644`), and works on a
+machine whose rig has since been upgraded or removed.
+
+```
+schema=1
+bootstrapped_by=0.4.0
+bootstrapped_at=2026-07-19T14:24:51Z
+converged_by=0.6.0
+converged_at=2026-08-02T09:11:03Z
+```
+
+Two pairs: **birth** — the rig that *first* converged this machine, pinned
+forever — and **latest** — the newest rig to have converged it. On a fresh
+machine they are equal. The version recorded is the one that **ran**, captured
+at run time; `rig --version` reports the tree installed *now*, which after an
+upgrade answers a different question, because a machine outlives the rig that
+built it.
+
+Only **decided** facts live here, and that is what keeps bootstrap's
+convergence contract intact. `bootstrapped_*` is first-write-wins;
+`converged_*` moves **only when the version actually differs** — it records
+the time the converging version last changed, not the time of the last run. A
+re-run by the same rig therefore renders a byte-identical file and the
+cmp-guard stays silent; a re-converge by a *different* rig is a real change and
+the guard firing there is correct.
+
+**Observed** facts — cores, RAM, disk, kernel — are deliberately absent: they
+go stale on their own (someone adds RAM; unattended-upgrades patches the
+kernel), so storing them would either lie or force a rewrite on every run. They
+belong to `rig platform`, which computes them fresh and stores nothing.
+
+`key=value`, one per line — never JSON, never YAML. This is the one file that
+must stay readable on the most broken machine in the fleet, and a
+rig-bootstrapped box has no YAML parser and no `jq`. Readers must ignore keys
+they do not know, so `schema=` is bumped only when a key is removed or
+repurposed; a manifest written by a newer rig stays readable to an older one,
+and the writer preserves lines it does not own rather than eating them. Nothing
+here is ever a credential.
+
+Exits 1 when there is no manifest — a machine converged before rig wrote one,
+or never converged at all. `RIG_MANIFEST` overrides the path.
+
+The manifest does **not** replace `/etc/rig/role`. The marker holds *traits*
+(what this box is) and has six readers; the manifest holds *provenance* (what
+built it). Two files, two jobs.
 
 ### `rig users status`
 
