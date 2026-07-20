@@ -8,6 +8,31 @@ on the way to cutting its first release, and this file starts there.
 
 ### Fixed
 
+- **An unreadable check rollup no longer reads as "nothing is failing"** (#90)
+  — when `gh pr view` failed, the fallback left the `statusCheckRollup` key
+  absent entirely, and `(.statusCheckRollup // [])` collapsed that into the
+  same `NONE` as a PR that genuinely has no checks. `NONE` blocks nothing, so
+  a transient API failure presented the PR as mergeable by a human: an unknown
+  certified as green, which is the exact shape of the bug #87 was opened to
+  stop, surviving in the one place that fix never looked.
+
+  `checks_state` now separates the two — `UNREADABLE` for an absent key (a
+  read that failed), `NONE` for a present-but-empty array (a PR that really
+  has no checks) — and the sweep leaves an `UNREADABLE` PR exactly as it
+  found it rather than recomputing labels from facts it did not read.
+  Deliberately *not* a blocker: blocking would flap the whole board on one bad
+  API call, and the next tick is fifteen minutes away. Caught by the author
+  after opening the PR, not by review.
+
+- **CI runs `test/labels-reconcile.sh`, which it had never run** (#90) — the
+  file arrived with #87 and `ci.yml` was not extended to call it, so the label
+  state machine that gates every PR in this repo went covered only by whoever
+  remembered to run its fixtures by hand. #88 merged reporting 51 passing
+  fixtures: true on the author's machine, never once verified here. Box and
+  cast both ran the suite already; only rig did not, so this closes a rig-local
+  gap rather than a family-wide one. It was found by asking, while adding
+  fixtures to the suite, where the suite actually ran.
+
 - **`state:needs-human` no longer appears on PRs a human cannot merge**
   (#87, heavy-duty/box#136) — `decide_state()` derived state from three inputs
   (draft flag, requested reviewers, submitted reviews) and read *nothing* about
@@ -162,6 +187,55 @@ on the way to cutting its first release, and this file starts there.
   by a newer rig stays readable to (and survives a rewrite by) an older one.
 
 ### Changed
+
+- **PR labels split into two axes: `state:*` (whose ball) and `blocker:*`
+  (what is in the way)** (heavy-duty/box#137) — `state:needs-rebase`, added
+  here only days ago by #87, is retired in the same breath. In its place:
+  `blocker:conflict`, `blocker:ci-red` and `blocker:unrequested`, applied
+  additively. A single rule joins the axes — `state:needs-human` requires zero
+  blockers — which is the invariant #87 was reaching for, stated once instead
+  of defended at every branch of a precedence chain.
+
+  The single-label design projected independent facts onto one totally-ordered
+  value. Mergeability, check status and the review round move on their own
+  clocks; a PR can be conflicted *and* red *and* stalled at the same instant.
+  A total order has to pick one of those to say, so the rest vanish. Every
+  precedence bug this machine has had lived on that ordering, #87's included:
+  the fix there was to reorder the chain and collect the round before deciding,
+  which bought correctness for one more configuration without removing the
+  reason the next one would break. `state:needs-rebase` was the design's
+  clearest tell — a single label fired by both a conflict and a failing check,
+  two problems needing opposite work, telling an agent to rebase when what it
+  owed was a bug fix. Box's board has the case in the open: #120 was conflicted
+  **and** red, and could only ever say one of them.
+
+  Blockers are a set. There is no precedence between them to get wrong, and
+  adding a fourth one later cannot reshuffle the meaning of the other three.
+  What stays on the ordered axis is purely the review round, which is the one
+  place here where an ordering is genuinely meaningful — a round really does
+  have a sequence.
+
+  `state:bots-reviewing` tightens with it, to mean strictly *a request is live
+  and an answer is coming*. A ready PR nobody was asked to review used to read
+  as "waiting on the reviewers" until the stale sweep caught up; it now reads
+  `state:addressing` + `blocker:unrequested`, because the agent owes the ask
+  and the board should say so. `blocker:unrequested` covers both shapes of
+  "this head has no verdict from somebody": nobody reviewed it, or everybody
+  reviewed an older tree and the approvals staled behind a push. The second is
+  the worse of the two, since it leaves approvals on the page that no longer
+  describe the code. Drafts stay exempt — the bots ignore drafts by design —
+  as does an explicit human request, since a maintainer claiming a PR early is
+  deliberate.
+
+  The reconciler strips `state:needs-rebase` on sight via a `RETIRED` list, so
+  the retirement heals the existing board instead of stranding a label that
+  nothing recomputes. It also filters every label it is about to *add* against
+  the repo's actual label set, read once per sweep: `gh issue edit` rejects the
+  whole call on one unknown name, so on a repo that has not yet bootstrapped
+  the new `blocker:*` labels a single missing one would have taken the state
+  convergence down with it — on exactly the PRs this change exists to heal.
+  Now the state still converges and the missing labels are named in the log.
+  Fixtures 51 → 72.
 
 - **BREAKING: `--class human|server` is now `--root-door closed|open`** (#77) —
   the trait was named for who *lives on* a box; what it decides is one thing,
