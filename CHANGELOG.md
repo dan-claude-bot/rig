@@ -8,6 +8,48 @@ on the way to cutting its first release, and this file starts there.
 
 ### Fixed
 
+- **Deleting a shipped release heading from `CHANGELOG.md` is now caught, on
+  every PR** (#98, heavy-duty/box#122) — the arming rule (#66) asks one
+  question about **one** heading: does the top section agree with `VERSION`?
+  It says nothing about the rest of the file, and the failure that lives there
+  is an author adding an entry under `## Unreleased` who *replaces* the line
+  `## 0.2.0 — 2026-07-19` below it instead of inserting above it. git merges
+  that cleanly — a one-line edit in a file nobody touched concurrently, so no
+  conflict and no signal — and `changelog_armed()` stays green on that exact
+  tree, correctly: `## Unreleased` is still on top and still right for
+  `VERSION`. Verified here rather than assumed: the arming rule was run
+  against a deliberately mangled copy of this repo's real tree and passed,
+  while `changelog_section()` extracted `0.2.0` to zero lines. The damage
+  would have surfaced a whole release later, when `release.yml` refused to
+  publish an empty section it could no longer find by heading.
+
+  `.github/scripts/changelog-monotonic.sh` asserts the complementary
+  invariant: release headings are **append-only**, so the set of `## X.Y.Z`
+  headings on a branch must be a **superset** of the set at its merge base.
+  Its own script, not a clause in the arming check, because "a heading
+  disappeared" is a property of a DIFF, not of a tree — and because the arming
+  rule is driven from `test/release.sh` against constructed `VERSION` +
+  `CHANGELOG.md` pairs that are not git repos and could not express it. The
+  ceremony's stamp passes by construction (it *adds* `X.Y.Z` and removes none;
+  `Unreleased` fails the version shape and is deliberately outside the guarded
+  set), and no reachable base ref is a loud SKIP locally but a hard failure in
+  CI, which sets `CHANGELOG_MONOTONIC_STRICT=1` and now checks out with
+  `fetch-depth: 0` so the guard can never quietly stop guarding.
+
+  It carries box's second half too: containment catches a **deleted** heading
+  but cannot catch a **duplicated** one, since the duplicate is head-side
+  surplus and `comm -23` (base minus head) is blind to extras on the head side
+  — with or without `sort -u`, and multiset comparison does not close it for
+  the same reason. So version headings are also asserted **unique on HEAD**.
+  rig's symptom there is not box's, and the guard says so in its own words:
+  box's extractor re-arms on every matching `## ` line and *absorbs* whatever
+  sits between the copies, while rig's `changelog_section()` has
+  `if (found) exit` and stops dead at the second copy — a duplicate
+  **truncates**, publishing only what sits between the two headings and
+  silently dropping the release's real body underneath. Different symptom,
+  same class: no conflict, no red run, found only by a human reading the
+  published notes.
+
 - **An unreadable check rollup no longer reads as "nothing is failing"** (#90)
   — when `gh pr view` failed, the fallback left the `statusCheckRollup` key
   absent entirely, and `(.statusCheckRollup // [])` collapsed that into the

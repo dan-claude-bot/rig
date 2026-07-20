@@ -190,6 +190,154 @@ check "arming: a bare VERSION whose section was never stamped FAILS" 1 "" armed 
 T="$(armtree headless 0.2.1-dev '# Changelog' '' 'no sections here')"
 check "arming: a changelog with no sections FAILS" 1 "" armed "$T"
 
+# --- the monotonicity rule: was a SHIPPED heading deleted? -------------------
+# #98. Arming asks about ONE heading — does the top section agree with
+# VERSION? — so it is silent about the rest of the file. The failure it cannot
+# see is an entry written under '## Unreleased' that REPLACES the heading
+# below it instead of inserting above it: git merges the one-line edit
+# cleanly, arming stays green (the top section is still right), and the
+# shipped release loses its section entirely. "A heading disappeared" is not a
+# property of a tree, it is a property of a DIFF — so unlike every check
+# above, these cases need real git repos, which is why the guard is its own
+# script rather than a function sourced here.
+MONO="$ROOT/.github/scripts/changelog-monotonic.sh"
+check "changelog-monotonic.sh: exists and is the guard under test" 0 "" test -f "$MONO"
+
+# The stock changelog every case below starts from: an Unreleased section and
+# two shipped releases, committed on branch 'base' — which plays origin/main.
+# The caller then rewrites CHANGELOG.md on 'work' and commits.
+MONO_BASE=('# Changelog' '' '## Unreleased' '' '## 0.2.0 — 2026-07-19' '' \
+  '- **A shipped thing** (#1) — prose.' '' '## 0.1.0 — 2026-07-01' '' \
+  '- **The first thing** (#0) — prose.')
+monorepo() { # monorepo <name> -> prints the dir, left checked out on 'work'
+  local d="$WORK/mono-$1"; mkdir -p "$d"
+  git -C "$d" init -q -b base
+  git -C "$d" config user.email harness@example.invalid
+  git -C "$d" config user.name harness
+  printf '%s\n' "${MONO_BASE[@]}" > "$d/CHANGELOG.md"
+  git -C "$d" add CHANGELOG.md
+  git -C "$d" commit -qm 'base: two shipped releases'
+  git -C "$d" checkout -q -b work
+  printf '%s' "$d"
+}
+monowrite() { # monowrite <dir> <line...> — rewrite CHANGELOG.md and commit
+  local d="$1"; shift
+  printf '%s\n' "$@" > "$d/CHANGELOG.md"
+  git -C "$d" commit -qam 'work: edit the changelog'
+}
+mono() { # mono <dir> [VAR=val ...] — run the guard there, base ref 'base'
+  local d="$1"; shift
+  ( cd "$d" && env "$@" bash "$MONO" base 2>&1 )
+}
+
+# An untouched branch: the head heading-set equals the base's, so containment
+# holds trivially. The green message names the count it checked, because a
+# guard that prints nothing is indistinguishable from one that did nothing.
+T="$(monorepo clean)"
+check "monotonic: an untouched branch passes" 0 "all 2 release heading(s)" mono "$T"
+
+# The legitimate edit this guard must never object to: a new entry INSERTED
+# above the shipped heading, which is left alone.
+T="$(monorepo insert)"
+monowrite "$T" '# Changelog' '' '## Unreleased' '' '### Fixed' '' \
+  '- **A pending thing** (#2) — prose.' '' '## 0.2.0 — 2026-07-19' '' \
+  '- **A shipped thing** (#1) — prose.' '' '## 0.1.0 — 2026-07-01' '' \
+  '- **The first thing** (#0) — prose.'
+check "monotonic: an entry inserted ABOVE the shipped heading passes" 0 "" mono "$T"
+
+# ...and the bug itself: the same entry typed OVER '## 0.2.0'. 0.2.0's body is
+# now under '## Unreleased' and 0.2.0 has no section. RED, naming the version.
+T="$(monorepo deleted)"
+monowrite "$T" '# Changelog' '' '## Unreleased' '' '### Fixed' '' \
+  '- **A pending thing** (#2) — prose.' '' \
+  '- **A shipped thing** (#1) — prose.' '' '## 0.1.0 — 2026-07-01' '' \
+  '- **The first thing** (#0) — prose.'
+check "monotonic: a DELETED shipped heading FAILS (#98)" 1 "DELETES release heading" mono "$T"
+check "monotonic: ...and the failure names the version that vanished" 1 "## 0.2.0" mono "$T"
+
+# Deleting the OLDEST release is the same defect, not a lesser one — the set
+# is a set, position in the file buys no leniency.
+T="$(monorepo deleted-old)"
+monowrite "$T" '# Changelog' '' '## Unreleased' '' '## 0.2.0 — 2026-07-19' '' \
+  '- **A shipped thing** (#1) — prose.'
+check "monotonic: deleting an OLDER release heading fails too" 1 "## 0.1.0" mono "$T"
+
+# The duplicate half. Containment cannot catch this: the second copy is
+# head-side SURPLUS and `comm -23` (base minus head) is blind to extras on the
+# head side, so uniqueness-on-HEAD is a separate assert. rig's symptom is not
+# box's — changelog_section() has `if (found) exit`, so it stops at the second
+# copy and TRUNCATES rather than absorbing.
+T="$(monorepo dupe)"
+monowrite "$T" '# Changelog' '' '## Unreleased' '' '## 0.2.0 — 2026-07-19' '' \
+  '- **A pending thing** (#2) — prose.' '' '## 0.2.0 — 2026-07-19' '' \
+  '- **A shipped thing** (#1) — prose.' '' '## 0.1.0 — 2026-07-01' '' \
+  '- **The first thing** (#0) — prose.'
+check "monotonic: a DUPLICATED version heading FAILS" 1 "DUPLICATE release heading" mono "$T"
+check "monotonic: ...and the failure names the repeated version" 1 "## 0.2.0" mono "$T"
+# ...and that the duplicate really does truncate, so the assert above is
+# guarding a live defect rather than a stylistic preference: extraction stops
+# at the second copy, dropping the body that sits under it.
+check "monotonic: the duplicate TRUNCATES extraction (rig's symptom, not box's)" 0 \
+  "A pending thing" changelog_section "$T/CHANGELOG.md" 0.2.0
+check "monotonic: ...the real body under the second copy is dropped" 1 "" \
+  sect_has "$T/CHANGELOG.md" 0.2.0 "A shipped thing"
+
+# '## Unreleased' is deliberately OUTSIDE the guarded set: it fails the
+# version shape, so the ceremony stamping it away — the one edit that legally
+# removes a top heading — is invisible here. This is the case that would make
+# every release PR unshippable if the set were "all '## ' headings".
+T="$(monorepo stamp)"
+monowrite "$T" '# Changelog' '' '## 0.3.0 — 2026-07-20' '' \
+  '- **A pending thing** (#2) — prose.' '' '## 0.2.0 — 2026-07-19' '' \
+  '- **A shipped thing** (#1) — prose.' '' '## 0.1.0 — 2026-07-01' '' \
+  '- **The first thing** (#0) — prose.'
+check "monotonic: stamping '## Unreleased' into a release passes (not guarded)" 0 "" mono "$T"
+# ...and the ceremony's re-arm — a fresh empty Unreleased above the stamp —
+# is equally fine, which is CONTRIBUTING step 1's tree.
+T="$(monorepo stamp-rearmed)"
+monowrite "$T" '# Changelog' '' '## Unreleased' '' '## 0.3.0 — 2026-07-20' '' \
+  '- **A pending thing** (#2) — prose.' '' '## 0.2.0 — 2026-07-19' '' \
+  '- **A shipped thing** (#1) — prose.' '' '## 0.1.0 — 2026-07-01' '' \
+  '- **The first thing** (#0) — prose.'
+check "monotonic: the re-armed ceremony tree passes too" 0 "" mono "$T"
+
+# The skip path, both halves. A base ref that does not resolve is a sensible
+# local degradation — and a silent one, which is the failure shape this family
+# of checks exists to refuse. So STRICT flips exactly that case red.
+mono_noref() { local d="$1"; shift; ( cd "$d" && env "$@" bash "$MONO" no/such/ref 2>&1 ); }
+T="$(monorepo noref)"
+check "monotonic: an unresolvable base ref SKIPS locally" 0 "SKIPPED" mono_noref "$T"
+check "monotonic: ...and the skip says nothing was checked" 0 "Nothing was checked" mono_noref "$T"
+check "monotonic: ...but is a FAILURE under STRICT=1 (what CI sets)" 1 "STRICT=1" \
+  mono_noref "$T" CHANGELOG_MONOTONIC_STRICT=1
+check "monotonic: ...and the STRICT failure blames the checkout, not the script" 1 \
+  "fetch-depth: 0" mono_noref "$T" CHANGELOG_MONOTONIC_STRICT=1
+
+# A missing changelog is an error on any setting — it is not a degradation,
+# it is a wrong invocation.
+T="$(monorepo nofile)"
+# shellcheck disable=SC2016  # the $-refs are the inner bash -c's, deliberately
+check "monotonic: a missing changelog file is an error, never a skip" 1 "no such file" \
+  bash -c 'cd "$1" && bash "$2" base nope.md 2>&1' _ "$T" "$MONO"
+
+# --- ci.yml: the monotonic step is actually wired (#98) ----------------------
+# The guard runs from ci.yml, not from this suite, so pin the wiring the same
+# way release.yml's is pinned — a script nothing invokes is not a check.
+CIY="$ROOT/.github/workflows/ci.yml"
+check "ci.yml: runs the monotonic guard" 0 "" \
+  grep -q "changelog-monotonic.sh" "$CIY"
+check "ci.yml: ...on pull requests only (on a push to main it is vacuous)" 0 "" \
+  grep -qF "github.event_name == 'pull_request'" "$CIY"
+check "ci.yml: ...with STRICT=1, so a skip is red rather than quietly green" 0 "" \
+  grep -qF "CHANGELOG_MONOTONIC_STRICT: '1'" "$CIY"
+# shellcheck disable=SC2016  # the $-string is a literal in the target file
+check "ci.yml: ...against the PR's base branch" 0 "" \
+  grep -qF 'origin/${{ github.base_ref }}' "$CIY"
+# Without full history the base ref does not resolve, and STRICT turns that
+# into a red run — so the fetch depth is load-bearing, not incidental.
+check "ci.yml: the checkout has full history (the base ref must resolve)" 0 "" \
+  grep -qF "fetch-depth: 0" "$CIY"
+
 # --- release.yml: the pins ---------------------------------------------------
 # The workflow itself runs only on a tag push upstream, so pin its
 # load-bearing pieces the way the harness pins root-only paths (repo
