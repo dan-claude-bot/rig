@@ -441,12 +441,18 @@ check "ci.yml: ...against the PR's base branch" 0 "" \
 # an extractor that matched nothing would turn the negative into a tautology
 # that passes forever, including after someone renames the step and re-adds
 # the gate.
+# Terminates on a new STEP or a new JOB. The job boundary is not optional: the
+# monotonic step is the LAST step of its job, so stopping only at the next
+# `- name:` runs the block into the job below and swallows that job's
+# level `if:` — the same bug this scoping fixed, moved from "any step in the
+# file" to "this step plus the head of the next job" (found on box#144).
 mono_step_block() {
   awk '/^      - name: no shipped changelog heading/ {f=1; print; next}
-       f && /^      - name: / {exit}
+       f && (/^      - / || /^  [^ ]/) {exit}
        f {print}' "$CIY"
 }
-mono_step_gated() { mono_step_block | grep -q 'if:'; }
+# Anchored: an `if:` inside a `run:` line is not a step condition.
+mono_step_gated() { mono_step_block | grep -q '^        if:'; }
 check "ci.yml: the monotonic step itself is NOT pull_request-gated (#98)" 1 "" \
   mono_step_gated
 check "ci.yml: ...and the block was actually found (guards the awk above)" 0 \
