@@ -38,7 +38,7 @@ All scopes share one calm color, `#C5DEF5` — scopes locate, states alert.
 | Label | Covers |
 |---|---|
 | `scope:bootstrap` | `commands/bootstrap.sh` — hardening a pristine server into a node |
-| `scope:users` | `commands/users-*` — the class model, apply/status, close-root |
+| `scope:users` | `commands/users-*` — the root-door model, apply/status, close-root |
 | `scope:runner` | `commands/runner-*` — GitHub runner install/remove/repoint/status |
 | `scope:coolify` | `commands/coolify-*` — Coolify and its backup install |
 | `scope:db` | `commands/db.sh` — dump/restore and the round-trip proof |
@@ -74,7 +74,7 @@ gh label create "stale"                --color B60205 --description "No activity
 gh label create "blocked"              --color 6A737D --description "Waiting on another PR or issue to land first" --force
 gh label create "release"              --color 0E8A16 --description "Release flow and version/packaging work" --force
 gh label create "scope:bootstrap"      --color C5DEF5 --description "bootstrap — hardening a pristine server into a node" --force
-gh label create "scope:users"          --color C5DEF5 --description "users-* — class model, apply/status, close-root" --force
+gh label create "scope:users"          --color C5DEF5 --description "users-* — root-door model, apply/status, close-root" --force
 gh label create "scope:runner"         --color C5DEF5 --description "runner-* — GitHub runner lifecycle" --force
 gh label create "scope:coolify"        --color C5DEF5 --description "coolify-* — Coolify and backup install" --force
 gh label create "scope:db"             --color C5DEF5 --description "db.sh — dump/restore" --force

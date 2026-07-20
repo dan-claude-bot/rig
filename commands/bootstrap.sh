@@ -13,7 +13,7 @@ HERE="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")" && pwd)"
 # The users lib is sourced for validation, never for convergence: `users apply`
 # stays the single owner of what a users file DOES to a box (#51). Bootstrap
 # borrows the parser so a typo'd users file is caught in the same breath as a
-# bad --class — before apt, before the tailnet join, before a pre-auth key is
+# bad --root-door — before apt, before the tailnet join, before a pre-auth key is
 # spent — instead of at the very end of a run the operator already paid for.
 
 log()  { printf 'rig-bootstrap: %s\n' "$*"; }
@@ -25,7 +25,7 @@ usage() {
 usage: rig bootstrap <control-plane-server|workload-server|runner-server|
                       staging-server|dev-server|workstation|custom>
                      (--users <path> | --no-users)
-                     [--hostname <name>] [--class <human|server>]
+                     [--hostname <name>] [--root-door <closed|open>]
                      [--host <yes|no>] [--join <authkey|login>]
        rig bootstrap <claude-box|codex-box|grok-box|staging-box> [--user <name>]
                      (the box TENANT roles — see their own --help; they take
@@ -39,13 +39,16 @@ usage: rig bootstrap <control-plane-server|workload-server|runner-server|
               tailnet and leaves the box with root as its only door.
   --hostname  system + tailnet hostname (default: the role name; custom has
               no default and requires it)
-  --class     who lives here — human|server. Decides root SSH's fate after
-              the users phase: human closes it (`rig users close-root`),
-              server keeps it as the control plane's automation door.
+  --root-door what happens to root SSH after the users phase — closed|open.
+              closed: `rig users close-root` shuts it once named operators can
+              get in. open: it stays, as the control plane's automation door.
+              (Named --class human|server before #77 — same trait, renamed for
+              what it decides rather than for who lives on the box. Markers
+              written by the old flag are still read.)
   --host      does this box host VMs (box/Incus) — yes|no
   --join      how it enters the tailnet — authkey|login
 
-One of --users/--no-users is required on every role, class=server included:
+One of --users/--no-users is required on every role, root-door=open included:
 a box nobody logs into routinely is exactly where shared-root access rots,
 and per-human accounts keep attribution intact for the times someone does go
 in. So the complete path is the default path and skipping it is a deliberate
@@ -61,15 +64,15 @@ operator file has nothing to converge in there.
 Roles are presets over the three traits; any flag overrides its trait.
 custom presets nothing and requires --hostname plus all three traits.
 
-  role                   class   host  join
-  control-plane-server   server  no    authkey
-  workload-server        server  no    authkey
-  runner-server          server  no    authkey
-  staging-server         server  yes   authkey
-  dev-server             human   yes   authkey
-  workstation            human   yes   login
+  role                   root-door  host  join
+  control-plane-server   open       no    authkey
+  workload-server        open       no    authkey
+  runner-server          open       no    authkey
+  staging-server         open       yes   authkey
+  dev-server             closed     yes   authkey
+  workstation            closed     yes   login
 
-THE SUFFIX NAMES THE FAMILY, not the class. '-server' means this role builds a
+THE SUFFIX NAMES THE FAMILY, not the door policy. '-server' means this role builds a
 fleet MACHINE — a tailnet node rig converges; '-box' (the tenant roles) means a
 GUEST a box mints. Two families lived in one flat namespace and nothing in a
 name said which you were asking for; 'staging' made that concrete by naming
@@ -81,11 +84,12 @@ both the metal and the guests on it.
                it joins by interactive login and comes up user-owned and
                untagged, and the tailnet never manages it.
 
-'dev-server' is class=human, and that is not a contradiction: the suffix names
-the family, the CLASS names the root-SSH door policy (operators enter a dev box
-as themselves, so 'users close-root' shuts its door). The two axes share the
-word 'server' and that is a genuine wart — tracked in #77, which renames the
-class trait to what it actually controls.
+'dev-server --root-door closed' says what is true and says it once: the suffix
+names the FAMILY (a fleet machine), the trait names the DOOR (operators enter a
+dev box as themselves, so 'users close-root' shuts its door). Until #77 this
+trait was '--class human|server', which named the wrong axis — who lives on the
+box — and left 'dev-server' reading as a class=human contradiction. Nobody
+lives on a dev box; what makes it different is that its root door closes.
 
 The tailnet tag is NOT a rig argument. A pre-auth key is minted WITH its tags,
 so the key is the single source of truth: rig no longer requests a tag it might
@@ -124,18 +128,18 @@ esac
 # Roles are presets, nothing more: every behavior below keys off the traits,
 # so a flag override changes behavior without a new role, and custom exists
 # for the shape nobody foresaw — it declares nothing and must state all three.
-CLASS="" HOST="" JOIN=""
+ROOT_DOOR="" HOST="" JOIN=""
 case "$ROLE" in
-  control-plane-server) CLASS=server HOST=no  JOIN=authkey ;;
-  workload-server)      CLASS=server HOST=no  JOIN=authkey ;;
-  runner-server)        CLASS=server HOST=no  JOIN=authkey ;;
+  control-plane-server) ROOT_DOOR=open   HOST=no  JOIN=authkey ;;
+  workload-server)      ROOT_DOOR=open   HOST=no  JOIN=authkey ;;
+  runner-server)        ROOT_DOOR=open   HOST=no  JOIN=authkey ;;
   # The unattended VM host — the shape #31 retired when 'staging' moved to the
   # tenant family, restored under a name that cannot be confused with its own
   # guests. host=yes is the whole point: it is what installs the box CLI and
   # runs box's setup-host further down, so this is a table row, not machinery.
-  staging-server)       CLASS=server HOST=yes JOIN=authkey ;;
-  dev-server)           CLASS=human  HOST=yes JOIN=authkey ;;
-  workstation)          CLASS=human  HOST=yes JOIN=login   ;;
+  staging-server)       ROOT_DOOR=open   HOST=yes JOIN=authkey ;;
+  dev-server)           ROOT_DOOR=closed HOST=yes JOIN=authkey ;;
+  workstation)          ROOT_DOOR=closed HOST=yes JOIN=login   ;;
   custom)        ;;
 esac
 
@@ -154,11 +158,11 @@ while [ $# -gt 0 ]; do
     --hostname)
       [ $# -ge 2 ] || die "--hostname needs a value" 2
       TS_HOSTNAME="$2"; shift 2 ;;
-    --class)
-      [ $# -ge 2 ] || die "--class needs a value" 2
+    --root-door)
+      [ $# -ge 2 ] || die "--root-door needs a value" 2
       case "$2" in
-        human|server) CLASS="$2" ;;
-        *) die "bad --class: $2 (want human|server)" 2 ;;
+        closed|open) ROOT_DOOR="$2" ;;
+        *) die "bad --root-door: $2 (want closed|open)" 2 ;;
       esac
       shift 2 ;;
     --host)
@@ -194,7 +198,7 @@ done
 if [ "$ROLE" = "custom" ]; then
   MISSING=""
   [ -n "$TS_HOSTNAME" ] || MISSING="$MISSING --hostname"
-  [ -n "$CLASS" ]       || MISSING="$MISSING --class"
+  [ -n "$ROOT_DOOR" ]   || MISSING="$MISSING --root-door"
   [ -n "$HOST" ]        || MISSING="$MISSING --host"
   [ -n "$JOIN" ]        || MISSING="$MISSING --join"
   [ -z "$MISSING" ] || die "role custom has no presets; missing:$MISSING" 2
@@ -210,10 +214,10 @@ fi
 # --- who lives here (#51) -----------------------------------------------------
 # The users file is the last piece of "what this box is" that bootstrap did not
 # take, and it is REQUIRED rather than optional: a bootstrapped box with no
-# users converges to a box only root can enter, and on class=human that is a
+# users converges to a box only root can enter, and on root-door=closed that is a
 # half-built machine waiting for a second command the operator has to remember
 # (`rig users close-root` is itself gated behind "once your admin key works" —
-# which needs an admin to exist). class=server gets the same requirement on
+# which needs an admin to exist). root-door=open gets the same requirement on
 # purpose: a server nobody logs into routinely is exactly where shared-root
 # access rots, and per-human accounts keep attribution intact for the times
 # someone does go in.
@@ -370,9 +374,9 @@ EOF
 # The whole block lives in lib/sshd.sh, shared with the staging TENANT role —
 # one drop-in, one converger, never two copies drifting apart. Everything the
 # block learned the hard way (00- beats cloud-init's 50- under first-wins,
-# validate-then-restart, assert sshd -T not the file, the class-gated
+# validate-then-restart, assert sshd -T not the file, the root-door-gated
 # permitrootlogin acceptance) moved with it, verbatim.
-harden_sshd "$CLASS"
+harden_sshd "$ROOT_DOOR"
 
 # --- system hostname ----------------------------------------------------------
 # Set the SYSTEM hostname too, not just the tailnet one. Until 2026-07-12 rig
@@ -467,7 +471,7 @@ verify_effective_tag() {
         die "role runner-server joined with tag:server (effective tags: $(printf '%s' "$tags" | tr '\n' ' ')). The key you used grants tag:server to repo-controlled code; that must never happen. Re-run bootstrap with a key minted for a CI tag (e.g. tag:ci)." ;;
       *)
         # This arm owns the VM-host shape too — 'staging-server' by name now,
-        # plus custom/dev-server --class server: a host is never managed by the
+        # plus custom/dev-server --root-door open: a host is never managed by the
         # control plane — its guest VMs are — so tag:server is refused there
         # like everywhere else outside the two control-plane-managed shapes.
         # Mint the metal's key with tag:local.
@@ -592,22 +596,30 @@ fi
 
 # --- role marker --------------------------------------------------------------
 # /etc/rig/role is the traits' ground truth for later rig commands (`rig users`
-# reads class from it to decide root SSH's fate). Written only AFTER the tag
-# verification, so a marker never describes a box that failed to become what it
-# claims — and cmp-guarded like every file rig converges.
+# reads root-door= from it to decide root SSH's fate). Written only AFTER the
+# tag verification, so a marker never describes a box that failed to become what
+# it claims — and cmp-guarded like every file rig converges.
+#
+# The line is written in the CURRENT vocabulary only — `root-door=`, never the
+# `class=` it replaced (#77). Writing both would keep an old rig reading a new
+# marker, but it would also entrench the retired spelling on every box rig ever
+# converges, and make the both-fields-disagree case reachable from rig's own
+# hand instead of only from a text editor. The compat obligation runs the other
+# way and is discharged in root_door_of: NEW rig reads OLD markers, because
+# those exist in the field by the thousand and nothing will rewrite them.
 MARKER=/etc/rig/role
 MARKER_TMP="$(mktemp)"
-printf 'role=%s class=%s host=%s join=%s\n' "$ROLE" "$CLASS" "$HOST" "$JOIN" > "$MARKER_TMP"
+printf 'role=%s root-door=%s host=%s join=%s\n' "$ROLE" "$ROOT_DOOR" "$HOST" "$JOIN" > "$MARKER_TMP"
 if ! cmp -s "$MARKER_TMP" "$MARKER" 2>/dev/null; then
   mkdir -p /etc/rig
   install -m 0644 "$MARKER_TMP" "$MARKER"
-  log "role marker written: role=$ROLE class=$CLASS host=$HOST join=$JOIN"
+  log "role marker written: role=$ROLE root-door=$ROOT_DOOR host=$HOST join=$JOIN"
 else
   log "role marker already current"
 fi
 rm -f "$MARKER_TMP"
 
-# --- box install (host-class only) -------------------------------------------
+# --- box install (host=yes only) -------------------------------------------
 # A host=yes box exists to run guest boxes, so bootstrap finishes the job rather
 # than printing a to-do: it installs the box CLI globally and lets box's OWN
 # setup-host build the Incus stack. Placed AFTER the role marker write on
@@ -695,7 +707,7 @@ fi
 
 # --- users (the last phase, and it must be last) -------------------------------
 # Ordering is a correctness property, not a preference. `users apply` READS
-# /etc/rig/role: class= decides which root-SSH note it prints, and host= decides
+# /etc/rig/role: root-door= decides which root-SSH note it prints, and host= decides
 # what an absent incus group means (refuse on yes, skip the box role with a
 # warning on no). Run before the marker write, apply would see no marker at all
 # and warn "re-run rig bootstrap so this box knows what it is" — in the middle
@@ -731,19 +743,19 @@ if [ "$ROLE" = "control-plane-server" ]; then
 elif [ "$ROLE" = "runner-server" ]; then
   log "next: rig runner install --repo <owner/repo> --version <pin>"
 fi
-# Every class gets operators: humans always enter as themselves and elevate via
-# sudo — a shared root login is unattributable. What differs by class is root
-# SSH's fate once named users exist. With --users the accounts exist already, so
+# Every box gets operators: humans always enter as themselves and elevate via
+# sudo — a shared root login is unattributable. What differs, per the root-door
+# trait, is root SSH's fate once named users exist. With --users the accounts exist already, so
 # the note that used to point at the missing command now points at what is left
 # to do; --no-users still owes the box its people, and says so.
 if [ -n "$USERS_FILE" ]; then
-  if [ "$CLASS" = "human" ]; then
+  if [ "$ROOT_DOOR" = "closed" ]; then
     log "next: 'rig users close-root' once your admin key works — verify you can SSH in as an admin FIRST"
   else
     log "operators are converged; root SSH stays — it is the control plane's automation door"
   fi
 else
-  if [ "$CLASS" = "human" ]; then
+  if [ "$ROOT_DOOR" = "closed" ]; then
     log "--no-users: this box has no named operators — root is its only door. When you want them: rig users apply --file <users-file>, then 'rig users close-root' once your admin key works"
   else
     log "--no-users: this box has no named operators — root SSH is its only door, and it stays (the control plane's automation door). For named logins: rig users apply --file <users-file>"

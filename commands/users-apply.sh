@@ -1,11 +1,11 @@
 #!/usr/bin/env bash
 # rig users apply — converge named operator accounts from a declarative users
-# file, on every class. Humans always enter as themselves and elevate via
+# file, on every box. Humans always enter as themselves and elevate via
 # sudo: a shared root login is unattributable, so operators belong on servers
-# too — class never gates this command, it only decides root SSH's fate AFTER
-# users exist (close-root on human, kept as the control plane's automation
-# door on server). Convergent: a second identical run changes nothing and
-# says so.
+# too — the root-door trait never gates this command, it only decides root
+# SSH's fate AFTER users exist (close-root on root-door=closed, kept as the
+# control plane's automation door on root-door=open). Convergent: a second
+# identical run changes nothing and says so.
 set -euo pipefail
 
 HERE="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")" && pwd)"
@@ -153,13 +153,27 @@ if [ "$NEED_SEED" -eq 1 ]; then
     || die "a user's keys seed from @root but root has no authorized_keys (/root/.ssh/authorized_keys missing or without key lines) — @root's whole point is copying a key you provably hold; list a literal key instead"
 fi
 
-# Class is a note, never a refusal: #26's call is that operators belong on
-# EVERY class — what differs is root SSH's fate once they exist.
-case "$(read_role_marker "${RIG_ROLE_MARKER:-/etc/rig/role}")" in
-  *class=server*) log "class=server: root SSH stays — it is the control plane's automation door" ;;
-  *class=human*)  log "class=human: once your admin key works, 'rig users close-root' shuts the root door" ;;
-  "")             warn "no /etc/rig/role marker — re-run rig bootstrap so this box knows what it is" ;;
-esac
+# The root-door trait is a note here, never a refusal: #26's call is that
+# operators belong on EVERY box — what differs is root SSH's fate once they
+# exist. Resolved through root_door_of so this note and close-root's gate read
+# one marker the same way, pre-#77 class= spellings included (#77): a box whose
+# note says the door will shut must be a box where close-root agrees it shuts.
+APPLY_MARKER="$(read_role_marker "${RIG_ROLE_MARKER:-/etc/rig/role}")"
+if [ -z "$APPLY_MARKER" ]; then
+  warn "no /etc/rig/role marker — re-run rig bootstrap so this box knows what it is"
+else
+  case "$(root_door_of "$APPLY_MARKER")" in
+    open)   log "root-door=open: root SSH stays — it is the control plane's automation door" ;;
+    closed) log "root-door=closed: once your admin key works, 'rig users close-root' shuts the root door" ;;
+    # A marker naming both vocabularies in disagreement, or naming no door
+    # policy at all, is exactly where close-root will refuse. Apply still
+    # converges operators — that is the point of #26 — but it must not stay
+    # quiet about the refusal waiting at the end of the sequence it just
+    # pointed the operator at.
+    conflict) warn "marker names both root-door= and the pre-#77 class= and they disagree ($APPLY_MARKER) — 'rig users close-root' will refuse until you re-run rig bootstrap" ;;
+    *)        warn "marker names no root-door policy ($APPLY_MARKER) — 'rig users close-root' will refuse until you re-run rig bootstrap" ;;
+  esac
+fi
 
 CHANGED=0
 

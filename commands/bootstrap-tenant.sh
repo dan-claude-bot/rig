@@ -20,7 +20,7 @@ HERE="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")" && pwd)"
 # shellcheck source=SCRIPTDIR/lib/tenant-config.sh
 . "$HERE/lib/tenant-config.sh"   # tenant_user / tenant_context_path / render_tenant_context
 # shellcheck source=SCRIPTDIR/lib/users-config.sh
-. "$HERE/lib/users-config.sh"    # read_role_marker
+. "$HERE/lib/users-config.sh"    # read_role_marker / root_door_of
 # shellcheck source=SCRIPTDIR/lib/sshd.sh
 . "$HERE/lib/sshd.sh"            # harden_sshd (the staging-box tenant)
 
@@ -53,7 +53,7 @@ tenant on top, and re-runs converge an existing box to a new spec.
 
 Tenant roles are creds-free and non-interactive by contract — box auto-runs
 them at mint (`box exec … rig bootstrap claude-box`). They take none of the
-machine-role traits (--hostname/--class/--host/--join): a tenant is a guest,
+machine-role traits (--hostname/--root-door/--host/--join): a tenant is a guest,
 not a tailnet machine. Run as root, inside the box.
 EOF
 }
@@ -74,7 +74,7 @@ while [ $# -gt 0 ]; do
     --user)
       [ $# -ge 2 ] || die "--user needs a value" 2
       TENANT_USER="$2"; shift 2 ;;
-    --hostname|--class|--host|--join)
+    --hostname|--root-door|--host|--join)
       # The machine-role traits, refused with a story rather than "unknown
       # flag": a tenant is a guest, not a tailnet machine — its shape comes
       # from the box seed, and the one trait-shaped thing a staging-box guest
@@ -102,28 +102,41 @@ done
 #   - host=yes  → refuse, every tenant: a VM HOST is the opposite of a guest.
 #     Names the staging PAIR out loud, because whoever lands here has the two
 #     halves confused: the metal is `staging-server`, the guest `staging-box`.
-#   - class= (agent tenants) → refuse: an agent box is never a tailnet machine.
-#   - class=server with host=no (staging-box only) → PROCEED, and leave the
+#   - a root-door policy (agent tenants) → refuse: an agent box is never a
+#     tailnet machine.
+#   - root-door=open with host=no (staging-box only) → PROCEED, and leave the
 #     marker alone: that is the guest AFTER its operator-run workload join, and
 #     re-converging docker+hardening on it is exactly what convergence is for.
-#     ONLY that shape — any other class (say class=human, via `custom`) is a
-#     machine rig built on purpose, and staging-box hardening it with server rules
-#     would die with server-specific messaging on a box that was never one.
+#     ONLY that shape — any other door policy (say root-door=closed, via
+#     `custom`) is a machine rig built on purpose, and staging-box hardening it
+#     with open-door rules would die with root-door=open-specific messaging on a
+#     box that was never one.
+#
+# "Names a root-door policy" IS this guard's "is this a machine marker?" test —
+# a tenant marker deliberately carries none — so it must be asked through
+# root_door_of, which reads the pre-#77 `class=` spelling as well as the current
+# `root-door=` one. Pattern-matching the marker for one spelling is what this
+# guard used to do, and after the rename that is a fail-OPEN bug in the
+# dangerous direction: every box bootstrapped in the OTHER vocabulary stops
+# looking like a machine, the refusals below never fire, and a tenant converge
+# clobbers a real fleet box's marker. The resolver is the only reader.
 MARKER_PATH="${RIG_ROLE_MARKER:-/etc/rig/role}"
 EXISTING_MARKER="$(read_role_marker "$MARKER_PATH")"
+EXISTING_ROOT_DOOR="$(root_door_of "$EXISTING_MARKER")"
 case "$EXISTING_MARKER" in
   *host=yes*)
     die "this box hosts VMs (${EXISTING_MARKER}) — a tenant role converges box GUESTS, never the host under them. You want the other half of the pair: the metal is 'rig bootstrap staging-server', and the guests it mints are 'staging-box'." ;;
-  *class=*)
-    if [ "$ROLE" != "staging-box" ]; then
-      die "this box already carries a machine role (${EXISTING_MARKER}) — the agent tenants converge box guests, never tailnet machines. If this really is a guest, remove ${MARKER_PATH} and re-run."
-    fi
-    case "$EXISTING_MARKER" in
-      *class=server*) ;;
-      *)
-        die "this box carries a non-server machine role (${EXISTING_MARKER}) — staging-box tolerates only the workload-joined guest (class=server host=no). If this really is a staging-box guest, remove ${MARKER_PATH} and re-run." ;;
-    esac ;;
 esac
+if [ -n "$EXISTING_ROOT_DOOR" ]; then
+  if [ "$ROLE" != "staging-box" ]; then
+    die "this box already carries a machine role (${EXISTING_MARKER}) — the agent tenants converge box guests, never tailnet machines. If this really is a guest, remove ${MARKER_PATH} and re-run."
+  fi
+  # A `conflict` marker lands here too, and refuses: a box whose two door
+  # claims disagree is emphatically not the one shape staging-box tolerates.
+  if [ "$EXISTING_ROOT_DOOR" != "open" ]; then
+    die "this box carries a machine role whose root door is not open (${EXISTING_MARKER}) — staging-box tolerates only the workload-joined guest (root-door=open host=no, or its pre-#77 spelling class=server). If this really is a staging-box guest, remove ${MARKER_PATH} and re-run."
+  fi
+fi
 
 [ "$(id -u)" -eq 0 ] || die "must run as root"
 if [ -r /etc/os-release ]; then
@@ -357,20 +370,27 @@ fi
 # box#69's posture, minus the join: docker (above) + sshd hardening, through
 # the SAME code the machine roles use (lib/sshd.sh) — the staging-box guest is a
 # workload server in waiting, and its door must never be password-open even
-# before the operator joins it. class=server: root SSH stays the control
+# before the operator joins it. root-door=open: root SSH stays the control
 # plane's future automation door.
 if [ "$ROLE" = "staging-box" ]; then
-  harden_sshd server
+  harden_sshd open
 fi
 
 # --- role marker --------------------------------------------------------------
-# Same ground truth the machine roles write, tenant-shaped: no class= (a tenant
-# has no root-door policy of its own — close-root fails closed on it), and
-# host=no so `rig users apply` box-role gating keeps working. staging-box SKIPS the
-# write when a machine marker is already present: after the operator-run
-# workload join, the workload marker is the truer statement and rig never
-# clobbers state a joined box earned.
-if [ -z "$EXISTING_MARKER" ] || [ "${EXISTING_MARKER#*class=}" = "$EXISTING_MARKER" ]; then
+# Same ground truth the machine roles write, tenant-shaped: no root-door trait
+# at all (a tenant has no root-door policy of its own — close-root fails closed
+# on it), and host=no so `rig users apply` box-role gating keeps working.
+# staging-box SKIPS the write when a machine marker is already present: after
+# the operator-run workload join, the workload marker is the truer statement and
+# rig never clobbers state a joined box earned.
+#
+# "Is a machine marker already here?" is the same question the guard above
+# asks, and is asked the same way — through root_door_of, so both the current
+# `root-door=` spelling and the pre-#77 `class=` one count (#77). Testing for
+# one spelling would let this write CLOBBER a marker written in the other, which
+# on a joined workload box means silently replacing its root-door policy with a
+# tenant line that close-root then refuses on.
+if [ -z "$EXISTING_ROOT_DOOR" ]; then
   MARKER_TMP="$(mktemp)"
   printf 'role=%s tenant=yes host=no\n' "$ROLE" > "$MARKER_TMP"
   if ! cmp -s "$MARKER_TMP" "$MARKER_PATH" 2>/dev/null; then

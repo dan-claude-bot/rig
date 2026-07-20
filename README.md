@@ -104,7 +104,7 @@ rig bootstrap workload-server --hostname my-prod-box --users ./users
 rig bootstrap runner-server --hostname my-ci-box --users ./users
 rig bootstrap dev-server --hostname my-dev-box --users ./users
 rig bootstrap workstation --hostname my-laptop --users ./users
-rig bootstrap custom --hostname my-vm-host --class server --host yes --join authkey --users ./users
+rig bootstrap custom --hostname my-vm-host --root-door open --host yes --join authkey --users ./users
 ```
 
 - `--users <path>` / `--no-users` — **required**, one or the other: the users
@@ -112,17 +112,19 @@ rig bootstrap custom --hostname my-vm-host --class server --host yes --join auth
   (see *One command, box ready* below)
 - `--hostname <name>` — system + tailnet hostname (default: the role name;
   `custom` has no default and requires it)
-- `--class <human|server>` — who lives here; decides root SSH's fate after
-  the users phase (see *The identity model* below)
+- `--root-door <closed|open>` — what happens to root SSH after the users
+  phase: `closed` means `rig users close-root` shuts it once named operators
+  can get in, `open` means it stays as the control plane's automation door
+  (see *The identity model* below)
 - `--host <yes|no>` — does this box host VMs (box/Incus)
 - `--join <authkey|login>` — how it enters the tailnet
 
 #### One command, box ready — `--users` is required
 
-`rig bootstrap` already knows everything else about what a box *is* — class,
-host, join, hostname — and writes `/etc/rig/role` to say so. The users file
-was the last piece of that answer it did not take, so bring-up was two
-commands and the second one was easy to forget. Now it takes it, and
+`rig bootstrap` already knows everything else about what a box *is* — the
+root-door policy, host, join, hostname — and writes `/etc/rig/role` to say so.
+The users file was the last piece of that answer it did not take, so bring-up
+was two commands and the second one was easy to forget. Now it takes it, and
 **requires** it:
 
 ```sh
@@ -133,16 +135,16 @@ rig bootstrap dev-server --hostname my-dev-box --no-users        # deliberately 
 `--users <path>` runs exactly what `rig users apply --file <path>` runs, as
 bootstrap's **final phase** — after the traits are set, after the tailnet
 join is verified, and after `/etc/rig/role` is written, because apply *reads*
-that marker (`class=` picks its root-SSH note, `host=` decides what a missing
+that marker (`root-door=` picks its root-SSH note, `host=` decides what a missing
 `incus` group means). On a `host=yes` box it also lands after the `box`
 install, so box-role users find the `incus` group box's `setup-host` built.
 The file is passed per invocation and **never persisted** — bootstrap reads
 it through apply and keeps nothing; `--users -` is refused, because
 bootstrap's stdin belongs to the pre-auth key prompt.
 
-Required on **every** role, `class=server` included. A bootstrapped box with
-no users converges to a box only root can enter — on `class=human` a
-half-built machine, and on `class=server` something worse than half-built: a
+Required on **every** role, `root-door=open` included. A bootstrapped box with
+no users converges to a box only root can enter — on `root-door=closed` a
+half-built machine, and on `root-door=open` something worse than half-built: a
 machine nobody logs into routinely is exactly where shared-root access rots,
 and per-human accounts keep attribution intact for the times someone does go
 in. So the complete path is the default path, and skipping it is a deliberate
@@ -151,7 +153,7 @@ Omitting both is a usage error naming both flags; passing both is a usage
 error too — rig will not silently pick a winner.
 
 A bad users file is caught **up front**, in the same breath as a bad
-`--class`: bootstrap pre-flights it with the same parser apply uses, before
+`--root-door`: bootstrap pre-flights it with the same parser apply uses, before
 `apt`, before the hostname change, and before a single-use pre-auth key is
 spent. A file that names **no users** is refused there too — empty,
 comments-only and whitespace-only files all parse fine, but bootstrapping
@@ -184,20 +186,20 @@ presets nothing and requires `--hostname` plus all three traits.
 
 | trait   | values             | what it drives |
 |---------|--------------------|----------------|
-| `class` | `human`, `server`  | root SSH's fate once operators exist — human closes it, server keeps it as the control plane's automation door |
+| `root-door` | `closed`, `open` | root SSH's fate once operators exist — `closed` shuts it via `rig users close-root`, `open` keeps it as the control plane's automation door |
 | `host`  | `yes`, `no`        | whether the box exists to run VMs — the `/dev/kvm` advisory and, on `yes`, installing the `box` CLI + running box's `setup-host` |
 | `join`  | `authkey`, `login` | tagged pre-auth key (fleet identity) vs interactive browser login (user-owned device) |
 
-| role                   | class  | host | join    | tailnet tag |
-|------------------------|--------|------|---------|-------------|
-| `control-plane-server` | server | no   | authkey | `tag:server` |
-| `workload-server`      | server | no   | authkey | `tag:server` |
-| `runner-server`        | server | no   | authkey | `tag:ci` — refuses `tag:server` |
-| `staging-server`       | server | yes  | authkey | `tag:local` — refuses `tag:server` |
-| `dev-server`           | human  | yes  | authkey | `tag:local` — refuses `tag:server` |
-| `workstation`          | human  | yes  | login   | untagged — any tag refused |
+| role                   | root-door | host | join    | tailnet tag |
+|------------------------|-----------|------|---------|-------------|
+| `control-plane-server` | open      | no   | authkey | `tag:server` |
+| `workload-server`      | open      | no   | authkey | `tag:server` |
+| `runner-server`        | open      | no   | authkey | `tag:ci` — refuses `tag:server` |
+| `staging-server`       | open      | yes  | authkey | `tag:local` — refuses `tag:server` |
+| `dev-server`           | closed    | yes  | authkey | `tag:local` — refuses `tag:server` |
+| `workstation`          | closed    | yes  | login   | untagged — any tag refused |
 
-> **The suffix names the family, not the class** (#76). rig builds two kinds
+> **The suffix names the family, not the door policy** (#76). rig builds two kinds
 > of thing on opposite sides of a trust boundary — tailnet **machines** it
 > converges, and **guests** a box mints — and for a while nothing in a role
 > name said which you were asking for. `staging` made that concrete: the word
@@ -213,13 +215,16 @@ presets nothing and requires `--hostname` plus all three traits.
 > joins by interactive login, comes up user-owned and untagged, and the
 > tailnet never manages it.
 >
-> **`dev-server` is `class=human`, and that is not a contradiction** — though
-> it is a wart. The suffix names the *family*; the class names the *root-SSH
-> door policy*, and operators enter a dev box as themselves, so `close-root`
-> shuts its door. Two orthogonal axes that happen to share the word "server".
-> [#77](https://github.com/heavy-duty/rig/issues/77) renames the class trait
-> to what it actually controls, which is the real fix; it touches markers on
-> live machines, so it is deliberately not folded in here.
+> **`dev-server --root-door closed` says what is true, and says it once**
+> (#77). The suffix names the *family* — a fleet machine — and the trait names
+> the *door*: operators enter a dev box as themselves, so `close-root` shuts
+> its door. Until #77 this trait was `--class human|server`, which named the
+> wrong axis (who lives on the box) and made `dev-server` read as a
+> `class=human` contradiction: one word, "server", doing duty on two unrelated
+> questions. Nobody *lives* on a dev box; what distinguishes it is that its
+> root door closes. Markers written before the rename still say
+> `class=human|server` and are still read — see *The root-door trait was
+> renamed* below.
 >
 > **This was a hard cut — no aliases.** Old role names stop working, and a
 > box bootstrapped under one is re-bootstrapped rather than migrated. Two
@@ -236,9 +241,9 @@ the only shapes it manages — every other role refuses an effective
 `tag:server` after join, one rule instead of per-role exceptions.
 
 After the tag verification passes, bootstrap writes `/etc/rig/role` — one
-line, `role=… class=… host=… join=…` — recording the **effective** traits,
+line, `role=… root-door=… host=… join=…` — recording the **effective** traits,
 overrides and all, so an overridden role never lies to the commands that read
-the marker later (`rig users` keys root policy off `class=`). Written
+the marker later (`rig users` keys root policy off `root-door=`). Written
 post-join and cmp-guarded, so a marker never describes a box that failed to
 become what it claims.
 
@@ -330,14 +335,14 @@ hard, post-join error.
 The VM-host shape — the box that *hosts* staging boxes: Incus VMs minted by
 the [`box`](https://github.com/heavy-duty/box) CLI, each converged from inside
 with the tenant roles and (for staging guests) `rig bootstrap workload-server` —
-is the `staging-server` role (`--class server --host yes --join authkey`; see
-the note above). It is `class=server`: an unattended VM appliance — operators
+is the `staging-server` role (`--root-door open --host yes --join authkey`; see
+the note above). It is `root-door=open`: an unattended VM appliance — operators
 converge it and leave; nobody lives there. Mint its key with `tag:local`: the
 host and its guests sit on opposite sides of a trust boundary, and the *host*
 is never managed by the control plane — so an effective **`tag:server` is
 refused**, same mechanism as `runner-server`.
 
-On a host-class box (`host=yes`), bootstrap finishes the job instead of leaving
+On a VM-hosting box (`host=yes`), bootstrap finishes the job instead of leaving
 a to-do: after the role marker is written it **installs the `box` CLI globally
 and runs box's own `setup-host`**, so the Incus stack is ready for
 `box new` when bootstrap returns. rig **delegates to box; it
@@ -368,11 +373,11 @@ merges box's root install lands in `/root`.)
 > fork); `RIG_SKIP_BOX_INSTALL=1` opts out entirely for a host whose box you
 > manage by hand.
 
-`dev-server` is the human-class VM-hosting shape — `tag:local`, box CLI installed as
-above, a person living on it (`--class server` turns it into the unattended
-VM-host appliance) — and `workstation` is the machine at the keyboard end of
-all the SSH connections: human-class, `join=login`, entering the tailnet as
-*your* device rather than the fleet's.
+`dev-server` is the closed-door VM-hosting shape — `tag:local`, box CLI installed as
+above, operators entering as themselves (`--root-door open` turns it into the
+unattended VM-host appliance) — and `workstation` is the machine at the keyboard
+end of all the SSH connections: `root-door=closed`, `join=login`, entering the
+tailnet as *your* device rather than the fleet's.
 
 ### `rig bootstrap <claude-box|codex-box|grok-box|staging-box>` — the box tenants
 
@@ -403,7 +408,7 @@ holds the whole per-tenant table), not four hand-maintained scripts:
 | `claude-box`  | `claude` | the agent toolbelt (git, gh, tmux, ripgrep, jq, age, unzip, build-essential), docker, node 22, the Claude Code CLI on the system PATH, zsh + oh-my-zsh, and `~/.claude/CLAUDE.md` |
 | `codex-box`   | `codex`  | the toolbelt, docker, node 22, `@openai/codex` on the system PATH, and `~/.codex/AGENTS.md` |
 | `grok-box`    | `grok`   | the toolbelt, docker, the grok CLI on the system PATH, and `~/.grok/AGENTS.md` |
-| `staging-box` | `ops`    | box#69's server posture: docker + the same sshd hardening the machine roles get (shared `lib/sshd.sh`, `class=server` acceptance) |
+| `staging-box` | `ops`    | box#69's server posture: docker + the same sshd hardening the machine roles get (shared `lib/sshd.sh`, `root-door=open` acceptance) |
 
 **The role carries the suffix; the user does not.** A tenant user is the
 account the box *seed* created (`BOX_USER`) and the agent CLI's own dotdir
@@ -441,7 +446,7 @@ silently breaks its networking (box#80). The note lives in
 the point of moving it here.
 
 **Tenants and the role marker.** A tenant run writes `role=<tenant> tenant=yes
-host=no` — no `class=`, because a guest has no root-door policy of its own
+host=no` — no `root-door=`, because a guest has no root-door policy of its own
 (`rig users close-root` fails closed on it, by design). The guard runs the
 other way too: a box already carrying a **machine** role refuses the agent
 tenants outright, and *any* tenant refuses a `host=yes` box — a VM host is
@@ -455,61 +460,106 @@ command is exactly who that refusal catches (it names the new spelling).
 > dev channel. Until rig cuts 0.1.0 there is no release to resolve, so the
 > seed must set `RIG_REF=main` explicitly (the default channel fails loudly
 > rather than falling back). That inverts the install edge on this page:
-> rig installs box on host-class machines, and box guests now install rig.
+> rig installs box on VM-hosting machines, and box guests now install rig.
 > `RIG_REPO`/`RIG_REF` are the pin points, or point them at a frozen branch
 > of your own fork. The seed side of this edge is box#81's to document.
 
 ### The identity model
 
-**Named operators exist on every class, and humans never enter as root.** The
+**Named operators exist on every box, and humans never enter as root.** The
 tailnet is network-only — no Tailscale SSH — so there is no identity broker at
 the door: whoever holds a key to an account *is* that account, and a shared
 root login is unattributable by construction. `rig users apply` puts named
-operators on every box, server-class included; a human always enters as
+operators on every box, `root-door=open` included; a human always enters as
 themself and elevates via sudo.
 
 Per role, the whole identity picture at a glance — issue #25's class
-comparison, translated onto the traits that replaced the class binary:
+comparison, translated onto the traits that replaced the class binary. Note
+that "who lives here" and the root-door trait are **different columns**: that
+they were ever one word is exactly what #77 fixed.
 
-| role                   | class  | host | join    | who lives here                       | root SSH after `rig users apply` |
-|------------------------|--------|------|---------|--------------------------------------|----------------------------------|
-| `control-plane-server` | server | no   | authkey | nobody — Coolify runs here           | open — the automation door       |
-| `workload-server`      | server | no   | authkey | nobody — deployed services run here  | open — the automation door       |
-| `runner-server`        | server | no   | authkey | nobody — CI jobs as `github-runner`  | open — the automation door       |
-| `staging-server`       | server | yes  | authkey | nobody — it mints and hosts guests   | open — the automation door       |
-| `dev-server`           | human  | yes  | authkey | operators, minting boxes             | closed by `rig users close-root` |
-| `workstation`          | human  | yes  | login   | its owner                            | closed by `rig users close-root` |
+| role                   | root-door | host | join    | who lives here                       | root SSH after `rig users apply` |
+|------------------------|-----------|------|---------|--------------------------------------|----------------------------------|
+| `control-plane-server` | open      | no   | authkey | nobody — Coolify runs here           | open — the automation door       |
+| `workload-server`      | open      | no   | authkey | nobody — deployed services run here  | open — the automation door       |
+| `runner-server`        | open      | no   | authkey | nobody — CI jobs as `github-runner`  | open — the automation door       |
+| `staging-server`       | open      | yes  | authkey | nobody — it mints and hosts guests   | open — the automation door       |
+| `dev-server`           | closed    | yes  | authkey | operators, minting boxes             | closed by `rig users close-root` |
+| `workstation`          | closed    | yes  | login   | its owner                            | closed by `rig users close-root` |
 
 (`staging-server` is that unattended VM-host appliance, and the row above is
 the whole of it: nobody lives there, root SSH stays open as the automation
 door. The box TENANT roles sit outside this table on
-purpose: a guest is not a tailnet machine, and its marker carries no `class=`,
+purpose: a guest is not a tailnet machine, and its marker carries no `root-door=`,
 so `rig users close-root` fails closed on it.)
 
 Who installs what, and who runs as what: **bootstrap is always root** and
 installs everything a role needs — on `host=yes` that includes the box CLI
 (globally) and box's own `setup-host`. **Humans always run as themselves**:
-operators land via `rig users apply` on every class and elevate through sudo
+operators land via `rig users apply` on every box and elevate through sudo
 (roles `admin`/`rig`) or the `incus` group (role `box`) — never by logging in
 as root. **Machine identities stay machine-shaped**: Coolify's automation
-SSHes in as root (that is what server-class root *is*), CI jobs run as the
-unprivileged `github-runner`, and guest VMs are their own server-class boxes,
+SSHes in as root (that is what `root-door=open` root *is*), CI jobs run as the
+unprivileged `github-runner`, and guest VMs are their own open-door boxes,
 converged from inside by `rig bootstrap workload-server`.
 
-**`class` decides root SSH's fate — after `rig users apply`, never before.**
-On `class=human`, root SSH closes entirely (`rig users close-root`, below).
-On `class=server` it stays open — key-only, as bootstrap left it — because
+**`root-door` decides root SSH's fate — after `rig users apply`, never before.**
+On `root-door=closed`, root SSH closes entirely (`rig users close-root`, below).
+On `root-door=open` it stays open — key-only, as bootstrap left it — because
 root there is the **automation** identity the control plane (Coolify) SSHes
 in as. It is a machine door, never a human one.
 
+#### The root-door trait was renamed, and old markers still resolve
+
+This trait was `--class human|server` until
+[#77](https://github.com/heavy-duty/rig/issues/77). `class` named who *lived
+on* the box; what it actually decides is whether root SSH stays open as the
+control plane's automation door. Those are different questions, and the roles
+proved it: `dev-server` is an unattended VM-host appliance — nobody lives
+there — yet it was `class=human`, correctly, because operators enter it as
+themselves and its root door must close. After #76 gave `-server` a second
+job (naming the machine *family*), `dev-server` carried a suffix saying server
+and a trait saying human, and nothing in the name said which axis was which.
+`--root-door closed|open` names the axis rig actually branches on.
+
+**This is not a cosmetic rename, and it is not a hard cut.** Unlike role
+names — which nothing reads back — this trait is written into `/etc/rig/role`
+and read *from* there on live machines, where it gates `rig users close-root`.
+Every box bootstrapped before #77 carries `class=human` or `class=server` and
+carries it **forever**, until someone re-bootstraps it; nothing migrates a
+fleet. So rig **reads both spellings, permanently**:
+
+| marker says | resolves to | means |
+|---|---|---|
+| `root-door=closed` | closed | the current spelling |
+| `root-door=open` | open | the current spelling |
+| `class=human` | closed | pre-#77, still honored |
+| `class=server` | open | pre-#77, still honored |
+| both, agreeing | that value | one claim said twice |
+| both, **disagreeing** | refusal | rig will not pick a winner — re-run bootstrap |
+| neither | refusal | no door policy to act on — re-run bootstrap |
+
+New markers are written in the **new vocabulary only**. Writing both would
+keep an old rig reading a new marker, but it would also entrench the retired
+spelling on every box rig ever converges and make the disagreement row
+reachable from rig's own hand rather than only from a text editor. The compat
+obligation runs the other way: new rig reads old markers, because those exist
+in the field and nothing will rewrite them.
+
+The two refusal rows are **fail-closed** on purpose. A marker that names no
+door policy, or names two that disagree, leaves rig unable to say whether root
+here is a human's bad habit or the fleet's management plane — and the safe
+error is a door that stays open and a loud instruction to re-run bootstrap,
+never a door welded shut on a machine whose only entrance it was.
+
 **Where this diverges from #17's original table:** that table let the
-`runner-server` role close root ("no Coolify involved"). The class model supersedes
-the per-role call: runner is `class=server` — an automation identity, not a
-person's box — and on every server-class machine root SSH is the management
+`runner-server` role close root ("no Coolify involved"). The trait model supersedes
+the per-role call: runner is `root-door=open` — an automation identity, not a
+person's box — and on every open-door machine root SSH is the management
 plane rig itself converges through, so `close-root` refuses there
 deliberately, runner included. A CI box you mean to administer like a human
-machine is `--class human` at bootstrap, not an exception carved out of the
-gate.
+machine is `--root-door closed` at bootstrap, not an exception carved out of
+the gate.
 
 **The detection side benefit:** once humans never use root, any root login
 that is not the control plane is anomalous *by definition* — a cheap,
@@ -803,7 +853,7 @@ and never asks for a token.
 ### `rig users apply --file <path>`
 
 Converges named operator accounts from a declarative users file — on **every**
-class (see *The identity model*). Run as root. Convergent: a second identical
+box, whatever its root-door policy (see *The identity model*). Run as root. Convergent: a second identical
 run says "already converged; no changes".
 
 This is also what `rig bootstrap --users <path>` runs as its last phase, so on
@@ -822,7 +872,7 @@ of the line). The format is bash-parseable on purpose: a rig box has no YAML
 parser and no jq, and gets neither for this. Repeated username lines add
 authorized keys, and the roles must be identical on each — a repeated line
 always means "another key", never a quiet role edit hiding mid-file. `root` is
-refused as a username: this file names operators; root's fate is class policy.
+refused as a username: this file names operators; root's fate is root-door policy.
 `--file -` reads stdin. A bad file exits 2 with **every** error listed at
 once, before anything changes — one fix cycle, not one round-trip per line.
 
@@ -838,7 +888,7 @@ the admin returns until you switch the line to literal keys — and apply dies
 if root has no `authorized_keys` to seed. Root's key lines are copied
 verbatim, options included: a `from=`/`command=` restriction follows the key,
 and on a Coolify-managed box root's file also carries *Coolify's* key — on
-`class=server`, prefer literal keys.
+`root-door=open`, prefer literal keys.
 
 **Public tool, private state, here too.** The users file lives in *your*
 private infra repo and is passed per invocation — rig never persists it. It
@@ -955,12 +1005,15 @@ network, no writes. Run as root (shadow is read).
 rig users close-root
 ```
 
-Shuts the root SSH door — `class=human` boxes only, and only once a named
+Shuts the root SSH door — `root-door=closed` boxes only, and only once a named
 admin can already get in. The gates run in order: the `/etc/rig/role` marker
-must say `class=human` — an absent marker refuses (never shut the root door
-blind; re-run bootstrap so the box knows what it is), and `class=server`
+must resolve to `closed` — an absent marker refuses (never shut the root door
+blind; re-run bootstrap so the box knows what it is), and `root-door=open`
 refuses with no `--force`, because root there is the control plane's
-automation identity and closing it severs fleet management. Then at least one
+automation identity and closing it severs fleet management. A marker written
+before #77 says `class=human|server` and resolves to `closed|open`
+respectively, so a box bootstrapped before the rename gates exactly as it
+always did. Then at least one
 `rig-admin` member must hold a login sshd would plausibly **accept** — a
 non-empty `authorized_keys` alone proves a file, not a door: the gate checks
 the `StrictModes` shape (home, `.ssh`, and `authorized_keys` owned by the
@@ -1001,7 +1054,7 @@ admin login must be proven, not presumed.
 Convergent — once root is closed, a re-run says "root already closed; nothing
 to do" and exits 0.
 
-> **On `class=server`, root stays — so lock its key instead.** This is README
+> **On `root-door=open`, root stays — so lock its key instead.** This is README
 > guidance, deliberately not automation: prefix Coolify's line in root's
 > `authorized_keys` with a `from="<control-plane-addr>"` clause, so the
 > automation identity only opens from the one address supposed to use it. rig
