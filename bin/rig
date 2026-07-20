@@ -33,13 +33,14 @@ commands:
       tenant roles); custom and workstation take none. join=login
       (workstation) needs no key: interactive login, node must come up
       untagged. Run as root.
-  bootstrap <claude|codex|grok|staging> [--user <name>]
-      The box TENANT roles: converge a box-minted guest. claude|codex|grok
-      land the agent toolbelt (git, gh, tmux, docker), the agent's CLI on
+  bootstrap <claude-box|codex-box|grok-box|staging-box> [--user <name>]
+      The box TENANT roles: converge a box-minted guest. The '-box' suffix
+      names the family (a guest, vs the '-server' machine roles above).
+      claude-box|codex-box|grok-box land the agent toolbelt (git, gh, tmux, docker), the agent's CLI on
       the system PATH, and the agent-context file (with the box#80 guard:
-      never run box setup-host inside a box). staging lands box#69's server
-      posture — docker + sshd hardening; its tailnet join stays operator-run
-      via 'rig bootstrap workload-server'. Creds-free and non-interactive: box
+      never run box setup-host inside a box). staging-box lands box#69's
+      server posture — docker + sshd hardening; its tailnet join stays
+      operator-run via 'rig bootstrap workload-server'. Creds-free and non-interactive: box
       auto-runs these at mint. Run as root, inside the box.
   coolify install --version <pin>
       Pinned Coolify install (AUTOUPDATE=false). Control-plane box only.

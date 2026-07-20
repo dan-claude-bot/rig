@@ -8,6 +8,29 @@ on the way to cutting its first release, and this file starts there.
 
 ### Changed
 
+- **BREAKING: the box tenant roles carry a `-box` suffix** (#76) — the other
+  half of the rename below. `claude` → `claude-box`, `codex` → `codex-box`,
+  `grok` → `grok-box`, `staging` → `staging-box`, so a role name always says
+  which family it belongs to: `-server` builds a fleet machine, `-box`
+  converges a guest a box minted.
+
+  **The role carries the suffix; nothing inside the guest does.** A tenant user
+  is the account the box *seed* created (`BOX_USER`) and each agent CLI reads
+  its own dotdir, so `claude-box` still converges the `claude` user and still
+  writes `~/.claude/CLAUDE.md`. The suffix is rig's word for "this is a guest",
+  not a rename of anything the guest contains — no path, no account, and no CLI
+  binary moved.
+
+  **Migration: hard cut, no aliases**, same as the machine roles. The old names
+  are refused as unknown tenant roles at both entrypoints — `rig bootstrap
+  <name>` and the tenant script directly — and the suite asserts each one at
+  both, because an alias left in for a single tenant is exactly the shape that
+  survives review: the taxonomy reads complete while one old name still quietly
+  converges. The practical consequence is cross-repo: a box seed carrying
+  `BOX_BOOTSTRAP_ROLE="claude"` now fails its own mint-time bootstrap, so
+  heavy-duty/box#125 (closing heavy-duty/box#123) updates the seeds and must
+  land after this.
+
 - **BREAKING: machine roles carry a `-server` suffix, and the VM host gets its
   name back** (#76) — rig builds two kinds of thing that sit on opposite sides
   of a trust boundary: tailnet **machines** it converges, and **guests** a box
