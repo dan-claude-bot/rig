@@ -817,6 +817,30 @@ check "runner remove: headless token prompt refuses loudly" 0 "" \
 # so a bare `read -rsp` (no `||` on its line) must not exist anywhere.
 check "prompts: no bare read -rsp remains" 1 "" \
   grep -RE 'read -rsp[^|]*$' "$ROOT/commands/"
+# ...and the same sweep, widened on the two axes #68 escaped through (#75).
+# That check reads `-rsp` literally and scans commands/ only; #68 was a plain
+# `read -r reply` in bin/rig, so it missed on the spelling AND on the path.
+# The class is the shape, not the flags: any `read` run as a PLAIN STATEMENT
+# under `set -euo pipefail` kills the shell at EOF, before the `case` that
+# would have printed the abort — silently, with exit 1, indistinguishable
+# from a normal refusal.
+#
+# So: match `read` at the start of a statement (leading whitespace only),
+# whatever its flags or arity, then subtract the two shapes that are safe by
+# construction:
+#   `||`  — the guard itself (`|| die`, `|| reply=""`, `|| { echo; die … }`).
+#           An errexit-exempt read, which is the whole cure.
+#   `<<<` — a here-string always supplies a terminating newline, so the read
+#           cannot return non-zero. lib/users-config.sh:50/:78 are these.
+# `while`/`until`/`if` heads need no subtraction: the anchor already excludes
+# them, since `read` is not the first word on those lines. Keep the guard on
+# the read's own line — a `\`-continued `||` reads as unguarded here, by
+# design, because it is not visible at the point of failure.
+unguarded_read() {
+  grep -REn '^[[:space:]]*read[[:space:]]' "$ROOT/bin/" "$ROOT/commands/" \
+    | grep -Ev '\|\||<<<'
+}
+check "prompts: no unguarded plain-statement read remains (#75)" 1 "" unguarded_read
 
 # --- runner install: --repo must agree with what the box is already on -------
 # The bug: `install --repo B` on a box registered to repo A skipped configure,
