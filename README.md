@@ -719,6 +719,102 @@ default, dumps it, restores into a second container whose superuser differs, and
 asserts the rows and an ordered checksum survived — the same proof, done against
 throwaway containers on every push.
 
+### `rig platform`
+
+```sh
+rig platform
+```
+
+What is this machine — computed at run time, **stored nowhere**:
+
+```
+PLATFORM
+HOSTNAME   hetzner-cp-1
+OS         Debian GNU/Linux 13 (trixie)
+KERNEL     6.12.95+deb13-amd64 (x86_64)
+CPU        AMD Ryzen 7 3700X 8-Core Processor (16 cores)
+MEMORY     31Gi total, 24Gi available
+DISK       456Gi total, 201Gi free on /
+VIRT       kvm
+
+PROVENANCE
+CONVERGED  0.6.0, 2026-08-02T09:11:03Z
+BOOTSTRAP  0.4.0, 2026-07-19T14:24:51Z
+ROLE       dev-server (root-door=closed host=yes join=authkey)
+```
+
+"Is this the 32GB one, or the M900?" was previously a question you answered by
+logging in and running `free -h`, `nproc`, `df -h` and `uname -r` by hand —
+four commands deep, on a machine you were already unsure about.
+
+**Why this computes instead of storing.** It would be easy to write the specs
+into a file at bootstrap. That is the wrong shape: specs change without rig
+doing anything — someone adds RAM, resizes the root disk, or the
+unattended-upgrades that bootstrap itself enables patches the kernel. A stored
+spec is stale the moment the machine changes, and refreshing it on every run
+would collide with bootstrap's contract that a second run changes nothing.
+Computing at run time removes the problem instead of managing it: the answer
+is correct by construction because there is nothing to go stale.
+
+The corollary is deliberate: **`rig platform` works on a machine rig has never
+converged.** It reads only `/proc`, `uname`, `/etc/os-release`, `df` and
+`systemd-detect-virt`, so it runs on bare Debian before bootstrap — useful for
+deciding *what to converge this into*, not just for auditing afterwards. It
+needs no root, makes no network call, and writes nothing, ever.
+
+The `PROVENANCE` block is the complementary half — which rig, and when, which
+is *decided* rather than observed, so it is stored. It is **read, never
+written**: `CONVERGED`/`BOOTSTRAP` come from `/etc/rig/manifest` and `ROLE`
+from `/etc/rig/role`. Neither file is required — a machine missing one reads
+`not bootstrapped` for that line, which is itself the useful answer. The
+manifest is #61 and is not implemented yet, so today those lines read `not
+bootstrapped` on every machine; nothing else in the command depends on it.
+
+**The two dates are deliberately separate**, matching #61's schema: `BOOTSTRAP`
+is birth (`bootstrapped_by`/`bootstrapped_at`, first-write-wins, pinned
+forever) and `CONVERGED` is latest (`converged_by`/`converged_at`, updated only
+when the converging version actually differs). That distinction is what answers
+"is this machine still converged by a rig that predates the fix?".
+
+A **fresh machine writes both pairs with equal values**, so two identical lines
+mean "bootstrapped and never re-converged since" — not a missing record. A
+later re-converge by a different rig moves `CONVERGED` and leaves `BOOTSTRAP`
+untouched, which is the whole point of keeping them apart.
+
+`CONVERGED  not recorded` therefore does **not** describe a freshly
+bootstrapped box; no writer produces a manifest without the pair. It means the
+file is partial or hand-edited, and the value is deliberately not backfilled
+from `BOOTSTRAP` — inferring a convergence that never happened would be worse
+than saying so. Likewise a manifest whose `schema=` this rig does not know is
+named as such instead of being half-read in silence.
+
+**Known limitation — `CPU` and `MEMORY` inside a container-style guest are
+unverified.** `CPU` and `MEMORY` are read straight from `/proc/cpuinfo` and
+`/proc/meminfo`, with no cgroup awareness. Inside a box-minted guest (`VIRT`
+says `lxc`) it is **not currently established** whether those files report the
+instance's configured limits or the host's totals: neither file is namespaced
+by the kernel, but `lxcfs` — when the guest has it — overmounts both with
+limit-aware versions, so the answer depends on the guest's setup rather than
+on anything rig controls. Until someone confirms it against a real guest,
+treat those two lines as unreliable on `lxc` machines and check the instance
+config if the number matters. Everything else (OS, kernel, disk, virt,
+provenance) is the guest's own either way.
+
+Deliberately not guessed at: cgroup-aware limit detection would be the fix if
+the numbers do turn out to be the host's, but writing it against a *reasoned*
+answer rather than an *observed* one risks correcting a bug that isn't there
+and papering over one that is.
+
+Deliberately **not** here: NIC names, MAC addresses, PCI inventory, mount
+tables, sensors — this is a cheatsheet, not `inxi`, and the bar is "what would
+I want to know before I SSH in". Nor any health judgement ("disk nearly
+full"): that needs thresholds this command has no business owning. It is
+called `platform` and not `status` on purpose — `rig users status` and `rig
+runner status` cross-check recorded state against live state and print
+`DRIFT`, and this command records nothing, so it cannot drift and must not
+borrow a promise it structurally cannot make. That leaves `rig status` free
+for the machine-wide roll-up it will eventually want to be.
+
 ### `rig runner install --repo <owner/repo>`
 
 Runner box only, run after `rig bootstrap runner-server` (the same two-step rhythm

@@ -6,6 +6,45 @@ on the way to cutting its first release, and this file starts there.
 
 ## Unreleased
 
+### Added
+
+- **`rig platform` — what is this machine, calculated at run time, stored
+  nowhere** (#64) — rig read no hardware at all; the single exception was
+  `uname -m` in `runner-install.sh`, used to pick a tarball and then
+  discarded. So "is this the 32GB one, or the M900?" was answered by logging
+  in and running `free -h`, `nproc`, `df -h` and `uname -r` by hand, four
+  commands deep, on a machine you were already unsure about. `rig platform`
+  prints hostname, OS, kernel, CPU, memory, disk and virtualization, then a
+  provenance block (which rig, when, and the role marker's traits). It
+  **computes rather than stores**: specs change without rig doing anything —
+  RAM added, root disk resized, the unattended-upgrades bootstrap itself
+  enables patching the kernel — so a stored spec is stale the moment the
+  machine changes, and refreshing one per run would collide with bootstrap's
+  "a second run changes nothing" contract. Nothing is written, so nothing can
+  go stale. The corollary is deliberate: reading only `/proc`, `uname`,
+  `/etc/os-release`, `df` and `systemd-detect-virt` means it needs no root,
+  makes no network call, and **runs on a pristine Debian box rig has never
+  bootstrapped** — useful for deciding what to converge a machine into, not
+  only for auditing it afterwards. That also makes it the rare rig command
+  the harness can RUN for real instead of grepping: the tests assert the
+  actual answer describes the actual test machine. Provenance is read, never
+  written, and degrades per-file — `/etc/rig/manifest` is #61 and does not
+  exist yet, so those lines read `not bootstrapped` on every machine today and
+  nothing else depends on it. The reader is keyed to #61's documented schema
+  (`schema`, `bootstrapped_by`/`_at`, `converged_by`/`_at`) and fixtures pin
+  that exact spelling, so the integration cannot land silently broken; birth
+  and latest stay separate rather than one being inferred from the other. A
+  fresh machine writes both pairs equal, so two identical lines read as
+  "never re-converged"; a manifest missing the pair is partial rather than
+  fresh, and says so instead of backfilling from birth. Named `platform` and not `status` on purpose:
+  `users status` and `runner status` cross-check recorded against live state
+  and print `DRIFT`, and a command that records nothing cannot drift — which
+  also leaves `rig status` free for the machine-wide roll-up. Known
+  limitation, stated rather than guessed at: `CPU`/`MEMORY` are read from
+  `/proc` with no cgroup awareness, and whether an `lxc` guest sees its own
+  limits or the host's totals depends on whether `lxcfs` is in play — it is
+  unverified, so those two lines are unreliable there.
+
 ### Changed
 
 - **BREAKING: `--class human|server` is now `--root-door closed|open`** (#77) —

@@ -54,6 +54,15 @@ commands:
       writes a gzipped SQL artifact (--no-owner --no-acl, so it restores
       onto a different instance); `restore` loads one back, connecting as
       the container's own superuser, behind a confirm gate. Run as root.
+  platform
+      What is this machine: hostname, OS, kernel, CPU, memory, disk and
+      virtualization, then rig's own provenance (which rig, when, and the
+      role marker bootstrap wrote). Computed at run time from /proc, uname,
+      /etc/os-release, df and systemd-detect-virt and stored NOWHERE — a
+      spec goes stale the moment someone adds RAM, so there is nothing to
+      go stale here. Writes nothing, needs no root, makes no network call,
+      and therefore also runs on a pristine Debian box rig has never
+      bootstrapped, where the provenance block reads 'not bootstrapped'.
   runner install --repo <owner/repo> [options]
       GitHub Actions runner as a systemd service under an unprivileged
       user — outbound-only, no Docker. Prompts for the short-lived
@@ -382,6 +391,10 @@ case "$cmd" in
         exit 2
         ;;
     esac
+    ;;
+  platform)
+    shift
+    exec "$ROOT/commands/platform.sh" "$@"
     ;;
   runner)
     shift

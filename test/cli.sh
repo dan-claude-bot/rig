@@ -977,6 +977,93 @@ else
   echo "skip: runner status/remove/repoint non-root refusals (running as root)"
 fi
 
+# ---------------------------------------------------------------------------
+# rig platform (#64). Unusually testable for this repo: it needs no root, no
+# network and no fixtures, and it WRITES NOTHING — so unlike every other
+# command here the harness can RUN it for real on the machine running the
+# tests and assert on the actual answer, instead of proving arg-parse
+# refusals and grepping the rest.
+# ---------------------------------------------------------------------------
+check "platform: --help exits 0"           0 "usage:"      "$ROOT/commands/platform.sh" --help
+check "platform: unknown flag exits 2"     2 "unknown flag" "$ROOT/commands/platform.sh" --nope
+check "platform: dispatches through bin/rig" 0 "PLATFORM"  "$ROOT/bin/rig" platform
+
+# The real run: exit 0 and every field present, as the running user.
+check "platform: runs as this user, exit 0" 0 "PLATFORM" "$ROOT/bin/rig" platform
+for f in HOSTNAME OS KERNEL CPU MEMORY DISK VIRT; do
+  check "platform: reports $f" 0 "$f" "$ROOT/bin/rig" platform
+done
+# Not just the labels — the VALUES have to describe THIS machine. uname -r and
+# the hostname are the two the harness can independently compute and compare,
+# which is what separates "it printed a table" from "it read the machine".
+check "platform: KERNEL is this kernel"   0 "$(uname -r)" "$ROOT/bin/rig" platform
+check "platform: HOSTNAME is this host"   0 "$(uname -n)" "$ROOT/bin/rig" platform
+# MemAvailable/df rendered, not left as the 'unknown' fallback: a numfmt or
+# /proc parse that silently broke would still print the labels above.
+check "platform: MEMORY carries real numbers" 0 "total," "$ROOT/bin/rig" platform
+
+# Provenance degrades on a machine rig never converged — #61's manifest does
+# not exist yet, so 'not bootstrapped' is the state of the world today and the
+# command must ship complete without it. Both paths driven against fixtures.
+PLATWORK="$(mktemp -d)"
+# THE INTEGRATION CONTRACT (#61, found in #74 review): these fixtures carry
+# #61's documented schema VERBATIM — schema/bootstrapped_by/bootstrapped_at/
+# converged_by/converged_at. An earlier draft of this reader invented `version`
+# and `bootstrapped`, which no writer would ever have produced: the command
+# would have rendered 'unknown' forever the day #61 landed, and nothing here
+# would have said so. Keep these keys in step with #61; that is the point.
+printf 'schema=1\nbootstrapped_by=0.4.0\nbootstrapped_at=2026-07-19T14:24:51Z\nconverged_by=0.6.0\nconverged_at=2026-08-02T09:11:03Z\n' > "$PLATWORK/manifest"
+check "platform: no manifest reads 'not bootstrapped'" 0 "RIG        not bootstrapped" \
+  env RIG_MANIFEST="$PLATWORK/absent" RIG_ROLE_MARKER="$PLATWORK/absent" "$ROOT/bin/rig" platform
+check "platform: no role marker reads 'not bootstrapped'" 0 "ROLE       not bootstrapped" \
+  env RIG_MANIFEST="$PLATWORK/absent" RIG_ROLE_MARKER="$PLATWORK/absent" "$ROOT/bin/rig" platform
+# A manifest that DOES exist is read, never written — the forward-compatible
+# half, so #61 landing needs no change here.
+check "platform: reads #61's converged_by/at" 0 "CONVERGED  0.6.0, 2026-08-02T09:11:03Z" \
+  env RIG_MANIFEST="$PLATWORK/manifest" RIG_ROLE_MARKER="$PLATWORK/absent" "$ROOT/bin/rig" platform
+check "platform: reads #61's bootstrapped_by/at" 0 "BOOTSTRAP  0.4.0, 2026-07-19T14:24:51Z" \
+  env RIG_MANIFEST="$PLATWORK/manifest" RIG_ROLE_MARKER="$PLATWORK/absent" "$ROOT/bin/rig" platform
+# A FRESH bootstrap carries both pairs with EQUAL values — #61 is explicit
+# ("On a fresh machine both pairs are written with equal values"); rule 2 only
+# suppresses converged_* churn on a later same-version re-run. So equal dates
+# are the never-re-converged case and must render as themselves, not be
+# special-cased into looking unset.
+printf 'schema=1\nbootstrapped_by=0.4.0\nbootstrapped_at=2026-07-19T14:24:51Z\nconverged_by=0.4.0\nconverged_at=2026-07-19T14:24:51Z\n' > "$PLATWORK/manifest-fresh"
+check "platform: a fresh bootstrap shows both pairs equal (#61)" 0 "CONVERGED  0.4.0, 2026-07-19T14:24:51Z" \
+  env RIG_MANIFEST="$PLATWORK/manifest-fresh" RIG_ROLE_MARKER="$PLATWORK/absent" "$ROOT/bin/rig" platform
+# A manifest missing converged_* is therefore NOT a fresh box — no writer
+# produces that — so it is partial or hand-edited. Degrade loudly rather than
+# backfilling from birth, which would invent a convergence that never happened.
+printf 'schema=1\nbootstrapped_by=0.4.0\nbootstrapped_at=2026-07-19T14:24:51Z\n' > "$PLATWORK/manifest-partial"
+check "platform: a partial manifest says so, never infers from birth" 0 "CONVERGED  not recorded" \
+  env RIG_MANIFEST="$PLATWORK/manifest-partial" RIG_ROLE_MARKER="$PLATWORK/absent" "$ROOT/bin/rig" platform
+# A newer schema renders what it recognises and says the rest is unreadable,
+# rather than pretending a partial read is the whole truth.
+printf 'schema=2\nbootstrapped_by=9.9.9\nbootstrapped_at=2027-01-01T00:00:00Z\n' > "$PLATWORK/manifest-v2"
+check "platform: a newer schema is named, not silently half-read" 0 "schema=2 is newer" \
+  env RIG_MANIFEST="$PLATWORK/manifest-v2" RIG_ROLE_MARKER="$PLATWORK/absent" "$ROOT/bin/rig" platform
+# A manifest carrying none of #61's keys is reported as such — the pre-#61 or
+# corrupt case, distinct from both 'absent' and 'read fine'.
+printf 'somethingelse=1\n' > "$PLATWORK/manifest-alien"
+check "platform: an unrecognised manifest is not read as empty" 0 "no recognised fields" \
+  env RIG_MANIFEST="$PLATWORK/manifest-alien" RIG_ROLE_MARKER="$PLATWORK/absent" "$ROOT/bin/rig" platform
+# ...including one whose last line has no trailing newline: `read` returns 1 at
+# EOF even having filled the variables, so an unguarded loop drops that line
+# silently — the timestamp would vanish while the version still rendered. #61's
+# writer must not have to know this reader's tolerances (found in #74 review).
+printf 'schema=1\nbootstrapped_by=0.4.0\nbootstrapped_at=2026-07-19T14:24:51Z' > "$PLATWORK/manifest-nonl"
+check "platform: reads a manifest with no trailing newline" 0 "BOOTSTRAP  0.4.0, 2026-07-19T14:24:51Z" \
+  env RIG_MANIFEST="$PLATWORK/manifest-nonl" RIG_ROLE_MARKER="$PLATWORK/absent" "$ROOT/bin/rig" platform
+printf 'role=dev class=human host=yes join=authkey\n' > "$PLATWORK/role"
+check "platform: renders the role marker's traits" 0 "dev (class=human host=yes join=authkey)" \
+  env RIG_MANIFEST="$PLATWORK/absent" RIG_ROLE_MARKER="$PLATWORK/role" "$ROOT/bin/rig" platform
+# The defining property: it writes NOTHING. Not the manifest it just reported
+# missing, not the marker, not anything else in the fixture directory — the
+# whole design rests on this, so assert it rather than trust it.
+env RIG_MANIFEST="$PLATWORK/absent" RIG_ROLE_MARKER="$PLATWORK/absent" "$ROOT/bin/rig" platform >/dev/null 2>&1
+check "platform: writes nothing (no manifest created)" 1 "" test -e "$PLATWORK/absent"
+rm -rf "$PLATWORK"
+
 check "bare users shows usage, exit 2"    2 "usage:"        "$ROOT/bin/rig" users
 check "users: bad subcommand exits 2"     2 "usage:"        "$ROOT/bin/rig" users frobnicate
 
