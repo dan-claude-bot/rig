@@ -31,6 +31,12 @@ jobs:
           shellcheck -x "${files[@]}"
       - name: cli tests
         run: bash test/cli.sh
+      # test/labels-reconcile.sh existed here since #87 but ran nowhere: the
+      # label state machine gates every PR on this repo and its fixtures were
+      # green only when someone remembered to run them by hand. Same step, same
+      # place as heavy-duty/box.
+      - name: labels state-machine tests
+        run: bash test/labels-reconcile.sh
       - name: release-flow tests
         run: bash test/release.sh
 

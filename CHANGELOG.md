@@ -163,6 +163,45 @@ on the way to cutting its first release, and this file starts there.
 
 ### Changed
 
+- **PR labels split into two axes: `state:*` (whose ball) and `blocker:*`
+  (what is in the way)** (heavy-duty/box#137) — `state:needs-rebase`, added
+  here only days ago by #87, is retired in the same breath. In its place:
+  `blocker:conflict`, `blocker:ci-red` and `blocker:unrequested`, applied
+  additively. A single rule joins the axes — `state:needs-human` requires zero
+  blockers — which is the invariant #87 was reaching for, stated once instead
+  of defended at every branch of a precedence chain.
+
+  The single-label design projected independent facts onto one totally-ordered
+  value. Mergeability, check status and the review round move on their own
+  clocks; a PR can be conflicted *and* red *and* stalled at the same instant.
+  A total order has to pick one of those to say, so the rest vanish. Every
+  precedence bug this machine has had lived on that ordering, #87's included:
+  the fix there was to reorder the chain and collect the round before deciding,
+  which bought correctness for one more configuration without removing the
+  reason the next one would break. `state:needs-rebase` was the design's
+  clearest tell — a single label fired by both a conflict and a failing check,
+  two problems needing opposite work, telling an agent to rebase when what it
+  owed was a bug fix. Box's board has the case in the open: #120 was conflicted
+  **and** red, and could only ever say one of them.
+
+  Blockers are a set. There is no precedence between them to get wrong, and
+  adding a fourth one later cannot reshuffle the meaning of the other three.
+  What stays on the ordered axis is purely the review round, which is the one
+  place here where an ordering is genuinely meaningful — a round really does
+  have a sequence.
+
+  `state:bots-reviewing` tightens with it, to mean strictly *a request is live
+  and an answer is coming*. A ready PR nobody was asked to review used to read
+  as "waiting on the reviewers" until the stale sweep caught up; it now reads
+  `state:addressing` + `blocker:unrequested`, because the agent owes the ask
+  and the board should say so. Drafts stay exempt — the bots ignore drafts by
+  design — as does an explicit human request, since a maintainer claiming a PR
+  early is deliberate.
+
+  The reconciler strips `state:needs-rebase` on sight via a `RETIRED` list, so
+  the retirement heals the existing board instead of stranding a label that
+  nothing recomputes. Fixtures 51 → 64.
+
 - **BREAKING: `--class human|server` is now `--root-door closed|open`** (#77) —
   the trait was named for who *lives on* a box; what it decides is one thing,
   and it is not occupancy: whether root SSH stays open as the control plane's
