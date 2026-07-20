@@ -1127,6 +1127,24 @@ count_at="$(grep -nF 'AT_RISK=$((AT_RISK + 1))' "$ROOT/commands/users-apply.sh" 
 warn_at="$(grep -nF 'this users file names ZERO users' "$ROOT/commands/users-apply.sh" | head -n1 | cut -d: -f1)"
 check "users apply: the count is taken before the message quotes it" \
   0 "" test "${count_at:-999999}" -lt "${warn_at:-0}"
+# ...and the floor the count is measured against: ONE at-risk operator is
+# enough. That is the gate's entire reason for existing — a box with a single
+# operator is the common case for a small team, not an edge case — and nothing
+# else here pins it. The condition grep above pins the gate's TRIGGER (zero
+# users AND a readable ledger), and the deferred-threshold negative below only
+# matches a comparison against a $-variable, so `-gt 1` slips past both and
+# silently un-gates exactly the box that most needs the question (#78).
+#
+# Pinned as a PATTERN, not as the literal line: a correct gate respelled
+# `${AT_RISK}` or re-spaced is still a correct gate and must not fail, while
+# any floor other than "one is enough" must. `-ge 1` is the same statement in
+# other words and is accepted for that reason — which is also why the negative
+# pin below is left matching $-variables only, rather than being widened to
+# literals: widening it would call that legitimate spelling a threshold.
+# shellcheck disable=SC2016
+check "users apply: one at-risk operator is enough to gate (#78)" 0 "" \
+  grep -qE '^[[:space:]]*if[[:space:]]+\[[[:space:]]+"?\$\{?AT_RISK\}?"?[[:space:]]+(-gt[[:space:]]+0|-ge[[:space:]]+1)[[:space:]]+\][[:space:]]*;[[:space:]]*then[[:space:]]*$' \
+  "$ROOT/commands/users-apply.sh"
 # No terminal and no consent is a REFUSAL, not an assumed yes and not a hang.
 check "users apply: no TTY and no consent exits 2" 0 "" \
   grep -qF 'refusing to revoke every managed operator without --yes' \
