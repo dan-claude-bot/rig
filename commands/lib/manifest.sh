@@ -49,7 +49,7 @@ manifest_path() {
 manifest_value() {
   [ -r "$1" ] || return 0
   local k v
-  while IFS='=' read -r k v; do
+  while IFS='=' read -r k v || [ -n "$k" ]; do
     [ "$k" = "$2" ] || continue
     printf '%s' "$v"
     return 0
@@ -65,7 +65,7 @@ manifest_value() {
 manifest_has() {
   [ -r "$1" ] || return 1
   local k
-  while IFS='=' read -r k _; do
+  while IFS='=' read -r k _ || [ -n "$k" ]; do
     [ "$k" = "$2" ] && return 0
   done < "$1"
   return 1
@@ -79,7 +79,7 @@ manifest_has() {
 manifest_foreign() {
   [ -r "$1" ] || return 0
   local line key
-  while IFS= read -r line; do
+  while IFS= read -r line || [ -n "$line" ]; do
     [ -n "$line" ] || continue
     key="${line%%=*}"
     case " $MANIFEST_KEYS " in

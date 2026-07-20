@@ -2054,6 +2054,60 @@ check "manifest: a converged_by with no converged_at is repaired once" 0 "conver
 check "manifest: the repair settles — it does not re-fire on the next run" 0 "" \
   reproduces_itself "$REPAIRED" 0.4.0
 
+# -- a final line with NO trailing newline ----------------------------------
+# A bare `while read` stops at EOF without ever handing over a populated
+# partial line, so the last record of an unterminated file reads as ABSENT.
+# That is not a cosmetic parse miss here: absent is exactly the input both
+# rules key off, so the file's last line is the one least able to survive it.
+# A hand-edit with an editor that adds no final newline, or a truncated write,
+# is enough to produce one. The reader idiom is the repo's own —
+# lib/users-config.sh:49 reads `|| [ -n "$line" ]` for the same reason.
+NONL="$MF/nonl-owned"
+printf 'schema=1\nbootstrapped_by=0.4.0\nbootstrapped_at=2020-01-01T00:00:00Z\nconverged_by=0.4.0\nconverged_at=2020-01-01T00:00:00Z' > "$NONL"
+# The crux assertion, applied to the case that broke it: with converged_at
+# unreadable, Rule 2 saw an empty at-stamp and re-fired the "one-time" repair
+# on EVERY run, so the clock reached the file after all.
+check "manifest: an unterminated final line does not let the clock back in" 0 "" \
+  clock_cannot_reach "$NONL" 0.4.0
+check "manifest: an unterminated converged_at is read, not re-stamped" 0 "converged_at=2020-01-01T00:00:00Z" \
+  render "$NONL" 0.4.0 2026-07-19T14:24:51Z
+# Rule 1 on the field that can never be reconstructed: a file truncated mid-way
+# ends AT bootstrapped_at, so the unterminated line is the birth stamp itself —
+# and regenerating it is the one loss no later run can undo.
+printf 'schema=1\nbootstrapped_by=0.4.0\nbootstrapped_at=2020-01-01T00:00:00Z' > "$MF/nonl-birth"
+check "manifest: an unterminated birth stamp stays pinned, not reborn today" 0 "bootstrapped_at=2020-01-01T00:00:00Z" \
+  render "$MF/nonl-birth" 0.4.0 2026-07-19T14:24:51Z
+# And the preservation contract, whose whole subject is the file's tail: a
+# later command's line is very often the last one written.
+NONLF="$MF/nonl-foreign"
+printf 'schema=1\nbootstrapped_by=0.4.0\nbootstrapped_at=2020-01-01T00:00:00Z\nconverged_by=0.4.0\nconverged_at=2020-01-01T00:00:00Z\nrunner_installed_at=2026-07-19T16:10:00Z' > "$NONLF"
+check "manifest: an unterminated FOREIGN final line is not eaten by the rewrite" 0 "runner_installed_at=2026-07-19T16:10:00Z" \
+  render "$NONLF" 0.4.0 2026-07-19T14:24:51Z
+# Reading it correctly also REPAIRS it: the rewritten copy is newline-terminated,
+# so an unterminated file converges to a terminated one exactly once and then
+# reproduces itself like any other. Asserted as "the source, plus the newline it
+# was missing, and NOTHING else" — a plain does-it-end-in-\n check would stay
+# green on an implementation that dropped the final line, since a file with the
+# tail eaten is newline-terminated too.
+NORMALIZED="$MF/normalized"
+render "$NONLF" 0.4.0 2026-07-19T14:24:51Z > "$NORMALIZED"
+adds_only_the_newline() {   # adds_only_the_newline <source> <normalized>
+  diff <(cat "$1"; printf '\n') "$2"
+}
+check "manifest: the rewrite adds the missing final newline and changes nothing else" 0 "" \
+  adds_only_the_newline "$NONLF" "$NORMALIZED"
+check "manifest: ...and the normalized file then settles" 0 "" \
+  reproduces_itself "$NORMALIZED" 0.4.0
+# Presence, not just value: manifest_has answers the absent-vs-empty question
+# `rig manifest <key>` puts in its exit code, and it read the same short file.
+has_key() {   # has_key <path> <key>
+  ( set -euo pipefail
+    . "$ROOT/commands/lib/manifest.sh"
+    manifest_has "$1" "$2" )
+}
+check "manifest: an unterminated final key is PRESENT, not absent" 0 "" \
+  has_key "$NONL" converged_at
+
 # -- the version that RAN, not the one installed now ------------------------
 # The whole point: a machine outlives the rig that built it, so this is read
 # from the tree at run time and never re-derived from `rig --version` later.
