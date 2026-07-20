@@ -876,6 +876,35 @@ refused as a username: this file names operators; root's fate is root-door polic
 `--file -` reads stdin. A bad file exits 2 with **every** error listed at
 once, before anything changes — one fix cycle, not one round-trip per line.
 
+**A file naming zero users is confirmed, not refused (#65).** "Revoke
+everyone" and "I truncated the file" are the same instruction in this format,
+and a stray `>` writes the second one. apply cannot read intent — but it can
+read the `/etc/rig/users` ledger, which draws the only line worth drawing:
+against an empty ledger an empty file is an unambiguous no-op, and against a
+populated one it closes every named door on the box. So that second case, and
+only it, stops and asks — naming how many operators are about to go:
+
+```sh
+rig users apply --file ./users            # empty file + managed operators -> asks
+rig users apply --file ./users --yes      # ...or say yes up front
+RIG_YES=1 rig users apply --file ./users  # same, for automation
+```
+
+**Without a terminal and without consent it exits 2** rather than assume a
+yes it cannot ask for — the contract `rig uninstall` already uses, and the
+same `RIG_YES` the installer family reads. Consent that cannot be obtained is
+not consent, and a prompt nothing can answer must not hang either.
+
+This is a *confirmation*, deliberately unlike `rig bootstrap`'s flat refusal
+of the same file (see *Bootstrap*): bootstrap **asserts** who lives on a box,
+so an empty answer contradicts itself, while apply **converges** — and
+converging to zero is a complete, legitimate de-provisioning that has to keep
+working. Already-revoked ledger entries don't count toward the number, so a
+second identical run of an emptied file stays the silent no-op convergence
+promises. Dropping *most* users — nineteen of twenty — is not yet gated;
+that needs a threshold, where "the file is empty" is a bright line that needs
+none.
+
 **`@root` — seed keys from the door you came in through (#17).** A key field
 of exactly `@root` means "this user's `authorized_keys` becomes root's
 CURRENT `/root/.ssh/authorized_keys`". The point is lockout-avoidance: you

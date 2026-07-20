@@ -214,6 +214,27 @@ on the way to cutting its first release, and this file starts there.
   pty (util-linux `script`, skipped where it is absent) and asserting the
   MESSAGE rather than the exit code, which the bug also produced.
 
+- **`users apply` now tells "revoke everyone" apart from "I truncated the
+  file"** (#65) — a users file naming zero users is a valid instruction to
+  revoke every operator on the box, and it is indistinguishable from a file a
+  stray `>` produced. The per-user warnings apply already emitted arrive after
+  the decision and scale wrong: twenty operators is twenty lines of scrollback,
+  so the signal was loudest exactly where it read as noise. The `/etc/rig/users`
+  ledger draws the line apply needs — an empty file against an empty ledger is
+  an unambiguous no-op; against a populated one it closes every named door — so
+  only the second case now stops, states how many operators are about to be
+  revoked, and requires explicit consent: `--yes`, `RIG_YES=1` (the
+  installer-family variable `rig uninstall` already reads), or a `y` on a TTY.
+  Without a terminal and without consent it exits 2, in `uninstall_confirm`'s
+  words, rather than assume a yes it cannot ask for or hang on a prompt nothing
+  can answer. A **confirmation**, not `rig bootstrap`'s flat refusal of the same
+  file (#57/#59): bootstrap asserts who lives on a box, apply converges, and
+  converging to zero stays a legitimate de-provisioning. Ledger entries already
+  marked `revoked` don't count toward the number, so a second identical run
+  stays the silent no-op. Mass revocation below the empty-file bright line (a
+  file dropping 19 of 20) is deliberately still ungated — that needs a threshold
+  someone has to justify, and #65 stays open for it.
+
 ## 0.2.0 — 2026-07-19
 
 ### Added

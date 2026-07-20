@@ -18,9 +18,15 @@ die()  { printf 'rig-users: ERROR: %s\n' "$1" >&2; exit "${2:-1}"; }
 
 usage() {
   cat <<'EOF'
-usage: rig users apply --file <path>
+usage: rig users apply --file <path> [--yes]
 
   --file <path>   users file (required; '-' reads it from stdin)
+  --yes           consent, up front, to the one prompt this command can ask:
+                  a file naming ZERO users against a box that still has
+                  managed operators revokes all of them. RIG_YES=1 says the
+                  same thing (the installer-family convention). Without
+                  either, that case asks on a TTY and REFUSES (exit 2)
+                  without one — it never assumes consent it cannot get.
 
 The file is line-based and bash-parseable on purpose — a rig box has no YAML
 parser and no jq, and gets neither for this. Whitespace-separated: user,
@@ -72,11 +78,17 @@ EOF
 
 # --- args (validated before the root check, so errors are testable) ---------
 FILE=""
+# RIG_YES is the installer-family consent contract (bin/rig's uninstall_confirm
+# reads the same variable): how automation says yes where there is no terminal
+# to say it on. Set here so --yes and the env var are one flag with two doors.
+ASSUME_YES=0
+[ -n "${RIG_YES:-}" ] && ASSUME_YES=1
 while [ $# -gt 0 ]; do
   case "$1" in
     --file)
       [ $# -ge 2 ] || die "--file needs a value" 2
       FILE="$2"; shift 2 ;;
+    --yes) ASSUME_YES=1; shift ;;
     -h|--help) usage; exit 0 ;;
     *) die "unknown flag: $1" 2 ;;
   esac
@@ -501,6 +513,62 @@ done
 # revoked, data kept, convergence never destroys.
 LEDGER=/etc/rig/users
 REVOKED=()
+
+# --- the empty-file gate (#65) -----------------------------------------------
+# "Revoke everyone" and "I truncated the file" are the same instruction in this
+# file format, and apply cannot read intent. What it CAN read is the ledger, and
+# that draws the only line worth drawing: a file naming zero users against an
+# empty ledger is an unambiguous no-op, while the same file against a populated
+# one closes every named door on the box. Only the second is dangerous.
+#
+# So this is a CONFIRMATION, not a refusal — deliberately unlike bootstrap's
+# flat die on the same file (#57/#59). bootstrap ASSERTS who lives on a box, so
+# an empty answer there is a self-contradiction; apply CONVERGES, and converging
+# to zero is a complete, legitimate de-provisioning that must keep working. The
+# difference between the two commands is the whole point, and it survives here.
+#
+# The per-user warnings below are not this gate and cannot replace it: they
+# arrive after the decision, one line per operator, so the signal is loudest
+# exactly where it reads as scrollback rather than as a question.
+#
+# Count FIRST, then speak: the message states a real number, and counting is
+# what makes the already-converged case silent. An entry the ledger already
+# marks `revoked`, or one whose account no longer exists, is not at risk — this
+# run would not change it — so a second identical run of an emptied file stays
+# the clean no-op convergence promises, with no prompt to answer twice.
+#
+# SCOPE: the bright line only. Whether a file that drops 19 of 20 operators
+# deserves the same gate is the issue's open question — it needs a threshold
+# someone has to justify, where "the file is empty" needs nothing. Left open.
+if [ "${#USERS[@]}" -eq 0 ] && [ -r "$LEDGER" ] && [ "$ASSUME_YES" -eq 0 ]; then
+  AT_RISK=0
+  while read -r prev pstate _; do
+    [ -n "$prev" ] || continue
+    [ "${pstate:-active}" != "revoked" ] || continue
+    id -u "$prev" >/dev/null 2>&1 || continue
+    AT_RISK=$((AT_RISK + 1))
+  done < "$LEDGER"
+  if [ "$AT_RISK" -gt 0 ]; then
+    warn "this users file names ZERO users, and this box still manages $AT_RISK operator(s): applying it revokes every one of them — accounts expired, authorized_keys renamed, rig groups stripped. If the file was meant to be empty this is de-provisioning; if it was truncated by accident, stop here."
+    # No terminal means no consent, and a question nobody can answer must not
+    # be assumed into a yes or left to hang. Same shape and same words as
+    # bin/rig's uninstall_confirm, on purpose — one refusal in this codebase.
+    if [ ! -t 0 ]; then
+      printf 'rig-users: refusing to revoke every managed operator without --yes (no terminal to confirm on; RIG_YES=1 also means yes)\n' >&2
+      exit 2
+    fi
+    # `|| reply=""` is load-bearing: under `set -e` a read that hits EOF is a
+    # non-zero command, and an unguarded read would abort the script rather
+    # than take the safe default (#68, the same bug class).
+    printf 'rig-users: revoke all %s managed operator(s) on this box? [y/N] ' "$AT_RISK"
+    read -r reply || reply=""
+    case "$reply" in
+      y|Y|yes|YES|Yes) ;;
+      *) die "aborted — no operator was revoked" ;;
+    esac
+  fi
+fi
+
 if [ -r "$LEDGER" ]; then
   while read -r prev pstate _; do
     [ -n "$prev" ] || continue

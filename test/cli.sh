@@ -1070,10 +1070,109 @@ if [ "$(id -u)" -ne 0 ]; then
   check "users apply: '@root' fixture parses, refuses non-root" 1 "must run as root" \
     "$ROOT/commands/users-apply.sh" --file "$FIX_BAD"
   check "users status: refuses non-root" 1 "must run as root" "$ROOT/commands/users-status.sh"
+  # --- the empty-file gate's flag surface (#65) ------------------------------
+  # Arg parsing precedes the root check, so flag ACCEPTANCE is provable here:
+  # reaching "must run as root" (exit 1) means --yes was taken, and an exit 2
+  # "unknown flag" would mean it was not. The gate's behaviour itself is
+  # root-only (it reads /etc/rig/users and revokes) and is grep-pinned below.
+  check "users apply: --yes is accepted" 1 "must run as root" \
+    "$ROOT/commands/users-apply.sh" --file "$FIX_OK" --yes
+  # Order-independent: a consent flag that only worked before --file would be
+  # a trap for anyone appending it to an existing command line.
+  check "users apply: --yes is accepted before --file" 1 "must run as root" \
+    "$ROOT/commands/users-apply.sh" --yes --file "$FIX_OK"
+  # --yes takes no value: it must not swallow the next argument.
+  check "users apply: --yes does not eat the following flag" 2 "unknown flag" \
+    "$ROOT/commands/users-apply.sh" --file "$FIX_OK" --yes --nope
+  # The env door, same as --yes: RIG_YES is the installer-family contract
+  # (bin/rig's uninstall_confirm reads it), so it must not be an unknown-flag
+  # equivalent or a parse error either.
+  check "users apply: RIG_YES=1 parses" 1 "must run as root" \
+    env RIG_YES=1 "$ROOT/commands/users-apply.sh" --file "$FIX_OK"
 else
   echo "skip: users non-root refusals (running as root)"
 fi
 rm -f "$FIX_OK" "$FIX_BAD"
+
+# --- the empty-file gate itself (#65) ----------------------------------------
+# The gated path needs root and a populated /etc/rig/users, so the shipped
+# script is grep-pinned instead — the house precedent for root-only refusals
+# (the '@root' keyless-seed die above, the invoker gate below).
+#
+# Consent has three doors and no fourth: --yes, RIG_YES, or a y on a TTY.
+check "users apply: --yes sets consent" 0 "" \
+  grep -qE '^[[:space:]]*--yes\) ASSUME_YES=1' "$ROOT/commands/users-apply.sh"
+check "users apply: RIG_YES is the env door for consent" 0 "" \
+  grep -qF 'RIG_YES:-' "$ROOT/commands/users-apply.sh"
+# The gate is ledger-gated, not file-gated: zero users ALONE is not the
+# condition, or it would refuse the empty-ledger no-op the issue calls
+# unambiguous. Both halves of the test must be present on the one line.
+# The gate condition and the counter are grepped as LITERALS — single quotes
+# intended throughout this block, the expansions are the script's own.
+# shellcheck disable=SC2016
+check "users apply: the gate is zero-users AND a readable ledger" 0 "" \
+  grep -qF 'if [ "${#USERS[@]}" -eq 0 ] && [ -r "$LEDGER" ] && [ "$ASSUME_YES" -eq 0 ]; then' \
+  "$ROOT/commands/users-apply.sh"
+# Counting precedes speaking, so the warning states a real number rather than
+# "some users" — and an already-revoked entry is not at risk, which is what
+# keeps a second identical run the silent no-op convergence promises.
+# shellcheck disable=SC2016
+check "users apply: the gate counts before it warns" 0 "" \
+  grep -qF 'AT_RISK=$((AT_RISK + 1))' "$ROOT/commands/users-apply.sh"
+# shellcheck disable=SC2016
+check "users apply: already-revoked ledger entries are not at risk" 0 "" \
+  grep -qF '[ "${pstate:-active}" != "revoked" ] || continue' "$ROOT/commands/users-apply.sh"
+# shellcheck disable=SC2016
+count_at="$(grep -nF 'AT_RISK=$((AT_RISK + 1))' "$ROOT/commands/users-apply.sh" | head -n1 | cut -d: -f1)"
+warn_at="$(grep -nF 'this users file names ZERO users' "$ROOT/commands/users-apply.sh" | head -n1 | cut -d: -f1)"
+check "users apply: the count is taken before the message quotes it" \
+  0 "" test "${count_at:-999999}" -lt "${warn_at:-0}"
+# No terminal and no consent is a REFUSAL, not an assumed yes and not a hang.
+check "users apply: no TTY and no consent exits 2" 0 "" \
+  grep -qF 'refusing to revoke every managed operator without --yes' \
+  "$ROOT/commands/users-apply.sh"
+check "users apply: the no-TTY refusal names RIG_YES as the other yes" 0 "" \
+  grep -qF 'no terminal to confirm on; RIG_YES=1 also means yes' \
+  "$ROOT/commands/users-apply.sh"
+# EOF-safe read (#68's bug class): an unguarded `read -r reply` aborts under
+# `set -e` instead of taking the safe default. The || is the whole fix.
+check "users apply: the confirm read survives EOF" 0 "" \
+  grep -qF 'read -r reply || reply=""' "$ROOT/commands/users-apply.sh"
+check "users apply: no unguarded read in the gate" 1 "" \
+  grep -nE '^[[:space:]]*read -r reply$' "$ROOT/commands/users-apply.sh"
+# The gate must sit BEFORE the revocation loop — a confirmation asked after
+# the first account is expired is not a confirmation. Line numbers, defaults
+# fail closed, same idiom as the visudo ordering assert.
+gate_at="$(grep -nF 'this users file names ZERO users' "$ROOT/commands/users-apply.sh" | head -n1 | cut -d: -f1)"
+revoke_at="$(grep -nF 'usermod -L -e 1' "$ROOT/commands/users-apply.sh" | head -n1 | cut -d: -f1)"
+check "users apply: the gate precedes the revocation loop" \
+  0 "" test "${gate_at:-999999}" -lt "${revoke_at:-0}"
+# Scope guard, the mirror of the #57 one above: this is a CONFIRMATION, and
+# apply must not have grown bootstrap's flat refusal of an empty file. A grep
+# that finds nothing is the pass — the repo's negative-law idiom.
+check "users apply: an empty file is still a legal de-provisioning input (gated, not refused)" 1 "" \
+  grep -nE 'names no users' "$ROOT/commands/users-apply.sh"
+# The deferred half of #65: mass revocation below the empty-file bright line
+# is NOT gated. The gate's only trigger is a file naming zero users, so no
+# CODE line may compare a revocation count against a threshold — comments are
+# stripped first, since the scope note beside the gate says the word on
+# purpose. Pinned so that adding a threshold is a deliberate edit to a failing
+# test rather than a silent contract change.
+check "users apply: partial mass revocation stays ungated (#65 open question)" 1 "" \
+  grep -nEi '^[[:space:]]*[^#[:space:]].*(threshold|RIG_REVOKE_MAX|AT_RISK[^)]*(-gt|-ge)[[:space:]]*\$)' \
+  "$ROOT/commands/users-apply.sh"
+
+# The empty-file gate is reachable only from a caller that can answer it. The
+# ONE in-tree caller of apply is bootstrap's users phase, and it refuses a
+# zero-user file at pre-flight (#57) — before it ever invokes apply — so no
+# in-tree path reaches the gate without a TTY. Pin both halves: if a second
+# caller appears, or bootstrap's refusal goes away, this stops being true.
+callers="$(grep -rlF 'users-apply.sh' "$ROOT/commands" | grep -v 'users-apply.sh$' || true)"
+check "users apply: bootstrap is its only in-tree caller" 0 "" \
+  test "$callers" = "$ROOT/commands/bootstrap.sh"
+check "users apply: bootstrap refuses a zero-user file before invoking it" \
+  0 "" test "$(grep -nF 'names no users' "$ROOT/commands/bootstrap.sh" | head -n1 | cut -d: -f1)" \
+  -lt "${users_apply_at:-0}"
 
 # Validate-then-apply: `visudo -c` must pass before anything lands in
 # /etc/sudoers.d — a bad drop-in takes down ALL of sudo, locking every admin
