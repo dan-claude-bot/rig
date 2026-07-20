@@ -47,12 +47,12 @@ check "bootstrap: --ts-tag is removed (with value), exit 2" 2 "comes from the pr
   "$ROOT/commands/bootstrap.sh" runner-server --ts-tag tag:server
 check "bootstrap: --ts-tag is removed (no value), exit 2"   2 "comes from the pre-auth key" \
   "$ROOT/commands/bootstrap.sh" runner-server --ts-tag
-# staging is a box TENANT role since #31 (the guest, not the VM host), and it
+# staging-box is a box TENANT role (the guest, not the VM host), and it
 # never joins the tailnet — but --ts-tag on it must still die with a story,
 # not an "unknown flag": scripts from its trait-preset life may pass it, and
 # the message must say where both the tag AND the join went.
-check "bootstrap: staging + removed --ts-tag exits 2" 2 "never join the tailnet" \
-  "$ROOT/commands/bootstrap.sh" staging --ts-tag tag:server
+check "bootstrap: staging-box + removed --ts-tag exits 2" 2 "never join the tailnet" \
+  "$ROOT/commands/bootstrap.sh" staging-box --ts-tag tag:server
 # The VM-HOST shape has a named role again (staging-server, #76), but it is
 # still not one of the two the control plane manages, so the catch-all
 # tag:server refusal must own it. Grep-pinned so a deleted guard cannot ship
@@ -80,8 +80,8 @@ fi
 # UNKNOWN rather than quietly resolving to anything. Asserted per name because
 # an alias accidentally left in for one role is exactly the shape that survives
 # review — the taxonomy reads as complete while one old name still works.
-# 'staging' is deliberately absent: it still routes to the TENANT mechanism at
-# this point in the stack, and the tenant rename lands in its own change.
+# 'staging' is deliberately absent HERE: it is a TENANT name, and its own hard
+# cut is asserted in the tenant section below, at both entrypoints.
 for r in control-plane workload runner dev; do
   check "bootstrap: the pre-#76 name '$r' is gone (hard cut)" 2 "unknown role" \
     "$ROOT/commands/bootstrap.sh" "$r"
@@ -416,7 +416,7 @@ check "rig usage documents the bootstrap users flags" 0 "(--users <path> | --no-
 # decision (a box-minted guest has no SSH door of its own; entry is `box shell`,
 # gated by the HOST's incus grants) is documented in usage and the README.
 check "bootstrap: --users does not reach the tenant roles" 2 "unknown flag" \
-  "$ROOT/commands/bootstrap.sh" claude --users "$BOOT_USERS/ok"
+  "$ROOT/commands/bootstrap.sh" claude-box --users "$BOOT_USERS/ok"
 check "bootstrap: usage explains why tenants take no --users" 0 "box-minted GUEST" \
   "$ROOT/commands/bootstrap.sh" --help
 # --- README: the box rename (#12) --------------------------------------------
@@ -451,13 +451,13 @@ if [ "$(id -u)" -ne 0 ]; then
   check "bootstrap: --users file reaches the root check" 1 "must run as root" \
     env TS_AUTHKEY=x "$ROOT/commands/bootstrap.sh" workload-server --users "$BOOT_USERS/ok"
   check "bootstrap: runner role parses, refuses non-root" 1 "must run as root" env TS_AUTHKEY=x "$ROOT/commands/bootstrap.sh" runner-server --no-users
-  # staging dispatches to the tenant mechanism now; reaching ITS root check
+  # staging-box dispatches to the tenant mechanism; reaching ITS root check
   # through bootstrap.sh proves the dispatch and the tenant arg pass in one go.
   # RIG_ROLE_MARKER points at an absent fixture: the tenant marker guard runs
   # before the root check, and the machine running this harness may well have
   # a real /etc/rig/role of its own.
-  check "bootstrap: staging dispatches to the tenant mechanism, refuses non-root" 1 "must run as root" \
-    env RIG_ROLE_MARKER=/nonexistent/rig-role "$ROOT/commands/bootstrap.sh" staging
+  check "bootstrap: staging-box dispatches to the tenant mechanism, refuses non-root" 1 "must run as root" \
+    env RIG_ROLE_MARKER=/nonexistent/rig-role "$ROOT/commands/bootstrap.sh" staging-box
   check "bootstrap: dev role parses, refuses non-root" 1 "must run as root" env TS_AUTHKEY=x "$ROOT/commands/bootstrap.sh" dev-server --no-users
   check "bootstrap: workstation parses, refuses non-root" 1 "must run as root" env -u TS_AUTHKEY "$ROOT/commands/bootstrap.sh" workstation --no-users
   check "bootstrap: custom parses, refuses non-root" 1 "must run as root" \
@@ -466,7 +466,7 @@ else
   echo "skip: bootstrap non-root refusals (running as root)"
 fi
 
-# --- box tenant roles (#31): claude|codex|grok|staging ------------------------
+# --- box tenant roles (#31/#76): claude-box|codex-box|grok-box|staging-box ---
 # What a box-minted guest becomes — ONE mechanism (bootstrap-tenant.sh),
 # parameterized per tenant through lib/tenant-config.sh, dispatched from
 # bootstrap.sh so `rig bootstrap <role>` stays the single entrypoint. The real
@@ -474,12 +474,23 @@ fi
 # rehearsal's job — so the harness proves what it can non-root: the whole
 # arg/refusal surface, the pure parameter table, the rendered agent-context
 # file (guard note included), and grep-pins on the shipped script.
+# THE HARD CUT, tenant half (#76). The pre-rename names are gone and must fail
+# as UNKNOWN — asserted per name, because an alias left in for one tenant is the
+# shape that survives review: the taxonomy reads complete while one old name
+# still quietly converges. Checked at BOTH entrypoints, since bootstrap.sh has
+# its own dispatch list and a name could survive in one and not the other.
+for r in claude codex grok staging; do
+  check "tenant: the pre-#76 name '$r' is gone (tenant entrypoint)" 2 "unknown tenant role" \
+    "$ROOT/commands/bootstrap-tenant.sh" "$r"
+  check "tenant: the pre-#76 name '$r' is gone (bootstrap dispatch)" 2 "unknown role" \
+    "$ROOT/commands/bootstrap.sh" "$r"
+done
 check "tenant: --help exits 0"          0 "usage:" "$ROOT/commands/bootstrap-tenant.sh" --help
 check "tenant: role required, exit 2"   2 "tenant role required" "$ROOT/commands/bootstrap-tenant.sh"
 check "tenant: unknown role exits 2"    2 "unknown tenant role" "$ROOT/commands/bootstrap-tenant.sh" potato
-check "tenant: unknown flag exits 2"    2 "unknown flag" "$ROOT/commands/bootstrap-tenant.sh" claude --nope
-check "tenant: --user needs value"      2 "needs a value" "$ROOT/commands/bootstrap-tenant.sh" claude --user
-check "tenant: bad --user charset exits 2" 2 "invalid user" "$ROOT/commands/bootstrap-tenant.sh" claude --user 'fo|o'
+check "tenant: unknown flag exits 2"    2 "unknown flag" "$ROOT/commands/bootstrap-tenant.sh" claude-box --nope
+check "tenant: --user needs value"      2 "needs a value" "$ROOT/commands/bootstrap-tenant.sh" claude-box --user
+check "tenant: bad --user charset exits 2" 2 "invalid user" "$ROOT/commands/bootstrap-tenant.sh" claude-box --user 'fo|o'
 # The docker converge asserts the DAEMON answers, not just the client binary —
 # a dead dockerd passing `docker --version` is the "linked but cannot run"
 # scar in daemon form. Grep-pinned so the assert cannot ship deleted.
@@ -488,19 +499,19 @@ check "tenant: dockerd effective-state assert is present" 0 "" \
 # The machine-role traits die with the tenant story, never "unknown flag" — an
 # operator reaching for --hostname must learn where the trait family went.
 check "tenant: trait flags die with the tenant story" 2 "have no traits" \
-  "$ROOT/commands/bootstrap-tenant.sh" claude --class human
+  "$ROOT/commands/bootstrap-tenant.sh" claude-box --class human
 check "tenant: --hostname dies the same way" 2 "have no traits" \
-  "$ROOT/commands/bootstrap-tenant.sh" staging --hostname my-guest
+  "$ROOT/commands/bootstrap-tenant.sh" staging-box --hostname my-guest
 # Dispatch: the machine-role entrypoint hands tenant roles to the tenant
 # mechanism with args intact (--help reaching the TENANT usage proves both).
-check "bootstrap: tenant roles dispatch through bootstrap.sh" 0 "claude|codex|grok|staging" \
-  "$ROOT/commands/bootstrap.sh" claude --help
+check "bootstrap: tenant roles dispatch through bootstrap.sh" 0 "claude-box|codex-box|grok-box|staging-box" \
+  "$ROOT/commands/bootstrap.sh" claude-box --help
 # The marker guard fires BEFORE the root check (repo precedent: the coolify
 # marker warning), so the refusals are provable here off fixture markers. A
-# VM host (host=yes) refuses for every tenant — and names the staging rename,
-# because a pre-#31 staging HOST re-running its old command is exactly who
-# lands here. An agent tenant refuses ANY machine-role box; staging tolerates
-# ONLY class=server with host=no — that is the staging guest after its
+# VM host (host=yes) refuses for every tenant — and names the staging PAIR,
+# because whoever lands here has the two halves confused and wants the metal
+# (staging-server). An agent tenant refuses ANY machine-role box; staging-box
+# tolerates ONLY class=server with host=no — that is the guest after its
 # operator-run workload join, and re-converging it is what convergence is for.
 # A non-server machine (class=human via custom) is NOT that guest, and server
 # hardening would die at it with server-specific messaging — refuse instead.
@@ -508,28 +519,28 @@ TEN_FIX="$(mktemp -d)"
 printf 'role=dev-server class=human host=yes join=authkey\n'      > "$TEN_FIX/host"
 printf 'role=workload-server class=server host=no join=authkey\n' > "$TEN_FIX/machine"
 printf 'role=custom class=human host=no join=login\n'      > "$TEN_FIX/human"
-printf 'role=claude tenant=yes host=no\n'                  > "$TEN_FIX/tenant"
-check "tenant: staging refuses a non-server machine box" 1 "non-server machine role" \
-  env RIG_ROLE_MARKER="$TEN_FIX/human" "$ROOT/commands/bootstrap-tenant.sh" staging
+printf 'role=claude-box tenant=yes host=no\n'                  > "$TEN_FIX/tenant"
+check "tenant: staging-box refuses a non-server machine box" 1 "non-server machine role" \
+  env RIG_ROLE_MARKER="$TEN_FIX/human" "$ROOT/commands/bootstrap-tenant.sh" staging-box
 check "tenant: refuses a host=yes box (a VM host is never a guest)" 1 "hosts VMs" \
-  env RIG_ROLE_MARKER="$TEN_FIX/host" "$ROOT/commands/bootstrap-tenant.sh" claude
-check "tenant: the host refusal names the old staging preset's new spelling" 1 "custom --class server --host yes" \
-  env RIG_ROLE_MARKER="$TEN_FIX/host" "$ROOT/commands/bootstrap-tenant.sh" staging
+  env RIG_ROLE_MARKER="$TEN_FIX/host" "$ROOT/commands/bootstrap-tenant.sh" claude-box
+check "tenant: the host refusal sends you to the metal half of the pair" 1 "staging-server" \
+  env RIG_ROLE_MARKER="$TEN_FIX/host" "$ROOT/commands/bootstrap-tenant.sh" staging-box
 check "tenant: an agent role refuses a machine-role box" 1 "never tailnet machines" \
-  env RIG_ROLE_MARKER="$TEN_FIX/machine" "$ROOT/commands/bootstrap-tenant.sh" claude
+  env RIG_ROLE_MARKER="$TEN_FIX/machine" "$ROOT/commands/bootstrap-tenant.sh" claude-box
 if [ "$(id -u)" -ne 0 ]; then
   # RIG_ROLE_MARKER pinned to the absent fixture: the marker guard runs before
   # the root check, and the harness machine may carry a real /etc/rig/role.
-  check "tenant: claude parses, refuses non-root" 1 "must run as root" \
-    env RIG_ROLE_MARKER="$TEN_FIX/absent" "$ROOT/commands/bootstrap-tenant.sh" claude
-  check "tenant: codex parses, refuses non-root"  1 "must run as root" \
-    env RIG_ROLE_MARKER="$TEN_FIX/absent" "$ROOT/commands/bootstrap-tenant.sh" codex
-  check "tenant: grok parses, refuses non-root"   1 "must run as root" \
-    env RIG_ROLE_MARKER="$TEN_FIX/absent" "$ROOT/commands/bootstrap-tenant.sh" grok
-  check "tenant: staging tolerates a workload-joined guest's marker" 1 "must run as root" \
-    env RIG_ROLE_MARKER="$TEN_FIX/machine" "$ROOT/commands/bootstrap-tenant.sh" staging
+  check "tenant: claude-box parses, refuses non-root" 1 "must run as root" \
+    env RIG_ROLE_MARKER="$TEN_FIX/absent" "$ROOT/commands/bootstrap-tenant.sh" claude-box
+  check "tenant: codex-box parses, refuses non-root"  1 "must run as root" \
+    env RIG_ROLE_MARKER="$TEN_FIX/absent" "$ROOT/commands/bootstrap-tenant.sh" codex-box
+  check "tenant: grok-box parses, refuses non-root"   1 "must run as root" \
+    env RIG_ROLE_MARKER="$TEN_FIX/absent" "$ROOT/commands/bootstrap-tenant.sh" grok-box
+  check "tenant: staging-box tolerates a workload-joined guest's marker" 1 "must run as root" \
+    env RIG_ROLE_MARKER="$TEN_FIX/machine" "$ROOT/commands/bootstrap-tenant.sh" staging-box
   check "tenant: a tenant marker re-runs fine (convergence)" 1 "must run as root" \
-    env RIG_ROLE_MARKER="$TEN_FIX/tenant" "$ROOT/commands/bootstrap-tenant.sh" claude
+    env RIG_ROLE_MARKER="$TEN_FIX/tenant" "$ROOT/commands/bootstrap-tenant.sh" claude-box
 else
   echo "skip: tenant non-root refusals (running as root)"
 fi
@@ -545,24 +556,24 @@ tpath() { bash -c 'set -euo pipefail
   . "$1/commands/lib/tenant-config.sh"; tenant_context_path "$2" "$3"' _ "$ROOT" "$1" "$2"; }
 tctx()  { bash -c 'set -euo pipefail
   . "$1/commands/lib/tenant-config.sh"; render_tenant_context "$2"' _ "$ROOT" "$1"; }
-check "tenant params: agent users are named after their agent" 0 "claude" tuser claude
-check "tenant params: staging's user is box#69's ops" 0 "ops" tuser staging
-check "tenant params: claude context lands in ~/.claude/CLAUDE.md" 0 "/home/claude/.claude/CLAUDE.md" tpath claude /home/claude
-check "tenant params: codex context lands in ~/.codex/AGENTS.md" 0 "/home/codex/.codex/AGENTS.md" tpath codex /home/codex
-check "tenant params: grok context lands in ~/.grok/AGENTS.md" 0 "/home/grok/.grok/AGENTS.md" tpath grok /home/grok
-check "tenant params: staging has no context file" 1 "" tpath staging /home/ops
+check "tenant params: agent users are named after their agent" 0 "claude" tuser claude-box
+check "tenant params: staging's user is box#69's ops" 0 "ops" tuser staging-box
+check "tenant params: claude context lands in ~/.claude/CLAUDE.md" 0 "/home/claude/.claude/CLAUDE.md" tpath claude-box /home/claude
+check "tenant params: codex context lands in ~/.codex/AGENTS.md" 0 "/home/codex/.codex/AGENTS.md" tpath codex-box /home/codex
+check "tenant params: grok context lands in ~/.grok/AGENTS.md" 0 "/home/grok/.grok/AGENTS.md" tpath grok-box /home/grok
+check "tenant params: staging has no context file" 1 "" tpath staging-box /home/ops
 # The box#80 guard note lives ONCE, in the renderer, and every agent's file
 # carries it — the layering decision's whole point: never per-template again.
-check "tenant context: claude carries the box#80 guard" 0 "box setup-host" tctx claude
-check "tenant context: codex carries the box#80 guard"  0 "box setup-host" tctx codex
-check "tenant context: grok carries the box#80 guard"   0 "box setup-host" tctx grok
-check "tenant context: the guard says whose host this is not" 0 "not a host you own" tctx claude
-check "tenant context: the guard cites box#80" 0 "box#80" tctx claude
-check "tenant context: the creds-free contract is stated" 0 "Creds-free by default" tctx claude
-check "tenant context: claude names /login as the operator's flow" 0 "/login" tctx claude
-check "tenant context: codex names its login flow" 0 "login flow (\`codex\`)" tctx codex
-check "tenant context: grok names its login flow" 0 "grok login" tctx grok
-check "tenant context: staging renders nothing (no agent lives there)" 1 "" tctx staging
+check "tenant context: claude carries the box#80 guard" 0 "box setup-host" tctx claude-box
+check "tenant context: codex carries the box#80 guard"  0 "box setup-host" tctx codex-box
+check "tenant context: grok carries the box#80 guard"   0 "box setup-host" tctx grok-box
+check "tenant context: the guard says whose host this is not" 0 "not a host you own" tctx claude-box
+check "tenant context: the guard cites box#80" 0 "box#80" tctx claude-box
+check "tenant context: the creds-free contract is stated" 0 "Creds-free by default" tctx claude-box
+check "tenant context: claude names /login as the operator's flow" 0 "/login" tctx claude-box
+check "tenant context: codex names its login flow" 0 "login flow (\`codex\`)" tctx codex-box
+check "tenant context: grok names its login flow" 0 "grok login" tctx grok-box
+check "tenant context: staging renders nothing (no agent lives there)" 1 "" tctx staging-box
 # Creds-free BY CONSTRUCTION, provable by absence (box#69's grep-refusal
 # idiom): nothing in the tenant mechanism touches the tailnet, prompts, or
 # apt-installs incus. A grep that finds nothing (exit 1) is the pass.
@@ -572,15 +583,15 @@ check "tenant: non-interactive — nothing prompts" 1 "" \
   grep -nE '\bread -r' "$ROOT/commands/bootstrap-tenant.sh"
 check "tenant: never apt-installs incus (box owns the daemon)" 1 "" \
   grep -nE 'apt-get install.* incus' "$ROOT/commands/bootstrap-tenant.sh"
-# staging's posture rides the SAME hardening code as the machine roles — the
+# staging-box's posture rides the SAME hardening code as the machine roles — the
 # shared lib call is the anti-drift property, so pin the call, not the words.
-check "tenant: staging hardens through the shared sshd lib" 0 "" \
+check "tenant: staging-box hardens through the shared sshd lib" 0 "" \
   grep -qE '^[[:space:]]*harden_sshd server$' "$ROOT/commands/bootstrap-tenant.sh"
 check "tenant: docker lands via docker's own installer" 0 "" \
   grep -q "get.docker.com" "$ROOT/commands/bootstrap-tenant.sh"
 # The #15 lesson pinned: 'box exec' shells read no rc files, so the CLI must
 # land on the SYSTEM path — and a claimed install is verified, not trusted:
-# it must ANSWER as the tenant user (the grok template's scar: linked but
+# it must ANSWER as the tenant user (the grok-box template's scar: linked but
 # cannot run). The $CLI/$TENANT_USER are literals we grep for in the script.
 # shellcheck disable=SC2016
 check "tenant: the agent CLI lands on the system PATH" 0 "" \
@@ -1473,7 +1484,7 @@ fi
 # post-close-root state, strictly harder than what bootstrap installs. Byte-grep
 # the widened assertion so a revert cannot ship green. The hardening block
 # lives in lib/sshd.sh since #31 — ONE converger shared by the machine roles
-# and the staging tenant — so the greps pin the lib, and a call-site grep pins
+# and the staging-box tenant — so the greps pin the lib, and a call-site grep pins
 # that bootstrap actually runs it (a function nobody calls is not hardening).
 check "sshd lib: permitrootlogin assertion accepts the closed state" 0 "" \
   grep -qF "permitrootlogin (no|prohibit-password|without-password)" "$ROOT/commands/lib/sshd.sh"

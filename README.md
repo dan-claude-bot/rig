@@ -3,8 +3,9 @@
 A CLI that turns a **pristine Debian server into a hardened, tailnet-joined
 node** — one curl, one command. A second command installs a version-pinned
 Coolify on a control-plane box. And inside a [box](https://github.com/heavy-duty/box)-minted
-guest, the same verb converges the **box tenants** — claude, codex, grok,
-staging — from thin, creds-free seeds (see *the box tenants* below).
+guest, the same verb converges the **box tenants** — claude-box, codex-box,
+grok-box, staging-box — from thin, creds-free seeds (see *the box tenants*
+below).
 
 Philosophy (shared with [box](https://github.com/heavy-duty/box)):
 **public tool, private state**. rig carries plumbing logic only — no
@@ -93,9 +94,9 @@ itself is untouched — what bootstrap converged stays converged.
 ### `rig bootstrap <control-plane-server|workload-server|runner-server|staging-server|dev-server|workstation|custom>`
 
 Run as root on the fresh box (over SSH). Convergent — safe to re-run; a
-second run changes nothing. (The box TENANT roles — `claude`, `codex`,
-`grok`, `staging` — share the verb but are their own family; see *the box
-tenants* below.)
+second run changes nothing. (The box TENANT roles — `claude-box`, `codex-box`,
+`grok-box`, `staging-box` — share the verb but are their own family; the
+`-box` suffix says so. See *the box tenants* below.)
 
 ```sh
 rig bootstrap control-plane-server --hostname my-coolify-box --users ./users
@@ -167,8 +168,8 @@ its own account; the box CLI's own installer does that (see the `host`
 trait), and every other way that step can fail lands in apply's existing
 refusal at the end.
 
-`--users` does **not** reach the box TENANT roles (`claude`, `codex`, `grok`,
-`staging`). A tenant is a box-minted *guest*: box auto-runs its bootstrap at
+`--users` does **not** reach the box TENANT roles (`claude-box`, `codex-box`,
+`grok-box`, `staging-box`). A tenant is a box-minted *guest*: box auto-runs its bootstrap at
 mint, non-interactively, with no file to hand it; the guest never joins the
 tailnet and has no SSH door of its own — you enter with `box shell`, gated by
 the **host's** `incus` grants, which the host's own users file already
@@ -373,15 +374,15 @@ VM-host appliance) — and `workstation` is the machine at the keyboard end of
 all the SSH connections: human-class, `join=login`, entering the tailnet as
 *your* device rather than the fleet's.
 
-### `rig bootstrap <claude|codex|grok|staging>` — the box tenants
+### `rig bootstrap <claude-box|codex-box|grok-box|staging-box>` — the box tenants
 
 Run as root, **inside** a [box](https://github.com/heavy-duty/box)-minted
 guest. Convergent — safe to re-run; a second run changes nothing.
 
 ```sh
-rig bootstrap claude              # or codex, grok — the agent tenants
-rig bootstrap staging             # the server tenant (docker + sshd hardening)
-rig bootstrap claude --user dev   # when the seed's BOX_USER differs
+rig bootstrap claude-box          # or codex-box, grok-box — the agent tenants
+rig bootstrap staging-box         # the server tenant (docker + sshd hardening)
+rig bootstrap claude-box --user dev   # when the seed's BOX_USER differs
 ```
 
 **The layering** (rig#31 ↔ box#81): a box template stops being where tenant
@@ -397,12 +398,18 @@ the guests were the hole.
 It is **one mechanism, parameterized per tenant** (`lib/tenant-config.sh`
 holds the whole per-tenant table), not four hand-maintained scripts:
 
-| tenant    | user     | what lands |
-|-----------|----------|------------|
-| `claude`  | `claude` | the agent toolbelt (git, gh, tmux, ripgrep, jq, age, unzip, build-essential), docker, node 22, the Claude Code CLI on the system PATH, zsh + oh-my-zsh, and `~/.claude/CLAUDE.md` |
-| `codex`   | `codex`  | the toolbelt, docker, node 22, `@openai/codex` on the system PATH, and `~/.codex/AGENTS.md` |
-| `grok`    | `grok`   | the toolbelt, docker, the grok CLI on the system PATH, and `~/.grok/AGENTS.md` |
-| `staging` | `ops`    | box#69's server posture: docker + the same sshd hardening the machine roles get (shared `lib/sshd.sh`, `class=server` acceptance) |
+| tenant role   | user     | what lands |
+|---------------|----------|------------|
+| `claude-box`  | `claude` | the agent toolbelt (git, gh, tmux, ripgrep, jq, age, unzip, build-essential), docker, node 22, the Claude Code CLI on the system PATH, zsh + oh-my-zsh, and `~/.claude/CLAUDE.md` |
+| `codex-box`   | `codex`  | the toolbelt, docker, node 22, `@openai/codex` on the system PATH, and `~/.codex/AGENTS.md` |
+| `grok-box`    | `grok`   | the toolbelt, docker, the grok CLI on the system PATH, and `~/.grok/AGENTS.md` |
+| `staging-box` | `ops`    | box#69's server posture: docker + the same sshd hardening the machine roles get (shared `lib/sshd.sh`, `class=server` acceptance) |
+
+**The role carries the suffix; the user does not.** A tenant user is the
+account the box *seed* created (`BOX_USER`) and the agent CLI's own dotdir
+hangs off it — `claude-box` converges the `claude` user and writes
+`~/.claude/CLAUDE.md`. The suffix is rig's word for "this is a guest", not a
+rename of anything inside the box, so nothing in the guest's filesystem moved.
 
 Every install is **asserted on effective state**, not exit codes: the CLI must
 *answer* (`--version`, run as the tenant user — a CLI that exists but cannot
@@ -412,14 +419,14 @@ hardening. The CLI also lands on the **system** PATH (`/usr/local/bin`):
 files, so a PATH export alone is invisible to it.
 
 **Creds-free and non-interactive, by contract.** box auto-runs these at mint
-(`box exec … rig bootstrap claude`), so nothing here prompts, joins, or admits
+(`box exec … rig bootstrap claude-box`), so nothing here prompts, joins, or admits
 — no tailnet, no keys (the harness pins this by *absence*: no `tailscale`, no
 prompt, in the shipped script). The one creds-holding step a staging guest
 eventually needs — the tailnet workload join — stays **operator-run**, exactly
 as box#69 designed it: `box shell` → `sudo rig bootstrap workload-server --hostname
 <name> --users <path>` (or `--no-users` — a guest's door is `box shell`, gated
 by the host's grants) with a single-use tagged pre-auth key. After that join, re-running
-`rig bootstrap staging` still converges docker + hardening and leaves the
+`rig bootstrap staging-box` still converges docker + hardening and leaves the
 workload marker alone — the machine role is the truer statement of what the
 box became.
 
@@ -1033,6 +1040,6 @@ the real converge belongs to the rehearsal. The end-to-end rehearsal is a
 throwaway VM/container: pristine Debian → install → `bootstrap workload-server` with
 a real single-use key → assert the sshd drop-in, tailnet join, and a no-op
 second run → destroy, remove the node from the tailnet. The tenant rehearsal
-is the same shape, creds-free: container + seed user → `rig bootstrap claude`
-/ `staging` → assert the CLI answers, docker answers, `sshd -T`, the context
+is the same shape, creds-free: container + seed user → `rig bootstrap claude-box`
+/ `staging-box` → assert the CLI answers, docker answers, `sshd -T`, the context
 file — then re-run and watch it no-op.

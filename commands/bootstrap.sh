@@ -27,7 +27,7 @@ usage: rig bootstrap <control-plane-server|workload-server|runner-server|
                      (--users <path> | --no-users)
                      [--hostname <name>] [--class <human|server>]
                      [--host <yes|no>] [--join <authkey|login>]
-       rig bootstrap <claude|codex|grok|staging> [--user <name>]
+       rig bootstrap <claude-box|codex-box|grok-box|staging-box> [--user <name>]
                      (the box TENANT roles — see their own --help; they take
                       no --users, see below)
 
@@ -51,7 +51,7 @@ and per-human accounts keep attribution intact for the times someone does go
 in. So the complete path is the default path and skipping it is a deliberate
 --no-users, not an omission.
 
---users does NOT reach the box TENANT roles (claude|codex|grok|staging). A
+--users does NOT reach the box TENANT roles (claude-box|codex-box|grok-box|staging-box). A
 tenant is a box-minted GUEST: box auto-runs its bootstrap at mint,
 non-interactively, with no file to hand it; the guest never joins the tailnet
 and has no SSH door of its own — entry is `box shell`, gated by the HOST's
@@ -109,15 +109,15 @@ EOF
 ROLE="${1:-}"
 case "$ROLE" in
   control-plane-server|workload-server|runner-server|staging-server|dev-server|workstation|custom) shift ;;
-  claude|codex|grok|staging)
+  claude-box|codex-box|grok-box|staging-box)
     # The box TENANT roles (#31) are a different family — guests a box mints,
     # never tailnet machines — and live in their own mechanism, one script
     # parameterized per tenant. Dispatched here so `rig bootstrap <role>`
     # stays the single entrypoint for both families.
     exec "$HERE/bootstrap-tenant.sh" "$@" ;;
   -h|--help) usage; exit 0 ;;
-  "") usage >&2; die "role required (control-plane-server|workload-server|runner-server|staging-server|dev-server|workstation|custom — or a tenant role: claude|codex|grok|staging)" 2 ;;
-  *) die "unknown role: $ROLE (want control-plane-server|workload-server|runner-server|staging-server|dev-server|workstation|custom — or a tenant role: claude|codex|grok|staging)" 2 ;;
+  "") usage >&2; die "role required (control-plane-server|workload-server|runner-server|staging-server|dev-server|workstation|custom — or a tenant role: claude-box|codex-box|grok-box|staging-box)" 2 ;;
+  *) die "unknown role: $ROLE (want control-plane-server|workload-server|runner-server|staging-server|dev-server|workstation|custom — or a tenant role: claude-box|codex-box|grok-box|staging-box)" 2 ;;
 esac
 
 # Role→traits map — the single place a role's shape is declared (issue #26).
