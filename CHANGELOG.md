@@ -219,13 +219,23 @@ on the way to cutting its first release, and this file starts there.
   and an answer is coming*. A ready PR nobody was asked to review used to read
   as "waiting on the reviewers" until the stale sweep caught up; it now reads
   `state:addressing` + `blocker:unrequested`, because the agent owes the ask
-  and the board should say so. Drafts stay exempt — the bots ignore drafts by
-  design — as does an explicit human request, since a maintainer claiming a PR
-  early is deliberate.
+  and the board should say so. `blocker:unrequested` covers both shapes of
+  "this head has no verdict from somebody": nobody reviewed it, or everybody
+  reviewed an older tree and the approvals staled behind a push. The second is
+  the worse of the two, since it leaves approvals on the page that no longer
+  describe the code. Drafts stay exempt — the bots ignore drafts by design —
+  as does an explicit human request, since a maintainer claiming a PR early is
+  deliberate.
 
   The reconciler strips `state:needs-rebase` on sight via a `RETIRED` list, so
   the retirement heals the existing board instead of stranding a label that
-  nothing recomputes. Fixtures 51 → 66.
+  nothing recomputes. It also filters every label it is about to *add* against
+  the repo's actual label set, read once per sweep: `gh issue edit` rejects the
+  whole call on one unknown name, so on a repo that has not yet bootstrapped
+  the new `blocker:*` labels a single missing one would have taken the state
+  convergence down with it — on exactly the PRs this change exists to heal.
+  Now the state still converges and the missing labels are named in the log.
+  Fixtures 51 → 68.
 
 - **BREAKING: `--class human|server` is now `--root-door closed|open`** (#77) —
   the trait was named for who *lives on* a box; what it decides is one thing,
