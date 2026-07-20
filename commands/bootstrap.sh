@@ -10,6 +10,8 @@ HERE="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")" && pwd)"
 . "$HERE/lib/sshd.sh"            # harden_sshd — shared with the staging tenant
 # shellcheck source=SCRIPTDIR/lib/users-config.sh
 . "$HERE/lib/users-config.sh"    # parse_users_file — the --users PRE-FLIGHT only
+# shellcheck source=SCRIPTDIR/lib/manifest.sh
+. "$HERE/lib/manifest.sh"        # manifest_stamp — provenance, written beside the marker
 # The users lib is sourced for validation, never for convergence: `users apply`
 # stays the single owner of what a users file DOES to a box (#51). Bootstrap
 # borrows the parser so a typo'd users file is caught in the same breath as a
@@ -618,6 +620,31 @@ else
   log "role marker already current"
 fi
 rm -f "$MARKER_TMP"
+
+# --- provenance manifest ------------------------------------------------------
+# /etc/rig/manifest records WHICH rig converged this machine and WHEN (#61).
+# The marker above says what the box IS; this says what BUILT it — two files,
+# two jobs, and the marker is deliberately untouched (it has six readers,
+# install.sh:82-90 among them).
+#
+# Placed HERE, immediately after the marker, so the two agree by construction
+# and both inherit the marker's discipline verbatim: written only AFTER the tag
+# verification, so neither ever describes a box that failed to become what it
+# claims. A manifest that survives a failed run is worse than no manifest — it
+# is a confident wrong answer. It deliberately does NOT trail the box install
+# and the users phase below: those are the host EXTRA and the operator phase,
+# and a box whose people failed to converge was still converged BY this rig at
+# this time. Stamping provenance is not a claim that everything after it
+# succeeded — the marker beside it makes exactly the same claim, and the two
+# landing together is what keeps them readable as one statement.
+#
+# The version stamped is the one that RAN, captured now — not what `rig
+# --version` would answer after a later upgrade.
+if manifest_stamp "$(manifest_running_version "$HERE/..")"; then
+  log "provenance manifest written: $(manifest_path)"
+else
+  log "provenance manifest already current"
+fi
 
 # --- box install (host=yes only) -------------------------------------------
 # A host=yes box exists to run guest boxes, so bootstrap finishes the job rather

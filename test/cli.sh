@@ -1908,6 +1908,219 @@ check "no main-shell os-release sourcing" 1 "" \
   grep -rnE '^[[:space:]]*\.[[:space:]]+/etc/os-release' "$ROOT/commands"
 
 # ---------------------------------------------------------------------------
+# /etc/rig/manifest — provenance (#61)
+#
+# The writer is a pure text→text renderer behind a cmp-guard, for the same
+# reason assert_marker_human and parse_users_file are pure: the write itself
+# sits behind bootstrap's root check, so every RULE is proven here, non-root,
+# against fixtures — and the rules are the whole feature.
+# ---------------------------------------------------------------------------
+# Every helper sources the lib in a SUBSHELL, so the harness's own $PASS/$FAIL
+# and the lib's globals never meet (repo precedent: the bash -c gates above,
+# same isolation, one less quoting layer).
+render() {   # render <path> <version> <now>
+  ( set -euo pipefail
+    . "$ROOT/commands/lib/manifest.sh"
+    manifest_render "$1" "$2" "$3" )
+}
+stamp() {    # stamp <path> <version> — the side-effecting writer
+  ( set -euo pipefail
+    . "$ROOT/commands/lib/manifest.sh"
+    RIG_MANIFEST="$1" manifest_stamp "$2" )
+}
+running_version() {   # running_version <rig tree root>
+  ( set -euo pipefail
+    . "$ROOT/commands/lib/manifest.sh"
+    manifest_running_version "$1" )
+}
+mode_of()  { stat -c %a "$1"; }
+mtime_of() { stat -c %Y "$1"; }
+text_is()  { [ "$(cat "$1")" = "$2" ]; }
+MF="$(mktemp -d)"
+
+# -- the shape on a virgin machine ------------------------------------------
+check "manifest: a fresh render carries schema=1" 0 "schema=1" \
+  render "$MF/absent" 0.4.0 2026-07-19T14:24:51Z
+check "manifest: a fresh render pins birth to the running version" 0 "bootstrapped_by=0.4.0" \
+  render "$MF/absent" 0.4.0 2026-07-19T14:24:51Z
+check "manifest: a fresh render stamps birth with now" 0 "bootstrapped_at=2026-07-19T14:24:51Z" \
+  render "$MF/absent" 0.4.0 2026-07-19T14:24:51Z
+# Both pairs equal on a fresh machine: mild redundancy, in exchange for a file
+# no reader ever has to infer a missing field from.
+check "manifest: a fresh render writes latest equal to birth" 0 "converged_by=0.4.0" \
+  render "$MF/absent" 0.4.0 2026-07-19T14:24:51Z
+check "manifest: a fresh render stamps latest with now" 0 "converged_at=2026-07-19T14:24:51Z" \
+  render "$MF/absent" 0.4.0 2026-07-19T14:24:51Z
+# key=value, one per line, nothing else — the shape a machine with no jq and no
+# YAML parser can read with `read`. Five lines, no quoting, no nesting.
+render_is_flat_kv() {   # render_is_flat_kv <path> <version>
+  local out
+  out="$(render "$1" "$2" 2026-07-19T14:24:51Z)" || return 1
+  [ "$(printf '%s\n' "$out" | wc -l)" -eq 5 ] || return 1
+  ! printf '%s\n' "$out" | grep -qvE '^[a-z_]+=[^ ]*$'
+}
+check "manifest: the render is bare key=value, one per line" 0 "" \
+  render_is_flat_kv "$MF/absent" 0.4.0
+
+# -- THE CRUX: convergence ---------------------------------------------------
+# bootstrap.sh:3 promises "a second run changes nothing", enforced by a
+# cmp-guard before every file install. A naive `converged_at=$(now)` would
+# break that promise on every single re-run — the file would differ by a
+# timestamp, the guard would fire, and rig would report a change it did not
+# make. Rules 1 and 2 make the rendered content a function of (existing file,
+# running version) alone.
+#
+# Proven the strong way: render the SAME fixture twice with two clock readings
+# a year apart and diff. Byte-identical output means the clock cannot reach the
+# file at all — a stronger claim than re-running the writer quickly enough that
+# the two stamps happen to match by luck.
+clock_cannot_reach() {   # clock_cannot_reach <path> <version>
+  diff <(render "$1" "$2" 2027-01-01T00:00:00Z) <(render "$1" "$2" 2028-06-06T06:06:06Z)
+}
+reproduces_itself() {    # reproduces_itself <path> <version>
+  diff <(render "$1" "$2" 2029-09-09T09:09:09Z) "$1"
+}
+BORN="$MF/born"
+render "$MF/absent" 0.4.0 2026-07-19T14:24:51Z > "$BORN"
+check "manifest: re-render by the SAME rig is byte-identical across a year of clock" 0 "" \
+  clock_cannot_reach "$BORN" 0.4.0
+check "manifest: re-render by the same rig equals the file it read" 0 "" \
+  reproduces_itself "$BORN" 0.4.0
+# The same property through the WRITER, which is what bootstrap actually calls:
+# a first stamp writes (exit 0), a second by the same rig reports the file
+# already current (exit 1) and touches nothing.
+STAMPED="$MF/stamped"
+check "manifest: the first stamp writes the file" 0 "" stamp "$STAMPED" 0.4.0
+check "manifest: the file landed 0644 — an audit record nobody can read is not one" \
+  0 "644" mode_of "$STAMPED"
+BEFORE="$(cat "$STAMPED")"
+check "manifest: a second stamp by the same rig reports already-current" 1 "" stamp "$STAMPED" 0.4.0
+check "manifest: a second stamp by the same rig changed no byte" 0 "" \
+  text_is "$STAMPED" "$BEFORE"
+
+# -- a DIFFERENT rig: a real diff, and only where it belongs ----------------
+# The cmp-guard firing here is CORRECT, not spurious. It was only ever the
+# clock that was the fake change, never the version.
+check "manifest: a re-converge by a newer rig moves converged_by" 0 "converged_by=0.6.0" \
+  render "$BORN" 0.6.0 2026-08-02T09:11:03Z
+check "manifest: a re-converge by a newer rig moves converged_at" 0 "converged_at=2026-08-02T09:11:03Z" \
+  render "$BORN" 0.6.0 2026-08-02T09:11:03Z
+# Rule 1, the load-bearing half: birth is FIRST-WRITE-WINS. bootstrapped_by
+# must survive every later convergence — "what built this box" is unanswerable
+# by any other means once the run is over.
+check "manifest: a re-converge leaves the birth version pinned" 0 "bootstrapped_by=0.4.0" \
+  render "$BORN" 0.6.0 2026-08-02T09:11:03Z
+check "manifest: a re-converge leaves the birth stamp pinned" 0 "bootstrapped_at=2026-07-19T14:24:51Z" \
+  render "$BORN" 0.6.0 2026-08-02T09:11:03Z
+check "manifest: the writer sees a version change as a real change" 0 "" stamp "$STAMPED" 0.6.0
+check "manifest: and settles again on the new version" 1 "" stamp "$STAMPED" 0.6.0
+
+# -- a DOWNGRADE is a change too --------------------------------------------
+# converged_by is "the rig that last converged this", not "the highest one ever
+# seen". Rolling back with `rig use` and re-converging must be recorded, or the
+# file would name a version that is no longer what runs here.
+check "manifest: re-converging with an OLDER rig is recorded, not ignored" 0 "converged_by=0.1.0" \
+  render "$BORN" 0.1.0 2026-09-09T09:09:09Z
+
+# -- forward compatibility: unknown keys survive the rewrite ----------------
+# The schema promises readers ignore keys they do not know. That promise is
+# worthless if the WRITER eats them: a manifest touched by a newer rig, or
+# carrying a later command's own provenance line, must come back whole.
+FOREIGN="$MF/foreign"
+{ cat "$BORN"; printf 'runner_installed_at=2026-07-19T16:10:00Z\n'; printf 'schema_future_key=x\n'; } > "$FOREIGN"
+check "manifest: a later command's provenance line survives a rewrite" 0 "runner_installed_at=2026-07-19T16:10:00Z" \
+  render "$FOREIGN" 0.6.0 2026-08-02T09:11:03Z
+check "manifest: a key from a newer schema survives a rewrite" 0 "schema_future_key=x" \
+  render "$FOREIGN" 0.6.0 2026-08-02T09:11:03Z
+# And preserving them must not cost convergence: a file carrying foreign keys is
+# still byte-stable under a same-version re-render.
+check "manifest: foreign keys do not break convergence" 0 "" \
+  reproduces_itself "$FOREIGN" 0.4.0
+
+# -- damaged files: repair once, then settle --------------------------------
+# A truncated or hand-edited manifest must converge back to a whole one and
+# then STAY PUT — a repair that re-fires on every run is a clock by another
+# name, and would break convergence exactly where it is hardest to notice.
+printf 'bootstrapped_at=2020-01-01T00:00:00Z\n' > "$MF/noby"
+check "manifest: a birth stamp with no birth version records unknown, never today's" \
+  0 "bootstrapped_by=unknown" render "$MF/noby" 0.4.0 2026-07-19T14:24:51Z
+check "manifest: ...and still keeps the birth stamp it does have" \
+  0 "bootstrapped_at=2020-01-01T00:00:00Z" render "$MF/noby" 0.4.0 2026-07-19T14:24:51Z
+printf 'schema=1\nbootstrapped_by=0.4.0\nbootstrapped_at=2020-01-01T00:00:00Z\nconverged_by=0.4.0\n' > "$MF/noat"
+REPAIRED="$MF/repaired"
+render "$MF/noat" 0.4.0 2026-07-19T14:24:51Z > "$REPAIRED"
+check "manifest: a converged_by with no converged_at is repaired once" 0 "converged_at=2026-07-19T14:24:51Z" \
+  cat "$REPAIRED"
+check "manifest: the repair settles — it does not re-fire on the next run" 0 "" \
+  reproduces_itself "$REPAIRED" 0.4.0
+
+# -- the version that RAN, not the one installed now ------------------------
+# The whole point: a machine outlives the rig that built it, so this is read
+# from the tree at run time and never re-derived from `rig --version` later.
+check "manifest: the running version comes from the tree's own VERSION" 0 "$(cat "$ROOT/VERSION")" \
+  running_version "$ROOT"
+check "manifest: a tree with no VERSION records unknown, not an empty key" 0 "unknown" \
+  running_version "$MF"
+
+# -- the marker is NOT touched ----------------------------------------------
+# /etc/rig/role has six readers, install.sh:82-90 among them; the manifest is a
+# second file beside it, never a replacement. Assert the writer cannot reach it.
+check "manifest: no CODE in the manifest lib reaches the role marker" 1 "" \
+  grep -nE '^[^#]*(/etc/rig/role|RIG_ROLE_MARKER)' "$ROOT/commands/lib/manifest.sh"
+check "bootstrap: the role marker write is still its own cmp-guarded block" 0 "" \
+  grep -qE '^MARKER=/etc/rig/role$' "$ROOT/commands/bootstrap.sh"
+
+# -- ordering: provenance is written after the tag verification -------------
+# The marker's discipline, inherited verbatim — a manifest that survives a run
+# which failed to become what it claims is a confident wrong answer.
+mfstamp_at="$(grep -nE '^if manifest_stamp ' "$ROOT/commands/bootstrap.sh" | head -n1 | cut -d: -f1)"
+verify_at="$(grep -nE '^[[:space:]]*verify_effective_tag back-out$' "$ROOT/commands/bootstrap.sh" | head -n1 | cut -d: -f1)"
+check "bootstrap: both ordering anchors were found (guards the greps above)" 0 "" \
+  test -n "${mfstamp_at:-}" -a -n "${verify_at:-}"
+check "bootstrap: the manifest stamp follows the tag verification" 0 "" \
+  test "${mfstamp_at:-0}" -gt "${verify_at:-999999}"
+# Both bootstrap paths stamp it: a box-minted guest is a machine rig converged,
+# and "which rig, when" is a fact whichever bootstrap ran.
+check "bootstrap-tenant: a tenant gets a manifest too" 0 "" \
+  grep -q 'manifest_stamp' "$ROOT/commands/bootstrap-tenant.sh"
+
+# -- `rig manifest`, the reader ---------------------------------------------
+key_prints_exactly() {   # key_prints_exactly <path> <key> <want>
+  [ "$(RIG_MANIFEST="$1" "$ROOT/commands/manifest.sh" "$2")" = "$3" ]
+}
+check "manifest: --help exits 0" 0 "usage: rig manifest" "$ROOT/commands/manifest.sh" --help
+check "manifest: dispatches through bin/rig" 0 "usage: rig manifest" "$ROOT/bin/rig" manifest --help
+check "manifest: rig --help lists the command" 0 "manifest [<key>]" "$ROOT/bin/rig" --help
+check "manifest: unknown flag exits 2" 2 "unknown option" \
+  env RIG_MANIFEST="$STAMPED" "$ROOT/commands/manifest.sh" --nope
+check "manifest: two keys is a usage error" 2 "at most one key" \
+  env RIG_MANIFEST="$STAMPED" "$ROOT/commands/manifest.sh" converged_by schema
+check "manifest: an absent manifest exits 1 by name" 1 "no manifest at" \
+  env RIG_MANIFEST="$MF/absent" "$ROOT/commands/manifest.sh"
+check "manifest: bare prints the file" 0 "converged_by=0.6.0" \
+  env RIG_MANIFEST="$STAMPED" "$ROOT/commands/manifest.sh"
+check "manifest: a key prints the value ALONE, for shell callers" 0 "" \
+  key_prints_exactly "$STAMPED" converged_by 0.6.0
+check "manifest: an unknown key exits 1 and names the keys present" 1 "keys present" \
+  env RIG_MANIFEST="$STAMPED" "$ROOT/commands/manifest.sh" nosuchkey
+# Operator input reaches the key lookup, so the lookup is a string equality and
+# never a pattern — a key of '.*' must find nothing rather than match line one.
+check "manifest: a regex-shaped key matches nothing" 1 "no such key" \
+  env RIG_MANIFEST="$STAMPED" "$ROOT/commands/manifest.sh" '.*'
+# The reader writes NOTHING — bootstrap is the manifest's single writer.
+MTIME_BEFORE="$(mtime_of "$STAMPED")"
+RIG_MANIFEST="$STAMPED" "$ROOT/commands/manifest.sh" >/dev/null 2>&1 || true
+check "manifest: reading it does not write it" 0 "$MTIME_BEFORE" mtime_of "$STAMPED"
+
+# Secrets: this file is 0644 by design, so the rule has to be stated where the
+# next command that appends a line will read it (repo precedent:
+# runner-install.sh:190's ".rig-labels — box-local metadata, never a credential").
+check "manifest: the never-a-credential rule is stated in the writer" 0 "never a credential" \
+  cat "$ROOT/commands/lib/manifest.sh"
+
+rm -rf "$MF"
+
+# ---------------------------------------------------------------------------
 # The versioned install (box#79's layout, ported — #35). RIG_INSTALL_SOURCE
 # bypasses the network, so these are REAL runs of install.sh against throwaway
 # RIG_HOME/RIG_BIN roots — layout, symlink chain, flat-tree migration, symlink

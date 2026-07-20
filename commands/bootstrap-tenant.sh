@@ -23,6 +23,8 @@ HERE="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")" && pwd)"
 . "$HERE/lib/users-config.sh"    # read_role_marker / root_door_of
 # shellcheck source=SCRIPTDIR/lib/sshd.sh
 . "$HERE/lib/sshd.sh"            # harden_sshd (the staging-box tenant)
+# shellcheck source=SCRIPTDIR/lib/manifest.sh
+. "$HERE/lib/manifest.sh"        # manifest_stamp — provenance, written beside the marker
 
 log()  { printf 'rig-bootstrap: %s\n' "$*"; }
 warn() { printf 'rig-bootstrap: WARNING: %s\n' "$*" >&2; }
@@ -403,6 +405,31 @@ if [ -z "$EXISTING_ROOT_DOOR" ]; then
   rm -f "$MARKER_TMP"
 else
   log "machine role marker present (${EXISTING_MARKER}); leaving it alone"
+fi
+
+# --- provenance manifest ------------------------------------------------------
+# A tenant gets a manifest, in the SAME /etc/rig/manifest, through the same
+# writer — and UNCONDITIONALLY, outside the marker gate above (#61's open
+# question, answered here).
+#
+# The reason the marker needs that gate is that it holds TRAITS, and a guest's
+# traits and the traits it earns after an operator-run `rig bootstrap workload`
+# join are two different, competing statements about one box — so the marker
+# has to pick, and it picks the truer one. Provenance has no such conflict.
+# "Which rig converged this guest, and when" is a fact whichever bootstrap ran,
+# and the two-pair shape composes across them exactly as designed: a staging
+# guest later joined as a workload keeps the TENANT bootstrap as its birth —
+# that genuinely is when this machine was first converged — and the machine
+# bootstrap moves converged_* forward. Skipping the write on a joined guest
+# would lose the birth stamp that only this run knows.
+#
+# One file, not a tenant-shaped second one: the manifest answers a question
+# about the MACHINE, and a guest is a machine. The marker already carries
+# `tenant=yes` for anyone who needs to know which kind.
+if manifest_stamp "$(manifest_running_version "$HERE/..")"; then
+  log "provenance manifest written: $(manifest_path)"
+else
+  log "provenance manifest already current"
 fi
 
 log "done — tenant ${ROLE}, user ${TENANT_USER}"
