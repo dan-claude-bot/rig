@@ -1,8 +1,9 @@
 #!/usr/bin/env bash
-# rig users close-root — shut the human-class root SSH door, once and only
-# once a named admin can already get in. class decides root SSH's fate (#26):
-# on class=human a root login is unattributable noise, so it goes; on
-# class=server root IS the control plane's automation identity, so closing it
+# rig users close-root — shut the root SSH door on the boxes whose door is
+# meant to shut, once and only once a named admin can already get in. The
+# root-door trait decides root SSH's fate (#26, renamed by #77): on
+# root-door=closed a root login is unattributable noise, so it goes; on
+# root-door=open root IS the control plane's automation identity, so closing it
 # would sever fleet management — this command refuses there, and no --force
 # exists. Convergent: a second run is a no-op and says so.
 set -euo pipefail
@@ -23,9 +24,12 @@ Shuts the root SSH door: installs /etc/ssh/sshd_config.d/00-rig-users.conf
 carrying exactly `PermitRootLogin no`, which beats bootstrap's drop-in by
 first-wins include order.
 
-Human class ONLY. On class=server, root SSH is the control plane's (Coolify's)
-automation identity — closing it severs fleet management — so close-root
-refuses there, with no --force. It also refuses without a role marker (re-run
+root-door=closed boxes ONLY. On root-door=open, root SSH is the control plane's
+(Coolify's) automation identity — closing it severs fleet management — so
+close-root refuses there, with no --force. Markers written before #77 name this
+trait as class=human|server and are read as closed|open respectively, so a box
+bootstrapped before the rename gates exactly as it always did.
+It also refuses without a role marker (re-run
 rig bootstrap; never shut the root door blind) and refuses while no rig-admin
 member holds a login this box would actually honor. Per candidate, in order:
 the StrictModes shape (authorized_keys present and non-empty, home/.ssh/keys
@@ -72,11 +76,13 @@ if [ -n "${SUDO_USER:-}" ] && [ "$SUDO_USER" != "root" ] \
   die "the users family changes who holds root — only rig-admin members (or root itself) may run it; role rig grants operational rig use, not identity management (invoker: $SUDO_USER)"
 fi
 
-# Marker gate — the policy lives in assert_marker_human (lib) so the harness
-# can prove its refusals against fixture markers as non-root; RIG_ROLE_MARKER
-# exists for the same reason: it keeps the command's own gate pointable at
-# fixtures instead of only at the real /etc/rig/role.
-if ! WHY="$(assert_marker_human "${RIG_ROLE_MARKER:-/etc/rig/role}")"; then
+# Marker gate — the policy lives in assert_marker_closes_root (lib) so the
+# harness can prove its refusals against fixture markers as non-root;
+# RIG_ROLE_MARKER exists for the same reason: it keeps the command's own gate
+# pointable at fixtures instead of only at the real /etc/rig/role. The gate
+# reads the pre-#77 class= spelling too — see root_door_of for why that compat
+# read is load-bearing rather than courteous.
+if ! WHY="$(assert_marker_closes_root "${RIG_ROLE_MARKER:-/etc/rig/role}")"; then
   die "$WHY"
 fi
 

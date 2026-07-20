@@ -92,7 +92,7 @@ done
 check "bootstrap: workstation keeps its bare name" 2 "unset TS_AUTHKEY" \
   env TS_AUTHKEY=x "$ROOT/commands/bootstrap.sh" workstation
 check "bootstrap: custom keeps its bare name" 2 "--hostname" \
-  "$ROOT/commands/bootstrap.sh" custom --class server --host no --join authkey
+  "$ROOT/commands/bootstrap.sh" custom --root-door open --host no --join authkey
 # NOTHING may still TELL an operator to run a pre-#76 role. The rename is a
 # hard cut, so a next-step string, a usage line or a refusal that still recites
 # a bare role name is a command that fails when someone copy-pastes it — and it
@@ -108,12 +108,12 @@ check "roles: no shipped script tells an operator to run a pre-#76 role name" 1 
     "$ROOT/bin/rig" "$ROOT/commands/"
 # --- traits: roles are presets, every trait individually settable (#26) -----
 check "bootstrap: unknown role still exits 2"    2 "unknown role" "$ROOT/commands/bootstrap.sh" potato
-check "bootstrap: bad --class value exits 2"     2 "human|server" "$ROOT/commands/bootstrap.sh" workload-server --class potato
+check "bootstrap: bad --root-door value exits 2" 2 "closed|open" "$ROOT/commands/bootstrap.sh" workload-server --root-door potato
 check "bootstrap: bad --host value exits 2"      2 "yes|no"       "$ROOT/commands/bootstrap.sh" workload-server --host maybe
 check "bootstrap: bad --join value exits 2"      2 "authkey|login" "$ROOT/commands/bootstrap.sh" workload-server --join carrier-pigeon
 check "bootstrap: custom without --hostname exits 2" 2 "--hostname" \
-  "$ROOT/commands/bootstrap.sh" custom --class server --host no --join authkey
-check "bootstrap: custom without traits exits 2" 2 "--class" "$ROOT/commands/bootstrap.sh" custom --hostname box1
+  "$ROOT/commands/bootstrap.sh" custom --root-door open --host no --join authkey
+check "bootstrap: custom without traits exits 2" 2 "--root-door" "$ROOT/commands/bootstrap.sh" custom --hostname box1
 # workstation is join=login by preset: a set TS_AUTHKEY is a usage error, and it
 # must die BEFORE the root check — provable non-root, which also proves the
 # preset actually landed.
@@ -143,7 +143,15 @@ check "bootstrap: login verify fails closed on a stalled backend" 0 "" \
 # The marker is the traits' ground truth for rig users; assert the write exists.
 check "bootstrap: role marker write is present" 0 "" \
   grep -q "/etc/rig/role" "$ROOT/commands/bootstrap.sh"
-# --- host-class box install (issues #12, #25) --------------------------------
+# ...and that it is written in the CURRENT vocabulary (#77). New markers say
+# root-door=; the retired class= spelling is something rig READS forever and
+# WRITES never, so a marker line that reintroduces it must not ship green.
+check "bootstrap: the marker is written as root-door=, not class=" 0 "" \
+  grep -qF "printf 'role=%s root-door=%s host=%s join=%s" "$ROOT/commands/bootstrap.sh"
+# shellcheck disable=SC2016
+check "bootstrap: no shipped script WRITES the retired class= spelling" 0 "" \
+  sh -c '! grep -n "printf .*class=" "$1"/commands/*.sh' _ "$ROOT"
+# --- host=yes box install (issues #12, #25) --------------------------------
 # A host=yes box finishes the job: bootstrap installs the box CLI globally and
 # lets box's own setup-host build the Incus stack. The install itself runs as
 # root, over the network, against a real host — none of which this harness can
@@ -237,7 +245,7 @@ check "bootstrap: omitting --users and --no-users exits 2" 2 "one of --users <pa
   "$ROOT/commands/bootstrap.sh" workload-server
 check "bootstrap: the requirement names --no-users as the way out" 2 "--no-users to leave it root-only" \
   "$ROOT/commands/bootstrap.sh" dev-server --hostname b
-check "bootstrap: the requirement holds on class=server too" 2 "one of --users" \
+check "bootstrap: the requirement holds on root-door=open too" 2 "one of --users" \
   "$ROOT/commands/bootstrap.sh" control-plane-server --hostname cp
 check "bootstrap: --users needs a value" 2 "needs a value" \
   "$ROOT/commands/bootstrap.sh" workload-server --users
@@ -385,7 +393,7 @@ fi
 check "bootstrap: the users phase never runs box setup-host itself" 1 "" \
   grep -nE '^[[:space:]]*box setup-host' "$ROOT/commands/bootstrap.sh"
 # ORDERING is a correctness property, not taste: apply READS /etc/rig/role
-# (class= picks its root-SSH note, host= decides what a missing incus group
+# (root-door= picks its root-SSH note, host= decides what a missing incus group
 # means), and on host=yes it needs the group box's installer built. So the
 # users phase must sit after BOTH the marker write and the box install. Line
 # numbers, same idiom as the marker/box-install ordering asserts above;
@@ -461,7 +469,7 @@ if [ "$(id -u)" -ne 0 ]; then
   check "bootstrap: dev role parses, refuses non-root" 1 "must run as root" env TS_AUTHKEY=x "$ROOT/commands/bootstrap.sh" dev-server --no-users
   check "bootstrap: workstation parses, refuses non-root" 1 "must run as root" env -u TS_AUTHKEY "$ROOT/commands/bootstrap.sh" workstation --no-users
   check "bootstrap: custom parses, refuses non-root" 1 "must run as root" \
-    env TS_AUTHKEY=x "$ROOT/commands/bootstrap.sh" custom --hostname b --class server --host no --join authkey --no-users
+    env TS_AUTHKEY=x "$ROOT/commands/bootstrap.sh" custom --hostname b --root-door open --host no --join authkey --no-users
 else
   echo "skip: bootstrap non-root refusals (running as root)"
 fi
@@ -499,7 +507,7 @@ check "tenant: dockerd effective-state assert is present" 0 "" \
 # The machine-role traits die with the tenant story, never "unknown flag" — an
 # operator reaching for --hostname must learn where the trait family went.
 check "tenant: trait flags die with the tenant story" 2 "have no traits" \
-  "$ROOT/commands/bootstrap-tenant.sh" claude-box --class human
+  "$ROOT/commands/bootstrap-tenant.sh" claude-box --root-door closed
 check "tenant: --hostname dies the same way" 2 "have no traits" \
   "$ROOT/commands/bootstrap-tenant.sh" staging-box --hostname my-guest
 # Dispatch: the machine-role entrypoint hands tenant roles to the tenant
@@ -511,23 +519,39 @@ check "bootstrap: tenant roles dispatch through bootstrap.sh" 0 "claude-box|code
 # VM host (host=yes) refuses for every tenant — and names the staging PAIR,
 # because whoever lands here has the two halves confused and wants the metal
 # (staging-server). An agent tenant refuses ANY machine-role box; staging-box
-# tolerates ONLY class=server with host=no — that is the guest after its
+# tolerates ONLY root-door=open with host=no — that is the guest after its
 # operator-run workload join, and re-converging it is what convergence is for.
-# A non-server machine (class=human via custom) is NOT that guest, and server
-# hardening would die at it with server-specific messaging — refuse instead.
+# A closed-door machine (root-door=closed via custom) is NOT that guest, and
+# open-door hardening would die at it with root-door=open-specific messaging —
+# refuse instead.
 TEN_FIX="$(mktemp -d)"
-printf 'role=dev-server class=human host=yes join=authkey\n'      > "$TEN_FIX/host"
-printf 'role=workload-server class=server host=no join=authkey\n' > "$TEN_FIX/machine"
-printf 'role=custom class=human host=no join=login\n'      > "$TEN_FIX/human"
+printf 'role=dev-server root-door=closed host=yes join=authkey\n'      > "$TEN_FIX/host"
+printf 'role=workload-server root-door=open host=no join=authkey\n'    > "$TEN_FIX/machine"
+printf 'role=custom root-door=closed host=no join=login\n'             > "$TEN_FIX/closed"
 printf 'role=claude-box tenant=yes host=no\n'                  > "$TEN_FIX/tenant"
-check "tenant: staging-box refuses a non-server machine box" 1 "non-server machine role" \
-  env RIG_ROLE_MARKER="$TEN_FIX/human" "$ROOT/commands/bootstrap-tenant.sh" staging-box
+check "tenant: staging-box refuses a closed-door machine box" 1 "root door is not open" \
+  env RIG_ROLE_MARKER="$TEN_FIX/closed" "$ROOT/commands/bootstrap-tenant.sh" staging-box
 check "tenant: refuses a host=yes box (a VM host is never a guest)" 1 "hosts VMs" \
   env RIG_ROLE_MARKER="$TEN_FIX/host" "$ROOT/commands/bootstrap-tenant.sh" claude-box
 check "tenant: the host refusal sends you to the metal half of the pair" 1 "staging-server" \
   env RIG_ROLE_MARKER="$TEN_FIX/host" "$ROOT/commands/bootstrap-tenant.sh" staging-box
 check "tenant: an agent role refuses a machine-role box" 1 "never tailnet machines" \
   env RIG_ROLE_MARKER="$TEN_FIX/machine" "$ROOT/commands/bootstrap-tenant.sh" claude-box
+
+# The tenant guard's compat read (#77). This guard asks "does this marker name
+# a root-door policy?" as its proxy for "is this a real fleet machine?", and it
+# must ask it in BOTH vocabularies. Kept deliberately at the retired spelling,
+# same reason as the close-root fixtures below: a pre-#77 box that stops
+# looking like a machine here is the fail-OPEN direction of this rename — the
+# agent-tenant refusal never fires, and `rig bootstrap claude-box` converges a
+# tenant straight over a live fleet box, clobbering the marker that holds its
+# root-door policy. Do not modernize these two fixtures.
+printf 'role=workload-server class=server host=no join=authkey\n'      > "$TEN_FIX/pre77-machine"
+printf 'role=custom class=human host=no join=login\n'                  > "$TEN_FIX/pre77-human"
+check "tenant: an agent role refuses a PRE-#77 machine marker" 1 "never tailnet machines" \
+  env RIG_ROLE_MARKER="$TEN_FIX/pre77-machine" "$ROOT/commands/bootstrap-tenant.sh" claude-box
+check "tenant: staging-box refuses a PRE-#77 closed-door machine box" 1 "root door is not open" \
+  env RIG_ROLE_MARKER="$TEN_FIX/pre77-human" "$ROOT/commands/bootstrap-tenant.sh" staging-box
 if [ "$(id -u)" -ne 0 ]; then
   # RIG_ROLE_MARKER pinned to the absent fixture: the marker guard runs before
   # the root check, and the harness machine may carry a real /etc/rig/role.
@@ -539,6 +563,10 @@ if [ "$(id -u)" -ne 0 ]; then
     env RIG_ROLE_MARKER="$TEN_FIX/absent" "$ROOT/commands/bootstrap-tenant.sh" grok-box
   check "tenant: staging-box tolerates a workload-joined guest's marker" 1 "must run as root" \
     env RIG_ROLE_MARKER="$TEN_FIX/machine" "$ROOT/commands/bootstrap-tenant.sh" staging-box
+  # ...and the same guest joined before #77: reaching the root check (rather
+  # than a marker refusal) is what proves the tolerance survived the rename.
+  check "tenant: staging-box tolerates a PRE-#77 workload-joined guest" 1 "must run as root" \
+    env RIG_ROLE_MARKER="$TEN_FIX/pre77-machine" "$ROOT/commands/bootstrap-tenant.sh" staging-box
   check "tenant: a tenant marker re-runs fine (convergence)" 1 "must run as root" \
     env RIG_ROLE_MARKER="$TEN_FIX/tenant" "$ROOT/commands/bootstrap-tenant.sh" claude-box
 else
@@ -586,7 +614,7 @@ check "tenant: never apt-installs incus (box owns the daemon)" 1 "" \
 # staging-box's posture rides the SAME hardening code as the machine roles — the
 # shared lib call is the anti-drift property, so pin the call, not the words.
 check "tenant: staging-box hardens through the shared sshd lib" 0 "" \
-  grep -qE '^[[:space:]]*harden_sshd server$' "$ROOT/commands/bootstrap-tenant.sh"
+  grep -qE '^[[:space:]]*harden_sshd open$' "$ROOT/commands/bootstrap-tenant.sh"
 check "tenant: docker lands via docker's own installer" 0 "" \
   grep -q "get.docker.com" "$ROOT/commands/bootstrap-tenant.sh"
 # The #15 lesson pinned: 'box exec' shells read no rc files, so the CLI must
@@ -607,6 +635,15 @@ ten_ctx_at="$(grep -n 'agent-context file written' "$ROOT/commands/bootstrap-ten
 ten_marker_at="$(grep -nF 'install -m 0644 "$MARKER_TMP" "$MARKER_PATH"' "$ROOT/commands/bootstrap-tenant.sh" | head -n1 | cut -d: -f1)"
 check "tenant: the marker write follows the context-file converge" \
   0 "" test "${ten_ctx_at:-999999}" -lt "${ten_marker_at:-0}"
+# The write's "is a machine marker already here?" test must go through the
+# resolver, not through a pattern match on one spelling (#77). Pinned as a
+# byte-grep because the failure it prevents is silent and expensive: a
+# spelling-specific test would let a tenant converge CLOBBER a machine marker
+# written in the other vocabulary — on a joined workload box that means
+# replacing its root-door policy with a tenant line close-root then refuses on.
+# shellcheck disable=SC2016
+check "tenant: the marker write is gated on the resolved root-door, not a spelling" 0 "" \
+  grep -qxF 'if [ -z "$EXISTING_ROOT_DOOR" ]; then' "$ROOT/commands/bootstrap-tenant.sh"
 
 check "coolify: version required, exit 2"  2 "--version"      "$ROOT/commands/coolify-install.sh"
 check "coolify: --help exits 0"            0 "usage:"         "$ROOT/commands/coolify-install.sh" --help
@@ -645,8 +682,8 @@ marker_warns() { # marker_warns <marker_path> <cmd...> — how many warnings fir
   env RIG_ROLE_MARKER="$marker" "$@" 2>&1 | grep -c "not a control-plane box" || true
 }
 MARKER_FIX="$(mktemp -d)"
-printf 'role=workload-server class=server host=no join=authkey\n'      > "$MARKER_FIX/workload"
-printf 'role=control-plane-server class=server host=no join=authkey\n' > "$MARKER_FIX/control-plane"
+printf 'role=workload-server root-door=open host=no join=authkey\n'    > "$MARKER_FIX/workload"
+printf 'role=control-plane-server root-door=open host=no join=authkey\n' > "$MARKER_FIX/control-plane"
 printf 'role=control-plane-server\n'                                   > "$MARKER_FIX/bare-control-plane"
 # A PRE-#76 marker, verbatim as a real box bootstrapped before the rename
 # carries it. This is the one fixture that must keep its old spelling: the
@@ -1048,10 +1085,23 @@ check "users apply: revoked keys are renamed, never deleted" 0 "" \
 # admins included — still converges.
 check "users apply: box role skips on a host=no box" 0 "" \
   grep -q "box role skipped" "$ROOT/commands/users-apply.sh"
+# Apply's root-SSH note and close-root's gate must read ONE marker the same
+# way, pre-#77 spellings included — a box told "close-root will shut this door"
+# by apply and then refused by close-root is the worst of both (#77). Sharing
+# the resolver is what guarantees it, so pin the call rather than the message.
+# shellcheck disable=SC2016
+check "users apply: the root-SSH note resolves through root_door_of" 0 "" \
+  grep -qF 'root_door_of "$APPLY_MARKER"' "$ROOT/commands/users-apply.sh"
+# ...and it warns, rather than staying silent, on the two markers close-root
+# will refuse: a note that only speaks on the happy paths is not a note.
+check "users apply: a doorless marker warns that close-root will refuse" 0 "" \
+  grep -q "names no root-door policy" "$ROOT/commands/users-apply.sh"
+check "users apply: a contradictory marker warns that close-root will refuse" 0 "" \
+  grep -q "they disagree" "$ROOT/commands/users-apply.sh"
 
 # --- the box role's host= gate (#58) -----------------------------------------
 # The gate is a pure marker->verdict lib function for the same reason
-# assert_marker_human is: apply's box arm sits behind the root check, so every
+# assert_marker_closes_root is: apply's box arm sits behind the root check, so every
 # arm is proven HERE against fixture markers, non-root.
 #
 # What #58 fixed: the trait used to be consulted only when group incus was
@@ -1068,11 +1118,11 @@ hostvm_gate() { # hostvm_gate <marker_path>
     assert_marker_hosts_vms "$2"' _ "$ROOT" "$1"
 }
 HOSTVM_FIX="$(mktemp -d)"
-printf 'role=dev-server class=human host=yes join=authkey\n'      > "$HOSTVM_FIX/yes"
-printf 'role=workload-server class=server host=no join=authkey\n' > "$HOSTVM_FIX/no"
+printf 'role=dev-server root-door=closed host=yes join=authkey\n'   > "$HOSTVM_FIX/yes"
+printf 'role=workload-server root-door=open host=no join=authkey\n' > "$HOSTVM_FIX/no"
 # A marker that predates the host= trait (or was hand-edited): present, but it
 # names no host=. Distinct from an ABSENT marker and it must not read as yes.
-printf 'role=workload-server class=server join=authkey\n'         > "$HOSTVM_FIX/traitless"
+printf 'role=workload-server root-door=open join=authkey\n'         > "$HOSTVM_FIX/traitless"
 check "users apply: host=yes passes the box-role gate" \
   0 "" hostvm_gate "$HOSTVM_FIX/yes"
 check "users apply: host=no fails the box-role gate" \
@@ -1457,24 +1507,103 @@ check "users close-root: the gate consults deny_verdict" 0 "" \
 marker_gate() { # marker_gate <marker_path>
   bash -c 'set -euo pipefail
     . "$1/commands/lib/users-config.sh"
-    assert_marker_human "$2"' _ "$ROOT" "$1"
+    assert_marker_closes_root "$2"' _ "$ROOT" "$1"
 }
 MARKER_DIR="$(mktemp -d)"
-printf 'role=workload-server class=server host=no join=authkey\n' > "$MARKER_DIR/server"
-printf 'role=dev-server class=human host=yes join=authkey\n'      > "$MARKER_DIR/human"
+printf 'role=workload-server root-door=open host=no join=authkey\n'   > "$MARKER_DIR/open"
+printf 'role=dev-server root-door=closed host=yes join=authkey\n'     > "$MARKER_DIR/closed"
 check "users close-root: absent marker refuses, names bootstrap as the repair" \
   1 "no /etc/rig/role marker" marker_gate "$MARKER_DIR/absent"
-check "users close-root: class=server refuses, names the control plane" \
-  1 "control plane" marker_gate "$MARKER_DIR/server"
-# #17's original table let the runner ROLE close root; the class model
-# supersedes it — runner is class=server, an automation identity, and the
+check "users close-root: root-door=open refuses, names the control plane" \
+  1 "control plane" marker_gate "$MARKER_DIR/open"
+# #17's original table let the runner ROLE close root; the trait model
+# supersedes it — runner is root-door=open, an automation identity, and the
 # refusal must SAY so or the divergence reads as a bug to anyone holding the
 # old table.
-check "users close-root: the server refusal owns the runner row (#17)" \
-  1 "runner included" marker_gate "$MARKER_DIR/server"
-check "users close-root: class=human passes the gate" \
-  0 "" marker_gate "$MARKER_DIR/human"
+check "users close-root: the open-door refusal owns the runner row (#17)" \
+  1 "runner included" marker_gate "$MARKER_DIR/open"
+check "users close-root: root-door=closed passes the gate" \
+  0 "" marker_gate "$MARKER_DIR/closed"
+
+# --- the pre-#77 vocabulary, on live markers (#77) ---------------------------
+# THIS is the block that makes #77 safe to ship, and it is not a formality.
+# Unlike #76's role rename, the root-door trait is written into /etc/rig/role
+# and read BACK by this gate, so every box bootstrapped before the rename
+# carries `class=human|server` and carries it until someone re-bootstraps it —
+# which, for a fleet, is never. A gate that stopped understanding that spelling
+# would fail in both directions and both are incidents: `class=human` boxes
+# (whose whole point is that root closes) would lose the ability to close it,
+# and `class=server` boxes would... also refuse, but for the wrong reason,
+# which is luck rather than design and would evaporate the moment the fallthrough
+# arm changed.
+#
+# So the fixtures below stay DELIBERATELY at the retired spelling, byte for
+# byte as a real pre-#77 box's marker reads — the same reason #76's
+# `pre-rename-cp` fixture keeps `role=control-plane`. Do not "modernize" them:
+# updating these fixtures to the new vocabulary would delete the only evidence
+# that the compat read works, and the suite would stay green while the field
+# broke. The pairs assert the OLD spelling produces the SAME verdict as its new
+# equivalent above, refusal text included.
+printf 'role=workload-server class=server host=no join=authkey\n'     > "$MARKER_DIR/pre77-server"
+printf 'role=dev-server class=human host=yes join=authkey\n'          > "$MARKER_DIR/pre77-human"
+check "users close-root: a PRE-#77 'class=human' marker still passes the gate" \
+  0 "" marker_gate "$MARKER_DIR/pre77-human"
+check "users close-root: a PRE-#77 'class=server' marker still REFUSES" \
+  1 "control plane" marker_gate "$MARKER_DIR/pre77-server"
+# The refusal an old box gets must be the CURRENT one, naming the current flag:
+# an operator repairing a pre-#77 box is repairing it with today's rig, and
+# being told to pass a flag that no longer exists is a dead end.
+check "users close-root: the PRE-#77 refusal names today's flag, not --class" \
+  1 "root-door closed" marker_gate "$MARKER_DIR/pre77-server"
+
+# A marker naming NEITHER vocabulary refuses — unchanged from before #77, and
+# distinct from an absent marker: the file exists and simply makes no claim
+# about the door, which cannot authorize shutting one.
+printf 'role=workload-server host=no join=authkey\n'                  > "$MARKER_DIR/doorless"
+check "users close-root: a marker naming no door policy refuses" \
+  1 "names no root-door policy" marker_gate "$MARKER_DIR/doorless"
+# A marker naming a root-door= value outside the value set is doorless too —
+# fail closed rather than guessing which door 'potato' means.
+printf 'role=custom root-door=potato host=no join=login\n'            > "$MARKER_DIR/bogus"
+check "users close-root: an unreadable root-door value refuses (fail closed)" \
+  1 "names no root-door policy" marker_gate "$MARKER_DIR/bogus"
+
+# BOTH vocabularies on one marker. Agreement is just the same claim twice and
+# resolves normally; DISAGREEMENT is a hand-edited marker making two equally
+# authored claims about a root door, and rig refuses to pick a winner — the
+# fail-closed arm, since the alternative is guessing on the one field that
+# decides whether a door welds shut. Both orders are checked so the verdict
+# cannot depend on which field the editor happened to type first.
+printf 'role=dev-server root-door=closed class=human host=yes join=authkey\n' > "$MARKER_DIR/both-agree"
+check "users close-root: both vocabularies agreeing resolves normally" \
+  0 "" marker_gate "$MARKER_DIR/both-agree"
+printf 'role=custom root-door=closed class=server host=no join=login\n'  > "$MARKER_DIR/both-fight-a"
+printf 'role=custom class=human root-door=open host=no join=login\n'     > "$MARKER_DIR/both-fight-b"
+check "users close-root: contradictory vocabularies refuse (new-first)" \
+  1 "will not pick a winner" marker_gate "$MARKER_DIR/both-fight-a"
+check "users close-root: contradictory vocabularies refuse (old-first)" \
+  1 "will not pick a winner" marker_gate "$MARKER_DIR/both-fight-b"
 rm -rf "$MARKER_DIR"
+
+# root_door_of is the ONE reader of this trait — close-root's gate, apply's
+# note and bootstrap-tenant's machine-marker detector all resolve through it,
+# so the compat read cannot drift between them. Pin the resolver directly,
+# text->text, the way deny_verdict and group_allow_verdict are pinned.
+door_of() { # door_of <marker line>
+  bash -c 'set -euo pipefail
+    . "$1/commands/lib/users-config.sh"
+    printf "[%s]" "$(root_door_of "$2")"' _ "$ROOT" "$1"
+}
+check "root_door_of: reads the current vocabulary" 0 "[closed]" \
+  door_of 'role=dev-server root-door=closed host=yes join=authkey'
+check "root_door_of: reads the pre-#77 class=human as closed" 0 "[closed]" \
+  door_of 'role=dev-server class=human host=yes join=authkey'
+check "root_door_of: reads the pre-#77 class=server as open" 0 "[open]" \
+  door_of 'role=workload-server class=server host=no join=authkey'
+check "root_door_of: a tenant marker names no door at all" 0 "[]" \
+  door_of 'role=claude-box tenant=yes host=no'
+check "root_door_of: disagreement is a conflict, not a coin flip" 0 "[conflict]" \
+  door_of 'role=custom root-door=open class=human host=no join=login'
 if [ "$(id -u)" -ne 0 ]; then
   check "users close-root: refuses non-root" 1 "must run as root" "$ROOT/commands/users-close-root.sh"
 else
@@ -1488,12 +1617,12 @@ fi
 # that bootstrap actually runs it (a function nobody calls is not hardening).
 check "sshd lib: permitrootlogin assertion accepts the closed state" 0 "" \
   grep -qF "permitrootlogin (no|prohibit-password|without-password)" "$ROOT/commands/lib/sshd.sh"
-# ...but only for class=human. On class=server a closed root door is a BROKEN
-# box — root SSH is the control plane's automation door — and the usual cause
-# is a 00-rig-users.conf left over from a former class=human life. The refusal
+# ...but only for root-door=closed. On root-door=open a closed root door is a
+# BROKEN box — root SSH is the control plane's automation door — and the usual
+# cause is a 00-rig-users.conf left over from a former closed-door life. The refusal
 # must name that drop-in or the operator greps sshd configs blind; the path
 # needs root + a doctored sshd, so grep the die message (repo precedent above).
-check "sshd lib: class=server refusal names the stale close-root drop-in" 0 "" \
+check "sshd lib: root-door=open refusal names the stale close-root drop-in" 0 "" \
   grep -q "leftover /etc/ssh/sshd_config.d/00-rig-users.conf" "$ROOT/commands/lib/sshd.sh"
 # Validate-then-apply survived the extraction: sshd -t on the merged config
 # must still precede the restart (same idiom as the close-root ordering check).
@@ -1503,7 +1632,7 @@ check "sshd lib: sshd -t precedes the ssh restart" \
   0 "" test "${libt_at:-999999}" -lt "${librestart_at:-0}"
 # shellcheck disable=SC2016
 check "bootstrap: hardening runs through the shared lib" 0 "" \
-  grep -qE '^harden_sshd "\$CLASS"$' "$ROOT/commands/bootstrap.sh"
+  grep -qE '^harden_sshd "\$ROOT_DOOR"$' "$ROOT/commands/bootstrap.sh"
 
 # The dump script ships to control-plane boxes as an embedded heredoc. A syntax
 # error in it would be invisible here and would first surface at 04:00 on a live
@@ -1625,7 +1754,7 @@ check "install: ...and does not move the default" 0 "rig $VER" irig "$B1/rig" --
 # host itself — /etc/rig/role. The deliberate decision: warn and proceed.
 # Driven against a fixture marker; counting fires proves silence too.
 MARK="$WORK/role-marker"
-printf 'role=workload-server class=server host=no join=authkey\n' > "$MARK"
+printf 'role=workload-server root-door=open host=no join=authkey\n' > "$MARK"
 H2="$WORK/h2"; B2="$WORK/b2"
 check "flip gate: baseline install" 0 "done" inst "$H2" "$B2"
 check "flip gate: an upgrade on a bootstrapped host WARNS" 0 "this host is bootstrapped" \

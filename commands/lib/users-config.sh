@@ -32,8 +32,8 @@
 # fix cycle, not one round-trip per line.
 #
 # Refusals: unknown role (the valid set is named), differing roles across one
-# user's lines, root as username (root's keys are class policy's business, not
-# this file's), malformed line (fewer than 3 fields, or a key field that does
+# user's lines, root as username (root's keys are root-door policy's business,
+# not this file's), malformed line (fewer than 3 fields, or a key field that does
 # not start with an SSH key type and is not exactly '@root'), '@root' with
 # trailing material (the token IS the whole field), invalid username (the
 # charset below — '|' would corrupt this parser's own delimited stream, a
@@ -71,7 +71,7 @@ parse_users_file() {
       continue
     fi
     if [ "$u" = "root" ]; then
-      errs+=("line $n: 'root' is not a rig-managed user — this file names operators; root SSH's fate is class policy")
+      errs+=("line $n: 'root' is not a rig-managed user — this file names operators; root SSH's fate is root-door policy")
       continue
     fi
     ok=1
@@ -103,21 +103,86 @@ parse_users_file() {
 }
 
 # read_role_marker <path> — the marker line bootstrap wrote
-# (`role=... class=... host=... join=...`), or nothing when absent. NO policy
-# here: what an absent marker or a given class MEANS is each caller's call
-# (apply notes it, close-root refuses on it) — this reader only reads.
+# (`role=... root-door=... host=... join=...`), or nothing when absent. NO
+# policy here: what an absent marker or a given trait MEANS is each caller's
+# call (apply notes it, close-root refuses on it) — this reader only reads.
 read_role_marker() {
   [ -r "$1" ] || return 0
   head -n1 "$1"
 }
 
-# assert_marker_human <marker_path> — close-root's marker gate: return 0,
-# silently, only when the marker says class=human; otherwise print the refusal
-# reason on stdout and return 1 (the caller wraps it in its own die). The
-# policy is a pure lib function on purpose: the CLI path sits behind the root
-# check, so the harness proves every refusal HERE, against fixture markers,
-# non-root (repo precedent: parse_users_file, assert_runner_repo).
-assert_marker_human() {
+# root_door_of <marker line> — resolve the root-door trait from a marker LINE,
+# reading both the current `root-door=` vocabulary and the `class=` one it
+# replaced (#77). Prints exactly one of:
+#
+#   closed    the root SSH door is meant to shut once named operators exist
+#             (`rig users close-root`) — was class=human
+#   open      root SSH stays as the control plane's automation door
+#             — was class=server
+#   conflict  the marker names BOTH vocabularies and they DISAGREE
+#   (empty)   the marker names neither, or names one with a value that is
+#             not in its value set
+#
+# Text->text and total, so the harness proves every arm off a literal string
+# (repo precedent: deny_verdict, group_allow_verdict). Callers turn a verdict
+# into policy; this function has none.
+#
+# WHY THE COMPAT READ IS NOT OPTIONAL, and why it is here rather than at each
+# call site. #77 renamed the trait because `class=human|server` was named for
+# who lives on the box while what it decides is whether root SSH stays open as
+# the control plane's automation door — the axis that made `dev-server` a
+# `class=human` box, a suffix and a trait that read as a contradiction. But
+# unlike #76's role rename, this field is not informational: it is written into
+# /etc/rig/role and read back on live machines, where it gates `rig users
+# close-root`. Every box bootstrapped before this change carries `class=` and
+# carries it FOREVER, until someone re-bootstraps it — there is no migration
+# step that reaches a fleet. So dropping the old read breaks in both directions
+# at once, and both are incidents: a machine whose door should close stops
+# being able to close it (close-root refuses on a marker it no longer
+# understands), and — through bootstrap-tenant's machine-marker guard, which
+# used `class=` as its "this is a machine" detector — a real fleet box stops
+# looking like a machine at all and a tenant converge will happily clobber it.
+# One resolver, consulted everywhere the trait is read, is what keeps those
+# two readings from drifting apart.
+#
+# BOTH FIELDS PRESENT is a state bootstrap never writes — it writes one line,
+# fresh, in the new vocabulary only — so a marker carrying both was
+# hand-edited, and the two answers are a question about intent that rig cannot
+# settle. Agreement is taken (it says one thing twice); disagreement resolves
+# to `conflict` and every caller fails CLOSED on it, because the alternative is
+# picking a winner between two equally-authored claims about a root door. The
+# repair is the same one the rest of the marker family names: re-run bootstrap,
+# which rewrites the line whole.
+#
+# NEITHER FIELD PRESENT resolves empty and is likewise fail-closed everywhere,
+# unchanged from before: a marker that names no door policy cannot authorize
+# shutting a door.
+root_door_of() {
+  local marker="$1" new="" old=""
+  case "$marker" in
+    *root-door=closed*) new=closed ;;
+    *root-door=open*)   new=open ;;
+  esac
+  case "$marker" in
+    *class=human*)  old=closed ;;
+    *class=server*) old=open ;;
+  esac
+  if [ -n "$new" ] && [ -n "$old" ] && [ "$new" != "$old" ]; then
+    printf 'conflict'; return 0
+  fi
+  # New wins where both are readable and agree; the old field answers alone on
+  # every marker written before #77, which is the whole point.
+  printf '%s' "${new:-$old}"
+}
+
+# assert_marker_closes_root <marker_path> — close-root's marker gate: return 0,
+# silently, only when the marker's root-door trait resolves to `closed`;
+# otherwise print the refusal reason on stdout and return 1 (the caller wraps
+# it in its own die). The policy is a pure lib function on purpose: the CLI
+# path sits behind the root check, so the harness proves every refusal HERE,
+# against fixture markers, non-root (repo precedent: parse_users_file,
+# assert_runner_repo).
+assert_marker_closes_root() {
   local marker
   marker="$(read_role_marker "$1")"
   if [ -z "$marker" ]; then
@@ -126,22 +191,27 @@ assert_marker_human() {
     printf '%s\n' "no /etc/rig/role marker: re-run rig bootstrap so this box knows what it is; refusing to shut the root door blind"
     return 1
   fi
-  case "$marker" in
-    *class=human*) return 0 ;;
-    *class=server*)
-      # Root SSH on a server IS the control plane's (Coolify's) automation
+  case "$(root_door_of "$marker")" in
+    closed) return 0 ;;
+    open)
+      # Root SSH on such a box IS the control plane's (Coolify's) automation
       # identity — closing it severs fleet management. No --force exists.
-      # Deliberately per-CLASS, not per-role: #17's original table let the
-      # runner role close root ("no Coolify involved"), but the class model
-      # (#26) supersedes that — every server-class box, runner included, is
-      # an automation identity whose management plane is root SSH, and rig
-      # itself converges through that door. A CI box someone administers
-      # like a human machine is class=human at bootstrap, not an exception
-      # carved out here.
-      printf '%s\n' "class=server: root here is the control plane's automation identity — closing it severs fleet management. Every server-class box (runner included) keeps root deliberately: it is an automation identity, and root SSH is its management plane; a box meant to be administered like a human machine is --class human at bootstrap, not an exception here"
+      # Deliberately keyed on the DOOR, not on the role: #17's original table
+      # let the runner role close root ("no Coolify involved"), but the trait
+      # model (#26) supersedes that — every root-door=open box, runner
+      # included, is an automation identity whose management plane is root
+      # SSH, and rig itself converges through that door. A CI box someone
+      # administers like a human machine is --root-door closed at bootstrap,
+      # not an exception carved out here.
+      printf '%s\n' "root-door=open: root here is the control plane's automation identity — closing it severs fleet management. Every root-door=open box (runner included) keeps root deliberately: it is an automation identity, and root SSH is its management plane; a box meant to be administered like a human machine is --root-door closed at bootstrap, not an exception here"
+      return 1 ;;
+    conflict)
+      # Hand-edited into naming both vocabularies, disagreeing. Fail closed:
+      # see root_door_of's header for why rig refuses to pick a winner.
+      printf '%s\n' "marker names both root-door= and the pre-#77 class= and they disagree (${marker}): rig will not pick a winner between two claims about a root door — re-run rig bootstrap to rewrite the marker, and refusing to shut the root door meanwhile"
       return 1 ;;
     *)
-      printf '%s\n' "marker names no class (${marker}): re-run rig bootstrap; refusing to shut the root door blind"
+      printf '%s\n' "marker names no root-door policy (${marker}): re-run rig bootstrap; refusing to shut the root door blind"
       return 1 ;;
   esac
 }
@@ -149,7 +219,7 @@ assert_marker_human() {
 # assert_marker_hosts_vms <marker_path> — the box role's gate: return 0,
 # silently, only when the marker says host=yes; otherwise print the reason on
 # stdout and return 1 (the caller decides whether that is a warn or a die).
-# Same shape and same reason as assert_marker_human above: the policy is a
+# Same shape and same reason as assert_marker_closes_root above: the policy is a
 # pure marker->verdict function so the harness can prove every arm against
 # fixture markers, non-root, while the CLI path sits behind the root check.
 #

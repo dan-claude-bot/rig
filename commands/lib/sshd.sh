@@ -6,12 +6,15 @@
 # a hardening block is drift by construction, the same law that keeps rig's
 # hands off Incus. Callers provide log/warn/die.
 
-# harden_sshd <human|server> — install the 00-rig.conf hardening drop-in,
+# harden_sshd <closed|open> — install the 00-rig.conf hardening drop-in,
 # validate the merged config before touching the daemon, restart only when the
 # drop-in actually changed, and assert the EFFECTIVE config (sshd -T), with the
-# permitrootlogin acceptance gated on the class passed in.
+# permitrootlogin acceptance gated on the ROOT-DOOR policy passed in (#77; this
+# argument was <human|server> before the trait was renamed for what it decides).
+# Callers pass their own trait value, never a marker read: bootstrap knows its
+# root-door from its flags, and the staging tenant is open by construction.
 harden_sshd() {
-  local class="$1"
+  local root_door="$1"
   local dropin=/etc/ssh/sshd_config.d/00-rig.conf
   local legacy_dropin=/etc/ssh/sshd_config.d/99-rig.conf
   local tmp backup eff
@@ -59,22 +62,22 @@ EOF
   eff="$(sshd -T 2>/dev/null)" || die "sshd -T failed; refusing to claim a hardened box"
   echo "$eff" | grep -qx 'passwordauthentication no' \
     || die "sshd still resolves passwordauthentication=yes — a drop-in is beating ${dropin}; check ls /etc/ssh/sshd_config.d/"
-  # The permitrootlogin acceptance is CLASS-gated, because `no` means opposite
-  # things on the two classes. class=human: `no` is the post-`rig users
-  # close-root` state — strictly harder than the prohibit-password this function
-  # installs. Hardening must never read a closed door as a broken one, and it
-  # cannot reopen one either: by first-wins its own drop-in loses to
-  # 00-rig-users.conf. class=server: root SSH is the control plane's automation
+  # The permitrootlogin acceptance is ROOT-DOOR-gated, because `no` means
+  # opposite things on the two policies. root-door=closed: `no` is the post-`rig
+  # users close-root` state — strictly harder than the prohibit-password this
+  # function installs. Hardening must never read a closed door as a broken one,
+  # and it cannot reopen one either: by first-wins its own drop-in loses to
+  # 00-rig-users.conf. root-door=open: root SSH is the control plane's automation
   # door (Coolify SSHes in as root), so `no` is not hardening — it is fleet
   # management silently dead, and the likely culprit is a drop-in left over from
-  # a former class=human life on a repurposed box. rig can DETECT that but must
-  # not FIX it: silently reopening a root door is worse than a loud stop, so —
-  # same doctrine as the tag checks — detect, refuse, and name the repair.
-  if [ "$class" = "human" ]; then
+  # a former root-door=closed life on a repurposed box. rig can DETECT that but
+  # must not FIX it: silently reopening a root door is worse than a loud stop, so
+  # — same doctrine as the tag checks — detect, refuse, and name the repair.
+  if [ "$root_door" = "closed" ]; then
     echo "$eff" | grep -qxE 'permitrootlogin (no|prohibit-password|without-password)' \
       || die "sshd still permits root password login — check ls /etc/ssh/sshd_config.d/"
   elif echo "$eff" | grep -qx 'permitrootlogin no'; then
-    die "sshd resolves permitrootlogin=no, but this is a class=server box: root SSH is the control plane's automation door, and with it shut the fleet cannot manage this box. Likely cause: a leftover /etc/ssh/sshd_config.d/00-rig-users.conf from a former class=human life ('rig users close-root' ran here once). Remove that drop-in and re-run bootstrap."
+    die "sshd resolves permitrootlogin=no, but this is a root-door=open box: root SSH is the control plane's automation door, and with it shut the fleet cannot manage this box. Likely cause: a leftover /etc/ssh/sshd_config.d/00-rig-users.conf from a former root-door=closed life ('rig users close-root' ran here once). Remove that drop-in and re-run bootstrap."
   else
     echo "$eff" | grep -qxE 'permitrootlogin (prohibit-password|without-password)' \
       || die "sshd still permits root password login — check ls /etc/ssh/sshd_config.d/"

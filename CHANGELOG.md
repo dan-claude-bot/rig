@@ -8,6 +8,83 @@ on the way to cutting its first release, and this file starts there.
 
 ### Changed
 
+- **BREAKING: `--class human|server` is now `--root-door closed|open`** (#77) —
+  the trait was named for who *lives on* a box; what it decides is one thing,
+  and it is not occupancy: whether root SSH stays open as the control plane's
+  automation door, or `rig users close-root` shuts it once named operators can
+  get in. The roles had been saying so for a while. `dev-server` is an
+  unattended VM-host appliance — nobody lives there, operators visit it to mint
+  boxes and leave — and by occupancy it is plainly a server. It was
+  `class=human` anyway, and correctly so, because operators enter it *as
+  themselves* and its root door must close. The trait was right; its name
+  described the wrong axis.
+
+  That stayed cheap until a second thing wanted the word "server". After #76
+  the `-server` suffix names the machine *family*, so `dev-server` carried a
+  suffix saying server and a trait saying human, and nothing in the name told a
+  reader that the two words were answering unrelated questions. `dev-server
+  --root-door closed` says exactly what is true, and `-server` means one thing
+  everywhere. The values moved with the name: `human` → `closed`, `server` →
+  `open`, and the marker field follows as `root-door=`.
+
+  Other names were considered. `--root-door open|closed` describes a
+  *destination* rather than the state at bootstrap time — bootstrap leaves root
+  SSH open on every box, and the door only shuts later, when `close-root` runs
+  — so `--root-door closes|stays` was on the table for naming the fate as a
+  verb, as was `--automation-door yes|no` for naming the thing itself. Both were
+  rejected in favour of the plainer pair: the marker is already a declaration of
+  *intent* rather than a report of observed state everywhere else in this repo
+  (`host=yes` claims a box hosts VMs; #58 settled that the marker's claim wins
+  over probing the machine), so a trait that states the door's designed end
+  state is consistent with how every other field is read. Every string that
+  prints the trait says "once operators exist" or names `close-root` explicitly,
+  so the tense never has to be inferred.
+
+  **Old markers still resolve, permanently, and that is the substance of this
+  change.** Unlike #76's role rename — role names are informational, nothing
+  reads them back — this field is written into `/etc/rig/role` and read *from*
+  there on live machines, where it gates `rig users close-root`. Every box
+  bootstrapped before this carries `class=human` or `class=server` and carries
+  it until someone re-bootstraps it, which for a fleet is never. Dropping the
+  old read would have broken in both directions at once and both are incidents:
+  a machine whose door is supposed to close loses the ability to close it, and
+  — through `bootstrap-tenant`'s machine-marker guard, which used the presence
+  of `class=` as its "is this a real fleet machine?" test — a live box stops
+  looking like a machine at all, so a tenant converge sails past the refusal
+  that exists to protect it and clobbers its marker. That second one is the
+  fail-*open* direction and was the least obvious part of the change.
+
+  So one resolver, `root_door_of`, reads both vocabularies, and every consumer
+  goes through it — close-root's gate, apply's root-SSH note, and the tenant
+  guard — because a compat read that lives at three call sites is three chances
+  to drift. `root-door=` wins where both fields are present and agree;
+  `class=` answers alone on every pre-#77 marker. A marker carrying **both and
+  disagreeing** resolves to a refusal rather than a winner: bootstrap writes one
+  line fresh and never produces that state, so a marker in it was hand-edited,
+  and rig declines to arbitrate between two equally-authored claims about a root
+  door. A marker naming **neither** refuses too, unchanged from before. Both
+  refusals fail closed, which here means the door stays open and the operator is
+  told to re-run bootstrap — never a door welded shut on a machine whose only
+  entrance it was.
+
+  **New markers are written in the new vocabulary only.** Writing both would
+  keep an old rig reading a new marker, but it would entrench the retired
+  spelling on every box rig ever converges and make the disagreement case
+  reachable from rig's own hand instead of only from a text editor. The compat
+  obligation runs the other way and only the other way: new rig reads old
+  markers. The bounded consequence to know about is downgrade — flipping a
+  box back to a pre-#77 rig with `rig use` leaves that older code unable to
+  recognize the new marker; the flip already WARNS on a bootstrapped host (#35),
+  and re-running bootstrap under whichever rig you settle on rewrites the line.
+
+  The suite proves the compat read rather than asserting it. Fixture markers are
+  kept **deliberately** at the retired spelling — byte for byte as a real
+  pre-#77 box reads, the same convention #76's `pre-rename-cp` fixture
+  established — and pinned at both consumers: `close-root` still passes on
+  `class=human` and still *refuses* on `class=server`, with today's refusal text
+  naming today's flag, and the tenant guard still recognizes a pre-#77 machine
+  marker as a machine. Deleting the compat arm turns ten of them red.
+
 - **BREAKING: the box tenant roles carry a `-box` suffix** (#76) — the other
   half of the rename below. `claude` → `claude-box`, `codex` → `codex-box`,
   `grok` → `grok-box`, `staging` → `staging-box`, so a role name always says
@@ -81,12 +158,13 @@ on the way to cutting its first release, and this file starts there.
   every shipped script for pre-rename role names rather than pinning the known
   sites, because the next instance of this will be somewhere else.
 
-  `dev-server` is `class=human`, which reads like a contradiction and is not:
-  the suffix names the family, the class names the root-SSH door policy, and
-  operators enter a dev box as themselves so `close-root` shuts its door. The
-  two axes genuinely share the word "server", which is a wart — #77 renames the
-  class trait to what it actually controls, and is kept separate because it
-  reaches markers on live machines that guard root SSH.
+  `dev-server` was `class=human` when this landed, which read like a
+  contradiction and was not: the suffix names the family, the class named the
+  root-SSH door policy, and operators enter a dev box as themselves so
+  `close-root` shuts its door. The two axes genuinely shared the word "server",
+  which was a wart — #77, above, renames the trait to what it actually controls
+  and retires it. It stayed a separate change because it reaches markers on live
+  machines that guard root SSH, and so needed a compat read this rename did not.
 
 ## 0.2.0 — 2026-07-19
 
