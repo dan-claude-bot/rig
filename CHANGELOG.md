@@ -181,6 +181,24 @@ on the way to cutting its first release, and this file starts there.
   and retires it. It stayed a separate change because it reaches markers on live
   machines that guard root SSH, and so needed a compat read this rename did not.
 
+### Fixed
+
+- **CI's shellcheck sweep now reaches `.github/scripts/`** (#70) — the step
+  ran `shopt -s globstar` and globbed `bin/* **/*.sh`, but globs skip
+  dot-prefixed names without `dotglob`, so `**/` never descended into
+  `.github/` and two tracked scripts were linted by nothing:
+  `labels-reconcile.sh` and `release-lib.sh`. The second is the one that
+  stings — it holds `changelog_section`, the extraction `release.yml` sources
+  to build the published release body and the same function `test/release.sh`'s
+  `changelog_armed` guard (#66) calls to decide whether main is armed. The
+  script deciding both what ships and whether the changelog is safe was the
+  script CI never read. Adding `dotglob` pulls in exactly those two files and
+  nothing else; both already pass, so this closes a hole in the net rather
+  than fixing a defect behind it. Paired with a class check that fails the
+  step when any tracked `.sh` falls outside the globbed set, so the gap
+  cannot reopen quietly — including via a symlinked directory, which
+  `globstar` declines to traverse.
+
 ## 0.2.0 — 2026-07-19
 
 ### Added

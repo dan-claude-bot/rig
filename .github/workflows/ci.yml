@@ -12,11 +12,22 @@ jobs:
         # -x follows the `source=SCRIPTDIR/...` directives into commands/lib/.
         # globstar so a script in a new subdirectory is linted without anyone
         # remembering to edit this list; bin/* covers the extensionless entrypoints.
-        # The file list is printed so under-coverage shows up in the log.
+        # dotglob because globs skip dot-prefixed names: without it `**/` never
+        # descends into `.github/`, so `.github/scripts/*.sh` — release-lib.sh
+        # among them — was swept up by nothing (#70). It also makes `**`
+        # descend into `.git/`, which holds no tracked `.sh` on a checkout.
+        # The file list is printed so under-coverage shows up in the log, and
+        # the comm below turns under-coverage into a failure rather than a
+        # thing someone has to notice: every tracked `.sh` must be in the set.
         run: |
-          shopt -s globstar
+          shopt -s globstar dotglob
           files=(bin/* **/*.sh)
           printf 'shellcheck: %s\n' "${files[@]}"
+          uncovered=$(comm -23 <(git ls-files '*.sh' | sort) <(printf '%s\n' "${files[@]}" | sort))
+          if [ -n "$uncovered" ]; then
+            printf 'tracked .sh files the glob does not lint:\n%s\n' "$uncovered" >&2
+            exit 1
+          fi
           shellcheck -x "${files[@]}"
       - name: cli tests
         run: bash test/cli.sh
