@@ -738,7 +738,8 @@ DISK       456Gi total, 201Gi free on /
 VIRT       kvm
 
 PROVENANCE
-RIG        0.4.0, bootstrapped 2026-07-19T14:24:51Z
+CONVERGED  0.6.0, 2026-08-02T09:11:03Z
+BOOTSTRAP  0.4.0, 2026-07-19T14:24:51Z
 ROLE       dev (class=human host=yes join=authkey)
 ```
 
@@ -763,11 +764,20 @@ needs no root, makes no network call, and writes nothing, ever.
 
 The `PROVENANCE` block is the complementary half — which rig, and when, which
 is *decided* rather than observed, so it is stored. It is **read, never
-written**: `RIG` comes from `/etc/rig/manifest` and `ROLE` from
-`/etc/rig/role`. Neither file is required — a machine missing one reads `not
-bootstrapped` for that line, which is itself the useful answer. The manifest
-is #61 and is not implemented yet, so today that line reads `not bootstrapped`
-on every machine; nothing else in the command depends on it.
+written**: `CONVERGED`/`BOOTSTRAP` come from `/etc/rig/manifest` and `ROLE`
+from `/etc/rig/role`. Neither file is required — a machine missing one reads
+`not bootstrapped` for that line, which is itself the useful answer. The
+manifest is #61 and is not implemented yet, so today those lines read `not
+bootstrapped` on every machine; nothing else in the command depends on it.
+
+**The two dates are deliberately separate**, matching #61's schema: `BOOTSTRAP`
+is birth (`bootstrapped_by`/`bootstrapped_at`, first-write-wins, pinned
+forever) and `CONVERGED` is latest (`converged_by`/`converged_at`, updated only
+when the converging version actually differs). That distinction is what answers
+"is this machine still converged by a rig that predates the fix?" — so
+`CONVERGED` reads `not recorded` rather than being backfilled from birth on a
+box that has only ever been bootstrapped once. A manifest whose `schema=` this
+rig does not know is named as such instead of being half-read in silence.
 
 **Known limitation — `CPU` and `MEMORY` inside a container-style guest are
 unverified.** `CPU` and `MEMORY` are read straight from `/proc/cpuinfo` and

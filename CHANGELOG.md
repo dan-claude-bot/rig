@@ -29,8 +29,11 @@ on the way to cutting its first release, and this file starts there.
   the harness can RUN for real instead of grepping: the tests assert the
   actual answer describes the actual test machine. Provenance is read, never
   written, and degrades per-file — `/etc/rig/manifest` is #61 and does not
-  exist yet, so that line reads `not bootstrapped` on every machine today and
-  nothing else depends on it. Named `platform` and not `status` on purpose:
+  exist yet, so those lines read `not bootstrapped` on every machine today and
+  nothing else depends on it. The reader is keyed to #61's documented schema
+  (`schema`, `bootstrapped_by`/`_at`, `converged_by`/`_at`) and fixtures pin
+  that exact spelling, so the integration cannot land silently broken; birth
+  and latest stay separate rather than one being inferred from the other. Named `platform` and not `status` on purpose:
   `users status` and `runner status` cross-check recorded against live state
   and print `DRIFT`, and a command that records nothing cannot drift — which
   also leaves `rig status` free for the machine-wide roll-up. Known

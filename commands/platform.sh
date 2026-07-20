@@ -155,10 +155,29 @@ manifest_field() {   # $1 = key — empty when absent, unreadable or unset
 }
 
 printf '%s\n' "PROVENANCE"
+# Keys are #61's documented schema verbatim — schema/bootstrapped_by/
+# bootstrapped_at/converged_by/converged_at — NOT invented ones. #61 keeps
+# birth and latest deliberately separate ("is this machine converged by a rig
+# that predates the fix?"), so both are reported and neither is inferred from
+# the other: CONVERGED answers currency, BOOTSTRAPPED answers provenance.
+# Every field degrades independently, so a partial manifest from a future
+# schema still renders what it does carry.
 if [ -r "$MANIFEST" ]; then
-  RIG_VER="$(manifest_field version)"
-  RIG_WHEN="$(manifest_field bootstrapped)"
-  field RIG "${RIG_VER:-unknown}${RIG_WHEN:+, bootstrapped $RIG_WHEN}"
+  M_SCHEMA="$(manifest_field schema)"
+  B_BY="$(manifest_field bootstrapped_by)"; B_AT="$(manifest_field bootstrapped_at)"
+  C_BY="$(manifest_field converged_by)";    C_AT="$(manifest_field converged_at)"
+  # A manifest with no schema= line is pre-#61; say so rather than render blanks.
+  if [ -z "$M_SCHEMA$B_BY$B_AT$C_BY$C_AT" ]; then
+    field RIG "manifest present but carries no recognised fields ($MANIFEST)"
+  else
+    # 'not recorded' rather than 'unknown': under #61's rule 2 converged_* is
+    # written only when the version actually differs, so its absence is a
+    # legitimate state on a freshly bootstrapped box, not a lost value.
+    field CONVERGED "${C_BY:-not recorded}${C_AT:+, $C_AT}"
+    field BOOTSTRAP "${B_BY:-not recorded}${B_AT:+, $B_AT}"
+    [ -n "$M_SCHEMA" ] && [ "$M_SCHEMA" != "1" ] && \
+      field NOTE "manifest schema=$M_SCHEMA is newer than this rig reads (expects 1)"
+  fi
 else
   field RIG "not bootstrapped (no $MANIFEST)"
 fi
