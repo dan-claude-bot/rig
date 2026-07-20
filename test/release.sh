@@ -230,11 +230,37 @@ mono() { # mono <dir> [VAR=val ...] — run the guard there, base ref 'base'
   ( cd "$d" && env "$@" bash "$MONO" base 2>&1 )
 }
 
-# An untouched branch: the head heading-set equals the base's, so containment
-# holds trivially. The green message names the count it checked, because a
-# guard that prints nothing is indistinguishable from one that did nothing.
+# An untouched branch with NO commit of its own: 'work' still points at the
+# base commit, so the merge base IS HEAD and containment compared the file
+# against itself. That is the vacuous path (#98), not a containment result —
+# the green message therefore names uniqueness, the half that actually ran.
+# A guard that prints nothing is indistinguishable from one that did nothing,
+# but a guard that prints the WRONG half is worse: it is a false receipt.
 T="$(monorepo clean)"
-check "monotonic: an untouched branch passes" 0 "all 2 release heading(s)" mono "$T"
+check "monotonic: an untouched branch passes" 0 "uniqueness on HEAD checked 2" mono "$T"
+check "monotonic: ...saying containment was VACUOUS, not that it verified 2" 0 \
+  "containment vacuous" mono "$T"
+# A negative, because the point is that the two wordings do NOT collapse: with
+# the pull_request gate gone (#98) this is the shape of EVERY push to main, and
+# "are still present" there would be a containment claim on the one event where
+# deletion is undetectable by construction.
+# shellcheck disable=SC2016  # the $-refs are the inner bash -c's, deliberately
+check "monotonic: ...and never claims the headings are still present" 1 "" \
+  bash -c 'cd "$1" && bash "$2" base | grep -q "are still present"' _ "$T" "$MONO"
+
+# The same shape against a REAL base — an unrelated commit on 'work', the
+# changelog untouched — which is what an untouched-changelog PR branch
+# actually looks like. Here containment genuinely ran and held, so this is
+# the case that pins the containment wording and its count. The two forms
+# must not collapse into one another.
+T="$(monorepo clean-realbase)"
+printf '%s\n' '# rig' > "$T/README.md"
+git -C "$T" add README.md
+git -C "$T" commit -qm 'work: an unrelated commit, changelog untouched'
+check "monotonic: an untouched changelog on a REAL base reports containment" 0 \
+  "all 2 release heading(s)" mono "$T"
+check "monotonic: ...and says they are still present, the containment claim" 0 \
+  "are still present" mono "$T"
 
 # The legitimate edit this guard must never object to: a new entry INSERTED
 # above the shipped heading, which is left alone.
@@ -407,8 +433,24 @@ check "ci.yml: ...against the PR's base branch" 0 "" \
 # unasserted. Dropping the gate is only safe with the ref_name fallback:
 # `github.base_ref` is EMPTY on a push, a bare `origin/` does not resolve, and
 # STRICT=1 promotes that to a hard failure on every push to main.
-check "ci.yml: the monotonic step is NOT gated to pull_request (#98)" 1 "" \
-  grep -qF "if: github.event_name == 'pull_request'" "$CIY"
+#
+# Scoped to the step's OWN block, deliberately. As a file-wide grep this
+# negative forbade any FUTURE step in ci.yml from being pull_request-gated and
+# would have failed citing #98 when one legitimately was — #98 constrains this
+# step, not the file. The companion check below is what keeps the awk honest:
+# an extractor that matched nothing would turn the negative into a tautology
+# that passes forever, including after someone renames the step and re-adds
+# the gate.
+mono_step_block() {
+  awk '/^      - name: no shipped changelog heading/ {f=1; print; next}
+       f && /^      - name: / {exit}
+       f {print}' "$CIY"
+}
+mono_step_gated() { mono_step_block | grep -q 'if:'; }
+check "ci.yml: the monotonic step itself is NOT pull_request-gated (#98)" 1 "" \
+  mono_step_gated
+check "ci.yml: ...and the block was actually found (guards the awk above)" 0 \
+  "changelog-monotonic" mono_step_block
 # shellcheck disable=SC2016  # the $-string is a literal in the target file
 check "ci.yml: ...and falls back to ref_name, so a push has a base to resolve" 0 "" \
   grep -qF 'github.base_ref || github.ref_name' "$CIY"
