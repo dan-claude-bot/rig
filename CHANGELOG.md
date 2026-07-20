@@ -50,6 +50,41 @@ on the way to cutting its first release, and this file starts there.
   same class: no conflict, no red run, found only by a human reading the
   published notes.
 
+- **...and the uniqueness half no longer sits behind conditions it does not
+  depend on** (#98, heavy-duty/box#143) — containment is a property of a DIFF
+  and genuinely needs the base ref, the merge base and the base blob.
+  Uniqueness is a property of **HEAD alone** and needs none of the three. It
+  sat downstream of all of them anyway, so every degradation path returned
+  success on a tree carrying a duplicate in plain sight.
+
+  The base-blob case was the worst of the three, because it was not a skip at
+  all: a branch that *introduces* `CHANGELOG.md` hit a bare `exit 0` on a
+  message that was true about deletion and silent about the duplicate in front
+  of it. `STRICT=1` could not reach it — STRICT guards the two `skip()` calls,
+  and that path is not one of them. Off CI the two skips had the same shape, so
+  a shallow clone or an unpacked tarball would not look at a duplicate the
+  author was about to push.
+
+  That inverted the value of the two halves. Deletion is the failure that needs
+  a diff to see; duplication is the one `changelog_section()` actually
+  mis-renders, stopping dead at the second copy and truncating the release's
+  real body. The half with the live extraction bug behind it was the half with
+  the most ways to silently not run.
+
+  Fixed by moving, not rewriting: uniqueness now runs directly after the file
+  exists, before any git access, under a boundary comment saying so. The skip
+  messages say *containment* skipped and that uniqueness already passed, so a
+  skip no longer claims nothing was checked. The CI step is also no longer
+  gated to `pull_request` — deletion is vacuous on a push to main, but
+  duplication is vacuous on no tree, so a duplicate reaching main by any other
+  route went unasserted. That gate could not simply be dropped:
+  `github.base_ref` is empty on a push, and a bare `origin/` under `STRICT=1`
+  is a hard failure on *every* push to main, so the base ref falls back to
+  `github.ref_name`. The regression cases pin the ORDER rather than the exit
+  code, since the clean base-absent tree is green either way — asserting only
+  the code is what let the original ship. `changelog-monotonic.sh` is also now
+  `100755`, matching cast's copy of the same file.
+
 - **An unreadable check rollup no longer reads as "nothing is failing"** (#90)
   — when `gh pr view` failed, the fallback left the `statusCheckRollup` key
   absent entirely, and `(.statusCheckRollup // [])` collapsed that into the

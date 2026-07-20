@@ -306,8 +306,9 @@ check "monotonic: the re-armed ceremony tree passes too" 0 "" mono "$T"
 # of checks exists to refuse. So STRICT flips exactly that case red.
 mono_noref() { local d="$1"; shift; ( cd "$d" && env "$@" bash "$MONO" no/such/ref 2>&1 ); }
 T="$(monorepo noref)"
-check "monotonic: an unresolvable base ref SKIPS locally" 0 "SKIPPED" mono_noref "$T"
-check "monotonic: ...and the skip says nothing was checked" 0 "Nothing was checked" mono_noref "$T"
+check "monotonic: an unresolvable base ref SKIPS containment locally" 0 "containment SKIPPED" mono_noref "$T"
+check "monotonic: ...and the skip says uniqueness already ran, not that nothing did" 0 \
+  "already ran and passed" mono_noref "$T"
 check "monotonic: ...but is a FAILURE under STRICT=1 (what CI sets)" 1 "STRICT=1" \
   mono_noref "$T" CHANGELOG_MONOTONIC_STRICT=1
 check "monotonic: ...and the STRICT failure blames the checkout, not the script" 1 \
@@ -320,19 +321,97 @@ T="$(monorepo nofile)"
 check "monotonic: a missing changelog file is an error, never a skip" 1 "no such file" \
   bash -c 'cd "$1" && bash "$2" base nope.md 2>&1' _ "$T" "$MONO"
 
+# --- #98: uniqueness is a property of HEAD, so nothing base-side may gate it --
+# Containment needs the merge base. Uniqueness needs only the file in front of
+# it. As first written (and as inherited from heavy-duty/box, fixed there in
+# box#144 for box#143) the duplicate check sat DOWNSTREAM of the base-ref,
+# merge-base and base-blob conditions, so each of the degradation paths below
+# exited 0 on a tree carrying a duplicate in plain sight — the base-blob one
+# not even through skip(), but a bare `exit 0` that STRICT could not reach.
+#
+# These cases pin the ORDER, which is the actual invariant. Every monorepo
+# fixture above commits MONO_BASE on 'base', so no case up there ever reaches
+# the base-absent branch at all; and asserting the exit code alone is what let
+# the original ship, since the clean base-absent case is green either way.
+mononocl() { # mononocl <name> -> a repo whose 'base' has NO changelog, on 'work'
+  local d="$WORK/mono-$1"; mkdir -p "$d"
+  git -C "$d" init -q -b base
+  git -C "$d" config user.email harness@example.invalid
+  git -C "$d" config user.name harness
+  printf '%s\n' '# rig' > "$d/README.md"
+  git -C "$d" add README.md
+  git -C "$d" commit -qm 'base: no changelog yet'
+  git -C "$d" checkout -q -b work
+  printf '%s' "$d"
+}
+monoadd() { # monoadd <dir> <line...> — the branch INTRODUCES CHANGELOG.md
+  local d="$1"; shift
+  printf '%s\n' "$@" > "$d/CHANGELOG.md"
+  git -C "$d" add CHANGELOG.md
+  git -C "$d" commit -qm 'work: introduce the changelog'
+}
+
+# The changelog is absent at the merge base AND the branch introduces a
+# duplicate. Before the fix this exited 0 on "nothing could have been deleted".
+T="$(mononocl 98-newdup)"
+monoadd "$T" '# Changelog' '' '## Unreleased' '' '## 0.2.0 — 2026-07-19' '' \
+  '- **A pending thing** (#2) — prose.' '' '## 0.2.0 — 2026-07-19' '' \
+  '- **A shipped thing** (#1) — prose.'
+check "monotonic: a duplicate introduced where the base had NO changelog is CAUGHT (#98)" 1 \
+  "DUPLICATE release heading" mono "$T"
+check "monotonic: ...and STRICT does not change that (it was never a skip)" 1 \
+  "DUPLICATE release heading" mono "$T" CHANGELOG_MONOTONIC_STRICT=1
+# ...and the clean counterpart still passes, now SAYING uniqueness ran. Without
+# this the case above could be satisfied by failing the base-absent path
+# outright, which would redden every changelog-introducing branch.
+T="$(mononocl 98-newok)"
+monoadd "$T" '# Changelog' '' '## Unreleased' '' '## 0.2.0 — 2026-07-19' '' \
+  '- **A shipped thing** (#1) — prose.'
+check "monotonic: ...while a CLEAN introduced changelog still passes" 0 \
+  "nothing could have been deleted" mono "$T"
+check "monotonic: ...saying uniqueness was checked, not that nothing was" 0 \
+  "uniqueness on HEAD already passed" mono "$T"
+
+# No git at all (a tarball, an unpacked release): uniqueness still has
+# everything it needs, so a duplicate is caught rather than skipped past.
+mkdir -p "$WORK/mono-98-nogit"
+printf '%s\n' '# Changelog' '' '## 0.2.0 — 2026-07-19' '' \
+  '## 0.2.0 — 2026-07-19' > "$WORK/mono-98-nogit/CHANGELOG.md"
+check "monotonic: a duplicate OUTSIDE a git work tree is caught (#98)" 1 \
+  "DUPLICATE release heading" mono "$WORK/mono-98-nogit"
+
+# An unresolvable base ref: same — the skip belongs to containment, not to the
+# script, so uniqueness has already run by the time skip() is reachable.
+T="$(monorepo 98-nobase)"
+monowrite "$T" '# Changelog' '' '## Unreleased' '' '## 0.2.0 — 2026-07-19' '' \
+  '- **A pending thing** (#2) — prose.' '' '## 0.2.0 — 2026-07-19' '' \
+  '- **A shipped thing** (#1) — prose.' '' '## 0.1.0 — 2026-07-01' '' \
+  '- **The first thing** (#0) — prose.'
+check "monotonic: a duplicate is caught even when the base ref will not resolve (#98)" 1 \
+  "DUPLICATE release heading" mono_noref "$T"
+
 # --- ci.yml: the monotonic step is actually wired (#98) ----------------------
 # The guard runs from ci.yml, not from this suite, so pin the wiring the same
 # way release.yml's is pinned — a script nothing invokes is not a check.
 CIY="$ROOT/.github/workflows/ci.yml"
 check "ci.yml: runs the monotonic guard" 0 "" \
   grep -q "changelog-monotonic.sh" "$CIY"
-check "ci.yml: ...on pull requests only (on a push to main it is vacuous)" 0 "" \
-  grep -qF "github.event_name == 'pull_request'" "$CIY"
 check "ci.yml: ...with STRICT=1, so a skip is red rather than quietly green" 0 "" \
   grep -qF "CHANGELOG_MONOTONIC_STRICT: '1'" "$CIY"
 # shellcheck disable=SC2016  # the $-string is a literal in the target file
 check "ci.yml: ...against the PR's base branch" 0 "" \
-  grep -qF 'origin/${{ github.base_ref }}' "$CIY"
+  grep -qF 'origin/${{ github.base_ref' "$CIY"
+# The step must NOT be pull-request-only. Deletion is vacuous on a push to main
+# (the merge base IS HEAD), but DUPLICATION is vacuous on no tree at all, so
+# gating the whole script left a duplicate reaching main by any other route
+# unasserted. Dropping the gate is only safe with the ref_name fallback:
+# `github.base_ref` is EMPTY on a push, a bare `origin/` does not resolve, and
+# STRICT=1 promotes that to a hard failure on every push to main.
+check "ci.yml: the monotonic step is NOT gated to pull_request (#98)" 1 "" \
+  grep -qF "if: github.event_name == 'pull_request'" "$CIY"
+# shellcheck disable=SC2016  # the $-string is a literal in the target file
+check "ci.yml: ...and falls back to ref_name, so a push has a base to resolve" 0 "" \
+  grep -qF 'github.base_ref || github.ref_name' "$CIY"
 # Without full history the base ref does not resolve, and STRICT turns that
 # into a red run — so the fetch depth is load-bearing, not incidental.
 check "ci.yml: the checkout has full history (the base ref must resolve)" 0 "" \
