@@ -537,6 +537,21 @@ check "drill: a PRESENT but EMPTY record FAILS" 1 "NO drill record" drill "$T"
 check "drill: ...an empty section never borrows the next section's body" 1 "" \
   bash -c 'bash "$1" "$2/RUNS.md" "$2/VERSION" 2>&1 | grep -q "an older run"' _ "$DRILL" "$T"
 
+# ...and WHITESPACE is not a record either. This guard already gets it right —
+# `/^[[:space:]]*$/` skips a spaces-or-tabs line the same as a bare one — so
+# this pins behaviour rather than fixing it. It is here because the siblings
+# did NOT get it right: box#149 and cast#138 both extracted with
+# `sed '/./,$!d'`, where `.` matches a space, so a heading followed by one tab
+# satisfied the gate and shipped an evidence-free release. All three reviewers
+# caught it there. Nothing caught it here, because there was nothing to catch —
+# which is exactly the state in which a later "simplify this to match its
+# siblings" quietly reintroduces it. The cheapest moment to pin a property is
+# while you still remember why it matters.
+T="$(drilltree blank 0.3.0 '# Drill run log' '' '## Release drill — 0.3.0 — 2026-07-21' '   ' '	' '' \
+  '## Release drill — 0.2.0 — 2026-07-01' '' 'an older run')"
+check "drill: a record body of only spaces and tabs FAILS (box#149, cast#138)" \
+  1 "NO drill record" drill "$T"
+
 # The version is matched WHOLE, both directions. A drill run against a release
 # candidate is not evidence for the final release, and the reverse is equally
 # false — in both cases the string that matched is not the artefact that
