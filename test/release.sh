@@ -598,13 +598,43 @@ check "drills/README.md: says a FAILED drill is still a valid record" 0 "" \
 # drill/RUNS.md would be a second place to write a record that nothing reads.
 check "drill/RUNS.md: is gone — records live one per version now" 1 "" \
   test -e "$ROOT/drill/RUNS.md"
-check "drill-recorded.sh: passes against the real tree" 0 "" \
-  bash "$DRILL" "$ROOT/drills" "$ROOT/VERSION"
+# The property is that the guard's VERDICT IS CORRECT FOR THIS TREE — not that
+# it always passes. Those come apart on a ceremony tree: a -dev tree is vacuous
+# and must pass, but a ceremony tree passes only once a human has run the drill
+# and written the record, which is the entire point of the gate. Asserting
+# exit 0 unconditionally made test/release.sh UN-GREENABLE on every release
+# branch before its drill, and surfaced as a `release-flow tests` failure rather
+# than as the gate doing its job — the same misattribution shape as box#146,
+# where a fixture read the repo's real VERSION and only misbehaved on the
+# ceremony tree. Caught when box#148 went red for the wrong-looking reason.
+THIS_VER="$(tr -d '[:space:]' < "$ROOT/VERSION")"
+case "$THIS_VER" in
+  *-dev)
+    check "drill-recorded.sh: THIS tree is -dev, and the guard is vacuous on it" 0 "" \
+      bash "$DRILL" "$ROOT/drills" "$ROOT/VERSION" ;;
+  *)
+    if [ -s "$ROOT/drills/$THIS_VER.md" ]; then
+      check "drill-recorded.sh: THIS ceremony tree HAS its record, and the guard accepts it" 0 "" \
+        bash "$DRILL" "$ROOT/drills" "$ROOT/VERSION"
+    else
+      check "drill-recorded.sh: THIS ceremony tree has NO record yet, and the guard refuses it" 1 "no drill record at" \
+        bash "$DRILL" "$ROOT/drills" "$ROOT/VERSION"
+    fi ;;
+esac
 # ...and with no arguments at all, since that is how ci.yml invokes it. The
 # defaults must be the paths this repo actually uses.
+# ...and with its DEFAULT arguments, as CI runs it. What this pins is that the
+# defaults ARE the paths this repo uses — so it asserts the defaults reach the
+# same verdict as the explicit call above, not a fixed exit code. Hard-coding 0
+# here would fail on a ceremony tree for the same wrong reason the check above
+# used to.
 # shellcheck disable=SC2016  # the $-refs are the inner bash -c's, deliberately
-check "drill-recorded.sh: ...and with its DEFAULT arguments, as CI runs it" 0 "" \
-  bash -c 'cd "$1" && bash .github/scripts/drill-recorded.sh' _ "$ROOT"
+check "drill-recorded.sh: ...and its DEFAULT arguments agree, as CI runs it" 0 "" \
+  bash -c '
+    cd "$1" || exit 9
+    bash .github/scripts/drill-recorded.sh >/dev/null 2>&1; d=$?
+    bash .github/scripts/drill-recorded.sh drills VERSION >/dev/null 2>&1; e=$?
+    [ "$d" -eq "$e" ]' _ "$ROOT"
 
 # ci.yml: the guard runs from there, so pin the wiring — a script nothing
 # invokes is not a check (same reasoning as the monotonic pins above).
