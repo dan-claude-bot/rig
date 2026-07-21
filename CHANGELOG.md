@@ -205,6 +205,40 @@ on the way to cutting its first release, and this file starts there.
   are pinned in `test/labels-reconcile.sh`. Ported from heavy-duty/box#137 so
   the three repos' reconcilers stay byte-identical; fixtures 19 → 51.
 
+- **A missing `/run/sshd` no longer reads as a broken sshd config** (#92) —
+  `sshd -t` folds two questions into one exit code: is the merged config
+  parseable, and is the privilege-separation directory there. Both call sites
+  that validate before bouncing the daemon ran it as `sshd -t 2>/dev/null` and
+  read *any* non-zero exit as the first question's answer, discarding the one
+  line that named the second. Bootstrap aborted with `sshd rejects the merged
+  config` — a verdict sshd never reached — and the follow-up hint, `Run 'sshd
+  -t' to see which file is bad`, sent the operator to audit `/etc/ssh` files
+  that were never broken, on a box whose SSH door was serving their own session
+  at that moment.
+
+  The absent directory is not an exotic state. `/run` is a tmpfs and
+  `/run/sshd` is `ssh.service`'s `RuntimeDirectory`, which systemd creates with
+  that unit and removes when it stops — so it is legitimately gone under socket
+  activation (`ssh.socket`, the default on current Debian/Ubuntu), where
+  per-connection `ssh@.service` instances serve the door and no long-lived unit
+  holds the directory open. Reported from a box mid-bootstrap right after an
+  `openssh-server` upgrade.
+
+  The classification is now a pure, sourceable `sshd_privsep_gap` — the STATUS
+  is the verdict and the text only classifies a *failure*, so a passing `sshd
+  -t` is never diverted whatever its output says — and `sshd_config_ok` repairs
+  the gap with an idempotent `install -d` and retests once. The repair creates
+  exactly what systemd would and is not meant to outlive a reboot; by then the
+  ssh unit has recreated it. **A genuine parse refusal still refuses, and the
+  rollback is untouched**: the daemon is never bounced into a config it rejects.
+
+  The refusals now carry sshd's own stderr instead of asserting a cause and
+  withholding the evidence for it. `rig users close-root` had the identical
+  three lines — the more dangerous copy, since it is the command that shuts the
+  root door — and now reaches the shared judgement through `lib/sshd.sh` rather
+  than keeping a second copy of it, which is what #31 extracted that lib for
+  and what let this bug ship twice.
+
 ### Added
 
 - **`rig platform` — what is this machine, calculated at run time, stored

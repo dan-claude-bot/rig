@@ -1641,7 +1641,7 @@ check "users close-root: drop-in name is the load-bearing one" 0 "" \
 # bouncing the daemon into a config it refuses to parse leaves no way back in.
 # Match the call, not the word (repo precedent: the repo-guard ordering check);
 # defaults fail closed.
-sshdt_at="$(grep -nE '^[[:space:]]*if ! sshd -t' "$ROOT/commands/users-close-root.sh" | head -n1 | cut -d: -f1)"
+sshdt_at="$(grep -nE '^[[:space:]]*if ! sshd_config_ok' "$ROOT/commands/users-close-root.sh" | head -n1 | cut -d: -f1)"
 restart_at="$(grep -n 'systemctl restart ssh' "$ROOT/commands/users-close-root.sh" | head -n1 | cut -d: -f1)"
 check "users close-root: sshd -t precedes the ssh restart" \
   0 "" test "${sshdt_at:-999999}" -lt "${restart_at:-0}"
@@ -1897,10 +1897,57 @@ check "sshd lib: root-door=open refusal names the stale close-root drop-in" 0 ""
   grep -q "leftover /etc/ssh/sshd_config.d/00-rig-users.conf" "$ROOT/commands/lib/sshd.sh"
 # Validate-then-apply survived the extraction: sshd -t on the merged config
 # must still precede the restart (same idiom as the close-root ordering check).
-libt_at="$(grep -nE '^[[:space:]]*if ! sshd -t' "$ROOT/commands/lib/sshd.sh" | head -n1 | cut -d: -f1)"
+libt_at="$(grep -nE '^[[:space:]]*if ! sshd_config_ok' "$ROOT/commands/lib/sshd.sh" | head -n1 | cut -d: -f1)"
 librestart_at="$(grep -nE '^[[:space:]]*systemctl restart ssh$' "$ROOT/commands/lib/sshd.sh" | head -n1 | cut -d: -f1)"
 check "sshd lib: sshd -t precedes the ssh restart" \
   0 "" test "${libt_at:-999999}" -lt "${librestart_at:-0}"
+# `sshd -t` answers TWO questions through ONE exit code: is the merged config
+# parseable, and is the privilege-separation directory there. /run is a tmpfs
+# and /run/sshd is ssh.service's RuntimeDirectory — systemd removes it when
+# that unit stops — so it is legitimately absent under socket activation
+# (ssh.socket, the default on current Debian/Ubuntu) on a box whose SSH door is
+# serving connections normally. Reading that as "the config is bad" aborted
+# bootstrap with a verdict sshd never reached, and sent the operator to audit
+# /etc/ssh files that were never broken (#92). The classifier is pure and
+# sourceable so the distinction is proven here, non-root and without a live
+# sshd (repo precedent: parse_users_file, deny_verdict).
+privsep_gap() { # privsep_gap <status> <stderr-text>
+  bash -c 'set -euo pipefail
+    . "$1/commands/lib/sshd.sh"
+    sshd_privsep_gap "$2" "$3"' _ "$ROOT" "$1" "$2"
+}
+check "sshd lib: a missing privsep dir is not a config verdict" 0 "" \
+  privsep_gap 1 "Missing privilege separation directory: /run/sshd"
+check "sshd lib: a genuine parse refusal stays a config verdict" 1 "" \
+  privsep_gap 1 "/etc/ssh/sshd_config.d/50-cloud-init.conf: line 3: Bad configuration option: frobnicate"
+# The STATUS is the verdict; the text only classifies a failure. A passing
+# sshd -t is never diverted, whatever its output happens to say — otherwise a
+# box could be sent down the repair path with nothing wrong with it.
+check "sshd lib: a passing sshd -t is never read as a privsep gap" 1 "" \
+  privsep_gap 0 "Missing privilege separation directory: /run/sshd"
+# Surfacing sshd's own words is the substance of #92: the old message asserted a
+# cause and then discarded, via 2>/dev/null, the one line that named the real
+# one. Both call sites make the claim, so both are pinned.
+# shellcheck disable=SC2016  # the literal source line is the pattern, unexpanded
+check "sshd lib: the refusal quotes sshd's own stderr" 0 "" \
+  grep -qF 'daemon untouched: $sshd_err' "$ROOT/commands/lib/sshd.sh"
+# shellcheck disable=SC2016
+check "users close-root: the refusal quotes sshd's own stderr" 0 "" \
+  grep -qF 'daemon untouched: $sshd_err' "$ROOT/commands/users-close-root.sh"
+# ...and the gap is REPAIRED, not merely diagnosed: a message the operator must
+# act on by hand is still a blocked bootstrap.
+check "sshd lib: the privsep gap is repaired before the retest" 0 "" \
+  grep -qF 'install -d -m 0755 /run/sshd' "$ROOT/commands/lib/sshd.sh"
+# close-root does NOT carry its own copy of that repair — it reaches it through
+# the shared lib. #31 extracted ONE sshd converger precisely so a judgement
+# cannot drift between the two commands, and #92 is what drift costs: the same
+# flawed three lines sat in both files and had to be fixed twice. Pin the
+# sharing, not a duplicate: the source line and the call.
+# shellcheck disable=SC2016
+check "users close-root: validates through the shared sshd lib" 0 "" \
+  grep -qE '^\. "\$HERE/lib/sshd\.sh"$' "$ROOT/commands/users-close-root.sh"
+check "users close-root: no second copy of the privsep repair" 1 "" \
+  grep -qF 'install -d -m 0755 /run/sshd' "$ROOT/commands/users-close-root.sh"
 # shellcheck disable=SC2016
 check "bootstrap: hardening runs through the shared lib" 0 "" \
   grep -qE '^harden_sshd "\$ROOT_DOOR"$' "$ROOT/commands/bootstrap.sh"

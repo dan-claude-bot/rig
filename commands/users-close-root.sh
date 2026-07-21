@@ -11,6 +11,12 @@ set -euo pipefail
 HERE="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")" && pwd)"
 # shellcheck source=SCRIPTDIR/lib/users-config.sh
 . "$HERE/lib/users-config.sh"
+# The sshd validator is shared with bootstrap's hardening on purpose: both
+# commands ask sshd the same question before bouncing the daemon, and two
+# copies of that judgement is drift by construction (#31's law, #92's bug —
+# the flaw this fixes was present in both copies).
+# shellcheck source=SCRIPTDIR/lib/sshd.sh
+. "$HERE/lib/sshd.sh"
 
 log()  { printf 'rig-users: %s\n' "$*"; }
 warn() { printf 'rig-users: WARNING: %s\n' "$*" >&2; }
@@ -270,13 +276,13 @@ if [ "$RESTART" -eq 1 ]; then
   # to become — restarting into a config the daemon refuses to parse leaves
   # no listener and no way back in. Roll back (when we installed anything)
   # and stop rather than shut the door on a maybe.
-  if ! sshd -t 2>/dev/null; then
+  if ! sshd_config_ok; then
     if [ "$INSTALLED" -eq 1 ]; then
       if [ -n "$BACKUP" ]; then cp -a "$BACKUP" "$DROPIN"; else rm -f "$DROPIN"; fi
       rm -f "$BACKUP"
-      die "sshd rejects the merged config; drop-in rolled back, daemon untouched. Run 'sshd -t' to see which file is bad."
+      die "sshd rejects the merged config; drop-in rolled back, daemon untouched: $sshd_err"
     fi
-    die "sshd rejects the current config; daemon untouched. Run 'sshd -t' to see which file is bad."
+    die "sshd rejects the current config; daemon untouched: $sshd_err"
   fi
   rm -f "$BACKUP"
   systemctl restart ssh

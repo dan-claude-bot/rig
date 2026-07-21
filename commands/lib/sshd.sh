@@ -6,6 +6,48 @@
 # a hardening block is drift by construction, the same law that keeps rig's
 # hands off Incus. Callers provide log/warn/die.
 
+# sshd_privsep_gap <status> <stderr> — true when a FAILED `sshd -t` failed for
+# the missing privilege-separation directory rather than for anything in the
+# config. Pure and sourceable (repo precedent: parse_users_file, deny_verdict)
+# so the distinction is provable without root or a live sshd.
+#
+# `sshd -t` folds two questions into one exit code: is the merged config
+# parseable, and is /run/sshd there. The second is not a fact about the config
+# at all — /run is a tmpfs and /run/sshd is ssh.service's RuntimeDirectory,
+# which systemd creates with that unit and removes when it stops, so the
+# directory is legitimately absent under socket activation (ssh.socket, the
+# default on current Debian/Ubuntu) on a box whose SSH door is serving
+# connections perfectly well. Reading that as a config refusal aborted
+# bootstrap with a verdict sshd never reached (#92).
+#
+# The STATUS is the verdict; this text match only classifies a failure. A
+# passing `sshd -t` is never diverted here, whatever its output happens to say.
+sshd_privsep_gap() {
+  [ "$1" -ne 0 ] || return 1
+  case "$2" in
+    *"Missing privilege separation directory"*) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
+# sshd_config_ok — validate the merged config, repairing a privsep gap once and
+# retesting. Returns sshd's verdict and leaves sshd's own stderr in $sshd_err
+# for the caller's refusal message: a message that asserts a cause must carry
+# the evidence for it, or the operator greps /etc/ssh blind (#92).
+#
+# The repair is `install -d`, which is idempotent and creates exactly what
+# systemd would. It does not survive a reboot and is not meant to — by then the
+# ssh unit has recreated it.
+sshd_config_ok() {
+  local rc
+  sshd_err="$(sshd -t 2>&1)"; rc=$?
+  if sshd_privsep_gap "$rc" "$sshd_err"; then
+    install -d -m 0755 /run/sshd
+    sshd_err="$(sshd -t 2>&1)"; rc=$?
+  fi
+  return "$rc"
+}
+
 # harden_sshd <closed|open> — install the 00-rig.conf hardening drop-in,
 # validate the merged config before touching the daemon, restart only when the
 # drop-in actually changed, and assert the EFFECTIVE config (sshd -T), with the
@@ -42,10 +84,10 @@ EOF
     # leaves no listener and no way back in. `sshd -t` parses everything sshd
     # would parse — our drop-in, cloud-init's, and any third-party file — so a
     # broken neighbour is caught here rather than after the door has shut.
-    if ! sshd -t 2>/dev/null; then
+    if ! sshd_config_ok; then
       if [ -n "$backup" ]; then cp -a "$backup" "$dropin"; else rm -f "$dropin"; fi
       rm -f "$tmp" "$backup"
-      die "sshd rejects the merged config; drop-in rolled back, daemon untouched. Run 'sshd -t' to see which file is bad."
+      die "sshd rejects the merged config; drop-in rolled back, daemon untouched: $sshd_err"
     fi
     rm -f "$backup"
 
