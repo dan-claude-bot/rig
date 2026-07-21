@@ -6,6 +6,8 @@ on the way to cutting its first release, and this file starts there.
 
 ## Unreleased
 
+## 0.3.0 — 2026-07-21
+
 ### Fixed
 
 - Deleting a shipped release heading from `CHANGELOG.md` is caught on every PR
