@@ -77,6 +77,27 @@ jobs:
         env:
           CHANGELOG_MONOTONIC_STRICT: '1'
         run: bash .github/scripts/changelog-monotonic.sh "origin/${{ github.base_ref || github.ref_name }}"
+      # The release this tree would ship has a recorded real-hardware drill
+      # (drill/RUNS.md). CONTRIBUTING ("Releasing") has always required one and
+      # nothing enforced it, so no release in this family has ever carried one
+      # — the drill was the single ceremony step checked by a reviewer
+      # remembering rather than by a script.
+      #
+      # Deliberately NOT trigger-scoped, and for the opposite reason to the
+      # step above. That one needs a base ref, so its argument has to be right
+      # on both event types; this one reads two files in the checkout and is
+      # VACUOUS BY CONSTRUCTION on a `-dev` VERSION, which every ordinary PR
+      # and every push to main carries. It has something to say on exactly one
+      # tree — the `release: X.Y.Z` ceremony PR — so an `if:` could only add a
+      # way for that one tree to slip past.
+      #
+      # PER-REPO on purpose: rig reads rig's own record, never box's repo. A
+      # cross-repo lookup fails on a token, a network blip or a fork checkout,
+      # and every one of those lands on "could not read" — which degrades to
+      # green on precisely the tree that ships (the UNREADABLE-vs-NONE shape
+      # #90 fixed).
+      - name: a release version has a recorded drill
+        run: bash .github/scripts/drill-recorded.sh
 
   # Kept SEPARATE from `check` on purpose: this job pulls a Postgres image and
   # stands up throwaway containers, and a slow image pull must never delay the

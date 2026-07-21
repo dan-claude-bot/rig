@@ -92,7 +92,65 @@ Not an entry — that is a PR body:
 ## Releasing
 
 A release is a PR, and merging it is the release (#47; box#96's design, on
-top of #32/box#83's tag flow):
+top of #32/box#83's tag flow). It takes the ordinary PR loop above, with one
+extra gate before the handoff:
+
+**draft → ready → bot round → drill → `state:needs-human` → maintainer merge
+(which IS the release).**
+
+The **drill** is a real-hardware run — tenant guests minted and converged via
+box, `test/db-integration.sh`, the GitHub runner lifecycle against a fork, a
+coolify install — recorded in [`drill/RUNS.md`](drill/RUNS.md) under a heading
+of exactly:
+
+```
+## Release drill — X.Y.Z — YYYY-MM-DD
+```
+
+`.github/scripts/drill-recorded.sh` enforces it on every release: a bare
+`VERSION` with no non-empty section for it turns CI red, naming the version.
+It is **not a thing a reviewer has to remember** — that is how every release
+in this family shipped undrilled until a bot finally blocked on one. On a
+`-dev` tree it asserts nothing, so it is invisible to ordinary PRs. rig reads
+rig's own record and never box's repo: a cross-repo lookup fails on a token,
+a fork checkout or a network blip, and all of those degrade to "pass" —
+the UNREADABLE-vs-NONE shape #90 fixed.
+
+**The drill is ONE orchestrated run over the whole stack**, not three
+independent ones. box and rig are mutually recursive, so there is no linear
+order to drill them in: rig sits *below* box as the host-builder and *above*
+it as the guest-converger. The run therefore goes:
+
+1. `rig bootstrap … --host yes` on a bare Debian host — which installs box and
+   runs box's `setup-host` (`RIG_SKIP_BOX_INSTALL=1` skips it; see README)
+2. `box new` mints a creds-free seed
+3. the seed converges via `rig bootstrap <tenant>-box` — the seed's cloud-init
+   curls rig's installer at `@RIG_REPO@/@RIG_REF@`
+4. cast on top
+
+It drills **candidate refs, not released artifacts.** `RIG_REPO`/`RIG_REF` are
+mint-time environment variables (default `heavy-duty/rig@main`), so a run pins
+the exact commits under test. That is what dissolves the chicken-and-egg: no
+repo has to be released before another can be drilled.
+
+**Drilling the candidate IS drilling the release.** A release PR's diff is
+`VERSION` + `CHANGELOG.md` and nothing else — no executable difference exists
+between the tree that was drilled and the tree that ships.
+
+One run emits **one shared run ID**. Each repo records *its own* legs under its
+own `## Release drill — X.Y.Z — DATE`, citing that run ID and the other two
+repos' commit SHAs, so the three records can be joined after the fact by
+anyone reading them. The guard still reads only this repo's file — there is no
+cross-repo lookup anywhere in the gate. Releases do **not** have to be
+published in a fixed order.
+
+A **maintainer waiver** is possible — a doc-only release, a hardware outage —
+but it must be **recorded in `drill/RUNS.md` for that version**, saying who
+waived it and why. The guard asks for a *record*, not a passing result,
+precisely so that skipping is a deliberate, reviewable commit instead of a
+silence. Deleting the check is not the move.
+
+The mechanics:
 
 1. A small PR — `release: X.Y.Z`, carrying the `release` label — bumps
    `VERSION` from `X.Y.Z-dev` and stamps `CHANGELOG.md`'s Unreleased
