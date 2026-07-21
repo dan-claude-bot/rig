@@ -100,33 +100,52 @@ extra gate before the handoff:
 
 The **drill** is a real-hardware run — tenant guests minted and converged via
 box, `test/db-integration.sh`, the GitHub runner lifecycle against a fork, a
-coolify install — recorded in [`drill/RUNS.md`](drill/RUNS.md) under a heading
-of exactly:
+coolify install — recorded in **one file per version**:
 
 ```
-## Release drill — X.Y.Z — YYYY-MM-DD
+drills/<version>.md
 ```
+
+named for the version exactly as `VERSION` carries it. See
+[`drills/README.md`](drills/README.md) for what a record should contain.
 
 `.github/scripts/drill-recorded.sh` enforces it on every release: a bare
-`VERSION` with no non-empty section for it turns CI red, naming the version.
-It is **not a thing a reviewer has to remember** — that is how every release
-in this family shipped undrilled until a bot finally blocked on one. On a
-`-dev` tree it asserts nothing, so it is invisible to ordinary PRs. rig reads
+`VERSION` with no non-empty `drills/<version>.md` turns CI red, naming the
+version. It is **not a thing a reviewer has to remember** — that is how every
+release in this family shipped undrilled until a bot finally blocked on one. On
+a `-dev` tree it asserts nothing, so it is invisible to ordinary PRs. rig reads
 rig's own record and never box's repo: a cross-repo lookup fails on a token,
 a fork checkout or a network blip, and all of those degrade to "pass" —
 the UNREADABLE-vs-NONE shape #90 fixed.
 
-**The drill is ONE orchestrated run over the whole stack**, not three
-independent ones. box and rig are mutually recursive, so there is no linear
-order to drill them in: rig sits *below* box as the host-builder and *above*
-it as the guest-converger. The run therefore goes:
+One file per version is what keeps the guard small. Records used to share a
+single log, which forced a heading grammar, an optional-date tail, a
+whole-version comparison and a non-blank-body rule just to read them back — and
+both sibling repos shipped a defect out of that complexity in review. Now
+`0.3.0.md` and `0.3.0-rc1.md` are simply different files.
 
-1. `rig bootstrap … --host yes` on a bare Debian host — which installs box and
-   runs box's `setup-host` (`RIG_SKIP_BOX_INSTALL=1` skips it; see README)
-2. `box new` mints a creds-free seed
-3. the seed converges via `rig bootstrap <tenant>-box` — the seed's cloud-init
-   curls rig's installer at `@RIG_REPO@/@RIG_REF@`
-4. cast on top
+**The three repos' drills are INDEPENDENT.** Run them in any order, on any
+schedule, in separate sittings. What makes that safe is that every drill **pins
+the same fixed set of candidate refs**: rig's drill runs `--host yes` with
+`BOX_REF=release/<box-version>`, so it exercises the box that will actually
+ship; box's drill mints with `RIG_REF=release/<rig-version>`, so it exercises
+the rig that will actually ship. Both measure the same pair.
+
+That — not sequencing — is what dissolves the box↔rig recursion. box and rig
+are mutually recursive (`rig bootstrap … --host yes` installs box and runs
+box's `setup-host`; box's `box new` seeds converge back through rig's installer
+at `@RIG_REPO@/@RIG_REF@`), but the refs are static identifiers that exist as
+soon as the release branches do, long before any drill runs, so a cycle at
+runtime becomes independent tests against one fixed pair. Within a single drill
+you naturally bring the substrate up before probing it — a host before a guest
+— but that is how you run a drill, not an ordering rule between repos.
+
+Each repo drills in a **different way** and asserts a different thing: rig
+asserts **convergence** (a machine reaches its role, idempotently), box asserts
+the **isolation contract** (the VM trust boundary), cast asserts **promotion**
+(A→B reproduces, the diff is idempotent). Three different exercises sharing a
+substrate, not three phases of one script — which is exactly why the records
+are per-repo.
 
 It drills **candidate refs, not released artifacts.** `RIG_REPO`/`RIG_REF` are
 mint-time environment variables (default `heavy-duty/rig@main`), so a run pins
@@ -137,16 +156,18 @@ repo has to be released before another can be drilled.
 `VERSION` + `CHANGELOG.md` and nothing else — no executable difference exists
 between the tree that was drilled and the tree that ships.
 
-One run emits **one shared run ID**. Each repo records *its own* legs under its
-own `## Release drill — X.Y.Z — DATE`, citing that run ID and the other two
-repos' commit SHAs, so the three records can be joined after the fact by
-anyone reading them. The guard still reads only this repo's file — there is no
+Drills that share a substrate share **one run ID**. Each repo records *its own*
+legs in its own `drills/<version>.md`, citing that run ID and the other two
+repos' commit SHAs, so the records can be joined after the fact by anyone
+reading them. The guard still reads only this repo's file — there is no
 cross-repo lookup anywhere in the gate. Releases do **not** have to be
-published in a fixed order.
+published in a fixed order. If a defect shows up only in the combination:
+patch, re-drill, re-record. The three releases converge on a set that holds
+together; they are not required to be right in one pass.
 
 A **maintainer waiver** is possible — a doc-only release, a hardware outage —
-but it must be **recorded in `drill/RUNS.md` for that version**, saying who
-waived it and why. The guard asks for a *record*, not a passing result,
+but it must be **recorded in `drills/<version>.md` for that version**, saying
+who waived it and why. The guard asks for a *record*, not a passing result,
 precisely so that skipping is a deliberate, reviewable commit instead of a
 silence. Deleting the check is not the move.
 

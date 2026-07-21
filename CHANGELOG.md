@@ -23,7 +23,7 @@ on the way to cutting its first release, and this file starts there.
 
 ### Added
 
-- CI refuses a release PR with no drill record in `drill/RUNS.md`
+- CI refuses a release PR with no drill record at `drills/<version>.md`
 - `rig platform` — what this machine is, computed at run time, stored nowhere
   (#64)
 - `/etc/rig/manifest` records which rig converged a machine, and when (#61)

@@ -471,49 +471,71 @@ check "ci.yml: the checkout has full history (the base ref must resolve)" 0 "" \
 # other ceremony step is checked by a script, and the one that costs an
 # afternoon was checked by a reviewer remembering. A bot finally blocked on it.
 #
-# Fixtures carry their OWN VERSION and RUNS.md, inside the fixture dir. This is
-# not tidiness — it is heavy-duty/box#146, verbatim: fixtures that read the
-# REPO's VERSION exercised the `-dev` branch on every ordinary tree, so the
-# whole bare-version half of the guard was untested and went red for the first
-# time while somebody was cutting a release. A fixture must state the tree it
-# is about.
+# Records are ONE FILE PER VERSION, at drills/<version>.md. The first cut of
+# this guard kept them as sections in a single drill/RUNS.md and needed a
+# heading grammar, an optional-date tail, a whole-version comparison and a
+# non-blank-body rule to read them back — all of it there only because the
+# records shared a file, and both sibling repos shipped a defect out of it in
+# review. Splitting the files deletes most of these tests along with the code
+# they covered: `0.3.0.md` and `0.3.0-rc1.md` cannot be confused by any
+# grammar, because there is no grammar.
+#
+# Fixtures carry their OWN version file and their OWN drills dir, inside the
+# fixture dir. This is not tidiness — it is heavy-duty/box#146, verbatim:
+# fixtures that read the REPO's VERSION exercised the `-dev` branch on every
+# ordinary tree, so the whole bare-version half of the guard was untested and
+# went red for the first time while somebody was cutting a release. A fixture
+# must state the tree it is about.
 DRILL="$ROOT/.github/scripts/drill-recorded.sh"
 check "drill-recorded.sh: exists and is the guard under test" 0 "" test -f "$DRILL"
 check "drill-recorded.sh: is executable" 0 "" test -x "$DRILL"
 
-drilltree() { # drilltree <name> <version> <runs-line...> -> prints the dir
+drilltree() { # drilltree <name> <version> -> prints the dir (no drills/ yet)
   local d="$WORK/drill-$1"; mkdir -p "$d"; printf '%s\n' "$2" > "$d/VERSION"
-  shift 2; printf '%s\n' "$@" > "$d/RUNS.md"; printf '%s' "$d"
+  printf '%s' "$d"
 }
-drill() { bash "$DRILL" "$1/RUNS.md" "$1/VERSION" 2>&1; }
+drillrec() { # drillrec <dir> <version> <line...> — write drills/<version>.md
+  mkdir -p "$1/drills"; local f="$1/drills/$2.md"; shift 2
+  printf '%s\n' "$@" > "$f"
+}
+drill() { bash "$DRILL" "$1/drills" "$1/VERSION" 2>&1; }
 
 # A development tree. Vacuous by construction — every ordinary PR looks like
 # this, and none of them can be asked to have drilled a release that does not
-# exist. It must pass with the log empty of records, which is the state
-# drill/RUNS.md ships in today.
-T="$(drilltree dev 0.2.1-dev '# Drill run log' '' 'No runs recorded yet.')"
-check "drill: a -dev tree passes with NO drill record" 0 "" drill "$T"
+# exist. It passes with no drills/ directory present AT ALL, which is the
+# state this repo ships in today.
+T="$(drilltree dev 0.2.1-dev)"
+check "drill: a -dev tree passes with NO drills dir at all" 0 "" drill "$T"
 check "drill: ...saying so out loud, not exiting 0 in silence" 0 \
   "nothing to assert" drill "$T"
 
 # The release ceremony tree, drilled and recorded. GREEN.
-T="$(drilltree recorded 0.3.0 '# Drill run log' '' '## Release drill — 0.3.0 — 2026-07-21' '' \
-  'Host: bare Debian 13. Guests via box 0.4.0 (released, pinned).' '' \
-  '- db-integration: 14/14' '- runner lifecycle: PASS' '' \
-  '## Release drill — 0.2.0 — 2026-07-01' '' 'an older run')"
-check "drill: a bare VERSION with a matching non-empty record passes" 0 "records a drill for 0.3.0" drill "$T"
+T="$(drilltree recorded 0.3.0)"
+drillrec "$T" 0.3.0 '# Release drill — 0.3.0 — 2026-07-21' '' \
+  'Host: bare Debian 13. Candidate refs pinned: box@1a2b3c4, cast@9a0b1c2.' '' \
+  '- convergence, then re-converge: clean' \
+  '- db-integration: 14/14' '- runner lifecycle: PASS'
+drillrec "$T" 0.2.0 '# Release drill — 0.2.0 — 2026-07-01' '' 'an older run'
+check "drill: a bare VERSION with a non-empty record for it passes" 0 \
+  "records a drill for 0.3.0" drill "$T"
 
-# The heading with no date — the trailing ' — DATE' is optional, so a record
-# written without one is still a record.
-T="$(drilltree nodate 0.3.0 '# Drill run log' '' '## Release drill — 0.3.0' '' 'ran it, 12/12')"
-check "drill: the date suffix is optional" 0 "records a drill" drill "$T"
-
-# The gate itself: a release tree with no record at all. RED, naming the
-# version, because "which release is unevidenced" is the only fact the author
-# needs.
-T="$(drilltree norecord 0.3.0 '# Drill run log' '' 'No runs recorded yet.')"
-check "drill: a bare VERSION with NO record FAILS" 1 "NO drill record" drill "$T"
+# The gate itself: a release tree with no drills/ directory at all. RED,
+# naming the version, because "which release is unevidenced" is the only fact
+# the author needs. This is the state a repo is in the first time it cuts a
+# release under the gate — it must read as a to-do, not a broken invocation.
+T="$(drilltree norecord 0.3.0)"
+check "drill: a bare VERSION with NO drills dir FAILS" 1 \
+  "no drill record" drill "$T"
 check "drill: ...and the failure names the version" 1 "VERSION is 0.3.0" drill "$T"
+check "drill: ...and names the file it wanted" 1 "drills/0.3.0.md" drill "$T"
+
+# A drills/ that exists but holds nothing for THIS version. Same failure —
+# other releases having been drilled says nothing about this one.
+T="$(drilltree otherversion 0.4.0)"
+drillrec "$T" 0.3.0 '# Release drill — 0.3.0' '' 'the previous release'
+check "drill: a drills dir with no file for THIS version FAILS" 1 \
+  "no drill record" drill "$T"
+check "drill: ...naming the version that is unevidenced" 1 "VERSION is 0.4.0" drill "$T"
 
 # ...and the failure has to say how to get out of it. Both moves are a commit
 # on the PR, and the second one is the point of asking for a RECORD rather
@@ -522,75 +544,67 @@ check "drill: ...and the failure names the unblock — run the drill" 1 \
   "RUN THE DRILL" drill "$T"
 check "drill: ...and the waiver, recorded, as the other way out" 1 \
   "MAINTAINER WAIVER" drill "$T"
-check "drill: ...and shows the exact heading the guard wants" 1 \
-  "## Release drill — 0.3.0" drill "$T"
+check "drill: ...and points at the README for what a record contains" 1 \
+  "README.md" drill "$T"
 
-# A heading with nothing under it. This is the failure a laxer guard invites —
-# the ceremony PR adds the heading to get green and fills it in never. A
-# section is a record only if something is in it.
-T="$(drilltree empty 0.3.0 '# Drill run log' '' '## Release drill — 0.3.0 — 2026-07-21' '' '' \
-  '## Release drill — 0.2.0 — 2026-07-01' '' 'an older run')"
-check "drill: a PRESENT but EMPTY record FAILS" 1 "NO drill record" drill "$T"
-# ...and it fails for being empty, not for being unfindable: the older section
-# below it must not be scavenged to satisfy the newer heading.
-# shellcheck disable=SC2016  # the $-refs are the inner bash -c's, deliberately
-check "drill: ...an empty section never borrows the next section's body" 1 "" \
-  bash -c 'bash "$1" "$2/RUNS.md" "$2/VERSION" 2>&1 | grep -q "an older run"' _ "$DRILL" "$T"
+# An EMPTY file at the right path. This is the failure a laxer guard invites —
+# the ceremony PR touches the file to get green and fills it in never.
+T="$(drilltree emptyfile 0.3.0)"
+mkdir -p "$T/drills"; : > "$T/drills/0.3.0.md"
+check "drill: a PRESENT but EMPTY record FAILS" 1 "no drill record" drill "$T"
 
-# ...and WHITESPACE is not a record either. This guard already gets it right —
-# `/^[[:space:]]*$/` skips a spaces-or-tabs line the same as a bare one — so
-# this pins behaviour rather than fixing it. It is here because the siblings
-# did NOT get it right: box#149 and cast#138 both extracted with
-# `sed '/./,$!d'`, where `.` matches a space, so a heading followed by one tab
-# satisfied the gate and shipped an evidence-free release. All three reviewers
-# caught it there. Nothing caught it here, because there was nothing to catch —
-# which is exactly the state in which a later "simplify this to match its
-# siblings" quietly reintroduces it. The cheapest moment to pin a property is
-# while you still remember why it matters.
-T="$(drilltree blank 0.3.0 '# Drill run log' '' '## Release drill — 0.3.0 — 2026-07-21' '   ' '	' '' \
-  '## Release drill — 0.2.0 — 2026-07-01' '' 'an older run')"
-check "drill: a record body of only spaces and tabs FAILS (box#149, cast#138)" \
-  1 "NO drill record" drill "$T"
+# ...and WHITESPACE is not a record either. This is the ONE piece of the old
+# section-parsing rule set that splitting the files did not make
+# unrepresentable, so it is the one that still needs a test. It is here because
+# the siblings got it wrong: box#149 and cast#138 both extracted with
+# `sed '/./,$!d'`, where `.` matches a space, so one tab satisfied the gate and
+# shipped an evidence-free release. All three reviewers caught it there.
+# Nothing caught it here, because there was nothing to catch — which is exactly
+# the state in which a later simplification quietly reintroduces it.
+T="$(drilltree blank 0.3.0)"
+drillrec "$T" 0.3.0 '   ' '	' ''
+check "drill: a record of only spaces, tabs and newlines FAILS (box#149, cast#138)" \
+  1 "no drill record" drill "$T"
 
-# The version is matched WHOLE, both directions. A drill run against a release
+# The version is matched WHOLE, both directions — and now the filesystem does
+# it, since the version IS the filename. A drill run against a release
 # candidate is not evidence for the final release, and the reverse is equally
-# false — in both cases the string that matched is not the artefact that
-# ships. changelog_section()'s exact `$2 == ver` is the precedent; this heading
-# is longer, so the comparison had to be rebuilt rather than inherited.
-T="$(drilltree whole-rc 0.3.0 '# Drill run log' '' '## Release drill — 0.3.0-rc1 — 2026-07-20' '' 'the rc drill')"
-check "drill: an -rc1 record does NOT satisfy the bare version" 1 "NO drill record" drill "$T"
-T="$(drilltree whole-final 0.3.0-rc1 '# Drill run log' '' '## Release drill — 0.3.0 — 2026-07-21' '' 'the final drill')"
-check "drill: ...and a bare-version record does NOT satisfy the -rc1" 1 "NO drill record" drill "$T"
-# A shorter version is not a prefix win either: 0.3.0 must not be answered by
-# a 0.3.0.1 heading, nor 0.3 by 0.3.0.
-T="$(drilltree whole-longer 0.3.0 '# Drill run log' '' '## Release drill — 0.3.0.1 — 2026-07-21' '' 'a different thing')"
-check "drill: ...nor does a LONGER version number match by prefix" 1 "NO drill record" drill "$T"
-# And an unrelated version is simply absent, which is the same failure.
-T="$(drilltree other 0.4.0 '# Drill run log' '' '## Release drill — 0.3.0 — 2026-07-21' '' 'the previous release')"
-check "drill: a record for a DIFFERENT version is not this version's record" 1 "VERSION is 0.4.0" drill "$T"
-
-# The repo with no drill/ directory yet — the state rig was in before this
-# guard. It must read as "this release has no record", the same to-do as an
-# empty log, not as a broken invocation.
-T="$(drilltree norunsfile 0.3.0 'placeholder')"
-rm -f "$T/RUNS.md"
-check "drill: a MISSING runs file is the same failure, not a crash" 1 "NO drill record" drill "$T"
-check "drill: ...and still names the unblock" 1 "RUN THE DRILL" drill "$T"
+# false: in both cases the string that matched is not the artefact that ships.
+T="$(drilltree whole-rc 0.3.0)"
+drillrec "$T" 0.3.0-rc1 '# Release drill — 0.3.0-rc1' '' 'the rc drill'
+check "drill: an -rc1 record does NOT satisfy the bare version" 1 \
+  "no drill record" drill "$T"
+T="$(drilltree whole-final 0.3.0-rc1)"
+drillrec "$T" 0.3.0 '# Release drill — 0.3.0' '' 'the final drill'
+check "drill: ...and a bare-version record does NOT satisfy the -rc1" 1 \
+  "no drill record" drill "$T"
 
 # A missing VERSION file is a wrong invocation, not a degradation — there is
-# no version to be lenient about.
-T="$(drilltree noversion 0.3.0 '# Drill run log')"
+# no version to be lenient about, so it must never read as a pass.
+T="$(drilltree noversion 0.3.0)"
 rm -f "$T/VERSION"
 check "drill: a missing VERSION file is an error, never a pass" 1 "no such file" drill "$T"
 
-# The real files, last. The shipped log must be readable by the guard the
-# repo actually runs, on the VERSION the repo actually carries.
-check "drill/RUNS.md: exists" 0 "" test -f "$ROOT/drill/RUNS.md"
+# The real files, last. The shipped README must be readable, and the guard the
+# repo actually runs must pass on the VERSION the repo actually carries.
+check "drills/README.md: exists" 0 "" test -f "$ROOT/drills/README.md"
 # shellcheck disable=SC2016  # the $-refs are the inner bash -c's, deliberately
-check "drill/RUNS.md: documents the heading format the guard requires" 0 "" \
-  bash -c 'grep -qF "## Release drill — X.Y.Z — YYYY-MM-DD" "$1"' _ "$ROOT/drill/RUNS.md"
+check "drills/README.md: documents the one-file-per-version naming rule" 0 "" \
+  bash -c 'grep -qF "drills/<version>.md" "$1"' _ "$ROOT/drills/README.md"
+# shellcheck disable=SC2016  # the $-refs are the inner bash -c's, deliberately
+check "drills/README.md: says a FAILED drill is still a valid record" 0 "" \
+  bash -c 'grep -qi "failed drill is still a valid record" "$1"' _ "$ROOT/drills/README.md"
+# The old single-file record must be gone, not merely unreferenced: a stale
+# drill/RUNS.md would be a second place to write a record that nothing reads.
+check "drill/RUNS.md: is gone — records live one per version now" 1 "" \
+  test -e "$ROOT/drill/RUNS.md"
 check "drill-recorded.sh: passes against the real tree" 0 "" \
-  bash "$DRILL" "$ROOT/drill/RUNS.md" "$ROOT/VERSION"
+  bash "$DRILL" "$ROOT/drills" "$ROOT/VERSION"
+# ...and with no arguments at all, since that is how ci.yml invokes it. The
+# defaults must be the paths this repo actually uses.
+# shellcheck disable=SC2016  # the $-refs are the inner bash -c's, deliberately
+check "drill-recorded.sh: ...and with its DEFAULT arguments, as CI runs it" 0 "" \
+  bash -c 'cd "$1" && bash .github/scripts/drill-recorded.sh' _ "$ROOT"
 
 # ci.yml: the guard runs from there, so pin the wiring — a script nothing
 # invokes is not a check (same reasoning as the monotonic pins above).
@@ -607,22 +621,26 @@ check "ci.yml: the drill step itself is NOT trigger-gated" 1 "" drill_step_gated
 check "ci.yml: ...and the block was actually found (guards the awk above)" 0 \
   "drill-recorded" drill_step_block
 
-# CONTRIBUTING must state the gate, and must state what the drill actually is:
-# ONE orchestrated run over the whole stack, on CANDIDATE refs. box and rig are
-# mutually recursive — rig builds the host box runs on, and box mints the seeds
-# rig converges — so there is no linear "drill A, release A, then drill B"
-# order to write down, and pinning RIG_REPO/RIG_REF at mint time is what makes
-# the recursion drillable at all. An earlier draft of this doc claimed a fixed
-# box → rig → cast release order; it is wrong, and this pins the correction.
+# CONTRIBUTING must state the gate, and must state what the drill actually is.
+# The three repos' drills are INDEPENDENT — run in any order, on any schedule —
+# and what makes that safe is that each one pins the same fixed set of
+# CANDIDATE refs, so box and rig measure the same pair. That, not sequencing,
+# is what dissolves the mutual recursion (rig builds the host box runs on, and
+# box mints the seeds rig converges). An earlier draft of this doc claimed a
+# fixed box → rig → cast release order; it is wrong, and this pins the
+# correction.
 CONTRIB="$ROOT/CONTRIBUTING.md"
 # shellcheck disable=SC2016  # the $-refs are the inner bash -c's, deliberately
 check "CONTRIBUTING: the release flow names the drill gate" 0 "" \
-  bash -c 'grep -qF "drill/RUNS.md" "$1"' _ "$CONTRIB"
+  bash -c 'grep -qF "drills/<version>.md" "$1"' _ "$CONTRIB"
 # shellcheck disable=SC2016  # the $-refs are the inner bash -c's, deliberately
-check "CONTRIBUTING: ...and says the drill is ONE orchestrated stack run" 0 "" \
-  bash -c 'grep -qi "one orchestrated run" "$1"' _ "$CONTRIB"
+check "CONTRIBUTING: ...and says the three repos' drills are INDEPENDENT" 0 "" \
+  bash -c 'grep -qi "drills are independent" "$1"' _ "$CONTRIB"
 # shellcheck disable=SC2016  # the $-refs are the inner bash -c's, deliberately
-check "CONTRIBUTING: ...on candidate refs, which is what dissolves the recursion" 0 "" \
+check "CONTRIBUTING: ...pinned to one fixed set of candidate refs" 0 "" \
+  bash -c 'grep -qi "same fixed set of candidate refs" "$1"' _ "$CONTRIB"
+# shellcheck disable=SC2016  # the $-refs are the inner bash -c's, deliberately
+check "CONTRIBUTING: ...which is what dissolves the recursion, not sequencing" 0 "" \
   bash -c 'grep -qF "RIG_REF" "$1"' _ "$CONTRIB"
 # The negative that keeps the correction from being re-lost: no fixed release
 # order may be claimed. Nothing requires box to ship before rig.

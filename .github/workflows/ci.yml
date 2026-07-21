@@ -78,7 +78,7 @@ jobs:
           CHANGELOG_MONOTONIC_STRICT: '1'
         run: bash .github/scripts/changelog-monotonic.sh "origin/${{ github.base_ref || github.ref_name }}"
       # The release this tree would ship has a recorded real-hardware drill
-      # (drill/RUNS.md). CONTRIBUTING ("Releasing") has always required one and
+      # (drills/<version>.md). CONTRIBUTING ("Releasing") has always required one and
       # nothing enforced it, so no release in this family has ever carried one
       # — the drill was the single ceremony step checked by a reviewer
       # remembering rather than by a script.
