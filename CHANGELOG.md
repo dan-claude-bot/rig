@@ -6,6 +6,10 @@ on the way to cutting its first release, and this file starts there.
 
 ## Unreleased
 
+### Added
+
+- `kimi-box` joins the box tenant roles — the Kimi CLI agent guest (#109)
+
 ## 0.3.0 — 2026-07-21
 
 ### Fixed

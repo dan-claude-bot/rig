@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Shared parameters for the box TENANT roles (claude-box, codex-box, grok-box,
-# staging-box) — the '-box' suffix names the FAMILY (a guest a box mints, vs the
+# kimi-box, staging-box) — the '-box' suffix names the FAMILY (a guest a box mints, vs the
 # '-server' machine roles rig converges); see #76.
 # sourced by bootstrap-tenant.sh and by the test harness. Pure text→text, no
 # side effects: the per-tenant differences live HERE, in one table, so the
@@ -15,6 +15,7 @@ tenant_user() {
     claude-box)  printf 'claude' ;;
     codex-box)   printf 'codex' ;;
     grok-box)    printf 'grok' ;;
+    kimi-box)    printf 'kimi' ;;
     staging-box) printf 'ops' ;;
     *) return 1 ;;
   esac
@@ -29,12 +30,18 @@ tenant_context_path() {
     claude-box) printf '%s/.claude/CLAUDE.md' "$2" ;;
     codex-box)  printf '%s/.codex/AGENTS.md' "$2" ;;
     grok-box)   printf '%s/.grok/AGENTS.md' "$2" ;;
+    # kimi documents only PROJECT-level AGENTS.md today (no global file); its
+    # dotdir is ~/.kimi (config.toml, sessions/, credentials/). The context
+    # file lands at the <dotdir>/AGENTS.md convention the other CLIs converged
+    # on, so it is where an operator (or a future global-read) will look — an
+    # honest placement, not a claim that the CLI auto-loads it.
+    kimi-box)   printf '%s/.kimi/AGENTS.md' "$2" ;;
     *) return 1 ;;
   esac
 }
 
 # render_tenant_context <role> — the agent-context file's content, on stdout.
-# One renderer for all three agents: only the creds paragraph is per-vendor,
+# One renderer for all four agents: only the creds paragraph is per-vendor,
 # and the box#80 guard note lives HERE once — never copy-pasted per template.
 # staging-box renders nothing (return 1): no agent lives there.
 render_tenant_context() {
@@ -63,6 +70,13 @@ render_tenant_context() {
   operator adds their own credentials (a PAT or `gh auth login`). Never
   assume credentials are present; never ask for or store secrets on disk
   beyond what the operator sets up.' ;;
+    kimi-box)
+      creds='- **Creds-free by default.** The box starts with no Moonshot and no git
+  credentials. If you need to authenticate, the operator runs `kimi` and
+  its `/login` flow interactively (Kimi Code OAuth, or an API key). For
+  git, the operator adds their own credentials (a PAT or `gh auth login`).
+  Never assume credentials are present; never ask for or store secrets on
+  disk beyond what the operator sets up.' ;;
     *) return 1 ;;
   esac
   cat <<EOF

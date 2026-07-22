@@ -4,7 +4,7 @@ A CLI that turns a **pristine Debian server into a hardened, tailnet-joined
 node** — one curl, one command. A second command installs a version-pinned
 Coolify on a control-plane box. And inside a [box](https://github.com/heavy-duty/box)-minted
 guest, the same verb converges the **box tenants** — claude-box, codex-box,
-grok-box, staging-box — from thin, creds-free seeds (see *the box tenants*
+grok-box, kimi-box, staging-box — from thin, creds-free seeds (see *the box tenants*
 below).
 
 Philosophy (shared with [box](https://github.com/heavy-duty/box)):
@@ -91,7 +91,7 @@ itself is untouched — what bootstrap converged stays converged.
 
 Run as root on the fresh box (over SSH). Convergent — safe to re-run; a
 second run changes nothing. (The box TENANT roles — `claude-box`, `codex-box`,
-`grok-box`, `staging-box` — share the verb but are their own family; the
+`grok-box`, `kimi-box`, `staging-box` — share the verb but are their own family; the
 `-box` suffix says so. See *the box tenants* below.)
 
 ```sh
@@ -167,7 +167,7 @@ trait), and every other way that step can fail lands in apply's existing
 refusal at the end.
 
 `--users` does **not** reach the box TENANT roles (`claude-box`, `codex-box`,
-`grok-box`, `staging-box`). A tenant is a box-minted *guest*: box auto-runs its bootstrap at
+`grok-box`, `kimi-box`, `staging-box`). A tenant is a box-minted *guest*: box auto-runs its bootstrap at
 mint, non-interactively, with no file to hand it; the guest never joins the
 tailnet and has no SSH door of its own — you enter with `box shell`, gated by
 the **host's** `incus` grants, which the host's own users file already
@@ -382,13 +382,13 @@ unattended VM-host appliance) — and `workstation` is the machine at the keyboa
 end of all the SSH connections: `root-door=closed`, `join=login`, entering the
 tailnet as *your* device rather than the fleet's.
 
-### `rig bootstrap <claude-box|codex-box|grok-box|staging-box>` — the box tenants
+### `rig bootstrap <claude-box|codex-box|grok-box|kimi-box|staging-box>` — the box tenants
 
 Run as root, **inside** a [box](https://github.com/heavy-duty/box)-minted
 guest. Convergent — safe to re-run; a second run changes nothing.
 
 ```sh
-rig bootstrap claude-box          # or codex-box, grok-box — the agent tenants
+rig bootstrap claude-box          # or codex-box, grok-box, kimi-box — the agent tenants
 rig bootstrap staging-box         # the server tenant (docker + sshd hardening)
 rig bootstrap claude-box --user dev   # when the seed's BOX_USER differs
 ```
@@ -411,6 +411,7 @@ holds the whole per-tenant table), not four hand-maintained scripts:
 | `claude-box`  | `claude` | the agent toolbelt (git, gh, tmux, ripgrep, jq, age, unzip, build-essential), docker, node 22, the Claude Code CLI on the system PATH, zsh + oh-my-zsh, and `~/.claude/CLAUDE.md` |
 | `codex-box`   | `codex`  | the toolbelt, docker, node 22, `@openai/codex` on the system PATH, and `~/.codex/AGENTS.md` |
 | `grok-box`    | `grok`   | the toolbelt, docker, the grok CLI on the system PATH, and `~/.grok/AGENTS.md` |
+| `kimi-box`    | `kimi`   | the toolbelt, docker, the kimi CLI (uv-managed) on the system PATH, and `~/.kimi/AGENTS.md` |
 | `staging-box` | `ops`    | box#69's server posture: docker + the same sshd hardening the machine roles get (shared `lib/sshd.sh`, `root-door=open` acceptance) |
 
 **The role carries the suffix; the user does not.** A tenant user is the

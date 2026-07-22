@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# rig bootstrap <claude-box|codex-box|grok-box|staging-box> — the box TENANT
+# rig bootstrap <claude-box|codex-box|grok-box|kimi-box|staging-box> — the box TENANT
 # roles ('-box' names the family: a guest, vs the '-server' machine roles): what a
 # box-minted guest becomes (issue #31). box mints the thin, creds-free seed
 # (base image, user, rig preinstalled — heavy-duty/box#81); rig converges the
@@ -32,13 +32,13 @@ die()  { printf 'rig-bootstrap: ERROR: %s\n' "$1" >&2; exit "${2:-1}"; }
 
 usage() {
   cat <<'EOF'
-usage: rig bootstrap <claude-box|codex-box|grok-box|staging-box> [--user <name>]
+usage: rig bootstrap <claude-box|codex-box|grok-box|kimi-box|staging-box> [--user <name>]
 
 Box TENANT roles — what a box-minted guest becomes. box mints the thin,
 creds-free seed (base image, user, rig preinstalled); this converges the
 tenant on top, and re-runs converge an existing box to a new spec.
 
-  claude-box|codex-box|grok-box
+  claude-box|codex-box|grok-box|kimi-box
                       the agent tenants: base tooling (git, gh, tmux, …),
                       docker, the agent's CLI on the system PATH, and the
                       agent-context file — including the box#80 guard: never
@@ -63,10 +63,10 @@ EOF
 # --- args (validated before the root check, so errors are testable) ---------
 ROLE="${1:-}"
 case "$ROLE" in
-  claude-box|codex-box|grok-box|staging-box) shift ;;
+  claude-box|codex-box|grok-box|kimi-box|staging-box) shift ;;
   -h|--help) usage; exit 0 ;;
-  "") usage >&2; die "tenant role required (claude-box|codex-box|grok-box|staging-box)" 2 ;;
-  *) die "unknown tenant role: $ROLE (want claude-box|codex-box|grok-box|staging-box)" 2 ;;
+  "") usage >&2; die "tenant role required (claude-box|codex-box|grok-box|kimi-box|staging-box)" 2 ;;
+  *) die "unknown tenant role: $ROLE (want claude-box|codex-box|grok-box|kimi-box|staging-box)" 2 ;;
 esac
 
 TENANT_USER="$(tenant_user "$ROLE")"
@@ -183,7 +183,7 @@ case "$ROLE" in
     # The claude-box tenant keeps zsh (its shell UX ships with the box); the
     # remaining list is the shared agent toolbelt the templates carried.
     apt-get install -y -qq git gh curl ca-certificates gnupg ripgrep jq tmux age unzip build-essential zsh ;;
-  codex-box|grok-box)
+  codex-box|grok-box|kimi-box)
     apt-get install -y -qq git gh curl ca-certificates gnupg ripgrep jq tmux age unzip build-essential ;;
   staging-box)
     # openssh-server: the hardening drop-in below targets /etc/ssh/sshd_config.d/,
@@ -291,6 +291,20 @@ case "$ROLE" in
     else
       log "grok CLI already installed"
     fi ;;
+  kimi-box)
+    # The OFFICIAL installer (code.kimi.com/install.sh): a uv-managed Python
+    # tool (kimi-cli), landing `kimi` in ~/.local/bin — uv's tool bin — with
+    # uv bringing its own managed CPython, so no apt python pin here (the
+    # node section above stays claude/codex-only for the same reason). Run AS
+    # the tenant user, never root: grok's lesson — a root-owned install under
+    # a 0700 home is a CLI that exists and cannot run.
+    CLI=kimi CLI_SRC="$TENANT_HOME/.local/bin/kimi"
+    if [ ! -e "$CLI_SRC" ]; then
+      log "installing the Kimi CLI as ${TENANT_USER}"
+      runuser -l "$TENANT_USER" -c 'curl -LsSf https://code.kimi.com/install.sh | bash'
+    else
+      log "kimi CLI already installed"
+    fi ;;
   staging-box) ;;   # no agent lives on the staging-box tenant
 esac
 if [ -n "$CLI" ]; then
@@ -313,6 +327,8 @@ if [ -n "$CLI" ]; then
       append_line_once "$TENANT_HOME/.bashrc" 'export PATH="$(npm prefix -g)/bin:$PATH"' ;;
     grok-box)
       append_line_once "$TENANT_HOME/.bashrc" 'export PATH="$HOME/.grok/bin:$PATH"' ;;
+    kimi-box)
+      append_line_once "$TENANT_HOME/.bashrc" 'export PATH="$HOME/.local/bin:$PATH"' ;;
   esac
 fi
 

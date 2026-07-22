@@ -492,7 +492,7 @@ else
   echo "skip: bootstrap non-root refusals (running as root)"
 fi
 
-# --- box tenant roles (#31/#76): claude-box|codex-box|grok-box|staging-box ---
+# --- box tenant roles (#31/#76): claude-box|codex-box|grok-box|kimi-box|staging-box ---
 # What a box-minted guest becomes — ONE mechanism (bootstrap-tenant.sh),
 # parameterized per tenant through lib/tenant-config.sh, dispatched from
 # bootstrap.sh so `rig bootstrap <role>` stays the single entrypoint. The real
@@ -530,7 +530,7 @@ check "tenant: --hostname dies the same way" 2 "have no traits" \
   "$ROOT/commands/bootstrap-tenant.sh" staging-box --hostname my-guest
 # Dispatch: the machine-role entrypoint hands tenant roles to the tenant
 # mechanism with args intact (--help reaching the TENANT usage proves both).
-check "bootstrap: tenant roles dispatch through bootstrap.sh" 0 "claude-box|codex-box|grok-box|staging-box" \
+check "bootstrap: tenant roles dispatch through bootstrap.sh" 0 "claude-box|codex-box|grok-box|kimi-box|staging-box" \
   "$ROOT/commands/bootstrap.sh" claude-box --help
 # The marker guard fires BEFORE the root check (repo precedent: the coolify
 # marker warning), so the refusals are provable here off fixture markers. A
@@ -603,22 +603,26 @@ tpath() { bash -c 'set -euo pipefail
 tctx()  { bash -c 'set -euo pipefail
   . "$1/commands/lib/tenant-config.sh"; render_tenant_context "$2"' _ "$ROOT" "$1"; }
 check "tenant params: agent users are named after their agent" 0 "claude" tuser claude-box
+check "tenant params: kimi's user drops the suffix too" 0 "kimi" tuser kimi-box
 check "tenant params: staging's user is box#69's ops" 0 "ops" tuser staging-box
 check "tenant params: claude context lands in ~/.claude/CLAUDE.md" 0 "/home/claude/.claude/CLAUDE.md" tpath claude-box /home/claude
 check "tenant params: codex context lands in ~/.codex/AGENTS.md" 0 "/home/codex/.codex/AGENTS.md" tpath codex-box /home/codex
 check "tenant params: grok context lands in ~/.grok/AGENTS.md" 0 "/home/grok/.grok/AGENTS.md" tpath grok-box /home/grok
+check "tenant params: kimi context lands in ~/.kimi/AGENTS.md" 0 "/home/kimi/.kimi/AGENTS.md" tpath kimi-box /home/kimi
 check "tenant params: staging has no context file" 1 "" tpath staging-box /home/ops
 # The box#80 guard note lives ONCE, in the renderer, and every agent's file
 # carries it — the layering decision's whole point: never per-template again.
 check "tenant context: claude carries the box#80 guard" 0 "box setup-host" tctx claude-box
 check "tenant context: codex carries the box#80 guard"  0 "box setup-host" tctx codex-box
 check "tenant context: grok carries the box#80 guard"   0 "box setup-host" tctx grok-box
+check "tenant context: kimi carries the box#80 guard"   0 "box setup-host" tctx kimi-box
 check "tenant context: the guard says whose host this is not" 0 "not a host you own" tctx claude-box
 check "tenant context: the guard cites box#80" 0 "box#80" tctx claude-box
 check "tenant context: the creds-free contract is stated" 0 "Creds-free by default" tctx claude-box
 check "tenant context: claude names /login as the operator's flow" 0 "/login" tctx claude-box
 check "tenant context: codex names its login flow" 0 "login flow (\`codex\`)" tctx codex-box
 check "tenant context: grok names its login flow" 0 "grok login" tctx grok-box
+check "tenant context: kimi names its login flow" 0 "Kimi Code OAuth" tctx kimi-box
 check "tenant context: staging renders nothing (no agent lives there)" 1 "" tctx staging-box
 # Creds-free BY CONSTRUCTION, provable by absence (box#69's grep-refusal
 # idiom): nothing in the tenant mechanism touches the tailnet, prompts, or
