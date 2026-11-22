@@ -57,7 +57,7 @@ Re-runs converge that existing box to a new spec.
                       AGENT="no" definitions omit that agent surface and
                       HARDEN_SSHD="yes" adds shared server hardening.
 
-  --user <name>       the tenant user the box seed created (default: the
+  --user <name>       the tenant user, created when absent (default: the
                       definition's USER)
 
 The registry source is three knobs, precedence high to low:
@@ -202,11 +202,94 @@ else
   warn "cannot read /etc/os-release; proceeding anyway"
 fi
 
-# The tenant user is the SEED's to create (box.env BOX_USER + cloud-init), not
-# rig's to conjure: a missing user means the seed and the role disagree, and
-# inventing an account here would paper over exactly that mismatch.
-id -u "$TENANT_USER" >/dev/null 2>&1 \
-  || die "user '$TENANT_USER' does not exist — the box seed creates it (BOX_USER); pass --user <name> if this box's user differs"
+# converge_tenant_user <user> — the tenant user is rig's to create (#230).
+# box <= 0.10's seed made it (box.env BOX_USER + cloud-init); box 0.11.0 seeds
+# no users at all (heavy-duty/box#291), so a root-only guest is now the normal
+# starting point. Create-or-converge: an absent user gets what the seed used
+# to give it — a home, /bin/bash, a locked password, no sudo (USER_SUDO below
+# is the opt-in) — and a user that already exists is NEVER recreated or
+# reshaped, home and shell kept, so a box whose seed made the user converges
+# exactly as it did before #230, without one extra line of output. A function
+# so test/cli.sh can lift it verbatim and drive it against stubs.
+#
+# A home left behind by an earlier user of that name (userdel without -r, a
+# restored snapshot) is refused BEFORE useradd: useradd -m would adopt it
+# without chowning it, and the tenant would own nothing in its own home. A
+# failing passwd -l takes the new user back out (userdel -r), so the next run
+# creates it again rather than finding a half-made account and moving on.
+converge_tenant_user() {
+  local user="$1" home_base
+  id -u "$user" >/dev/null 2>&1 && return 0
+  home_base="$(useradd -D | sed -n 's/^HOME=//p')"
+  if [ -e "${home_base:-/home}/$user" ] || [ -L "${home_base:-/home}/$user" ]; then
+    die "user '${user}' does not exist but ${home_base:-/home}/${user} does — remove it or move it aside, then re-run; rig will not hand a new account someone else's home (#230)"
+  fi
+  useradd -m -s /bin/bash "$user" \
+    || die "useradd -m -s /bin/bash ${user} failed — is a group named '${user}' already present? (#230)"
+  if ! passwd -l "$user" >/dev/null; then
+    userdel -r "$user" >/dev/null 2>&1 || true
+    die "passwd -l ${user} failed — the new user was removed again so a re-run starts clean (#230)"
+  fi
+  id -u "$user" >/dev/null 2>&1 \
+    || die "user '${user}' is still absent after useradd (#230)"
+  log "created tenant user ${user} (home, /bin/bash, password locked, no sudo)"
+}
+
+# converge_user_sudo <user> <USER_SUDO> <sudoers.d> — the definition's
+# USER_SUDO as one sudoers drop-in, 90-rig-<user> (#230). Agent tenants leave
+# the key unset: agents hold no root (heavy-duty/box#177). A self-converging
+# fleet guest (staging-box's ops) sets "nopasswd" and keeps passwordless sudo.
+#   - set: the file is built beside its target under a dotted name (sudo's
+#     includedir skips names holding a '.', so a half-written file is never
+#     read), validated with visudo -cf, then renamed into place; any failure
+#     removes it, so a rejected file never lands. Then the effective state is
+#     asserted: sudo -n true must answer as the user.
+#   - unset: a 90-rig-<user> that carries rig's first line is removed; any
+#     other file there, and every other sudoers file, is left alone.
+# The owner is a global, not a constant, so the test can drive this non-root.
+SUDOERS_OWNER="root:root"
+RIG_SUDOERS_MARK='# rig bootstrap: USER_SUDO="nopasswd" (#230). rig removes this file when the key is unset.'
+converge_user_sudo() {
+  local user="$1" mode="$2" dir="$3" file want tmp err
+  file="$dir/90-rig-$user"
+  if [ -z "$mode" ]; then
+    [ -e "$file" ] || [ -L "$file" ] || return 0
+    if [ -f "$file" ] && [ ! -L "$file" ] && [ "$(head -n1 "$file")" = "$RIG_SUDOERS_MARK" ]; then
+      rm -f "$file"
+      log "removed ${file} (USER_SUDO unset)"
+    else
+      warn "${file} was not written by rig — leaving it alone (#230)"
+    fi
+    return 0
+  fi
+  [ "$mode" = "nopasswd" ] || die "USER_SUDO: want nopasswd or unset, got: ${mode} (#230)"
+  [ -d "$dir" ] || die "USER_SUDO=nopasswd but ${dir} is not a directory — this image's sudo has no drop-in directory (#230)"
+  if [ -L "$file" ] || { [ -e "$file" ] && [ ! -f "$file" ]; }; then
+    die "sudoers path exists but is not a regular file: ${file} (#230)"
+  fi
+  want="$(printf '%s\n%s ALL=(ALL) NOPASSWD:ALL' "$RIG_SUDOERS_MARK" "$user")"
+  if [ -f "$file" ] && [ "$(cat "$file")" = "$want" ] \
+    && [ "$(stat -c '%a %U:%G' "$file")" = "440 $SUDOERS_OWNER" ]; then
+    log "sudoers drop-in already current: ${file}"
+  else
+    tmp="$(mktemp "$dir/.90-rig-$user.XXXXXX")" \
+      || die "cannot create a temp file in ${dir} (#230)"
+    if ! { printf '%s\n' "$want" > "$tmp" && chmod 0440 "$tmp" && chown "$SUDOERS_OWNER" "$tmp"; }; then
+      rm -f "$tmp"
+      die "cannot write ${tmp} (#230)"
+    fi
+    if ! err="$(visudo -cf "$tmp" 2>&1)"; then
+      rm -f "$tmp"
+      die "visudo -cf rejected the drop-in for ${user}; nothing was installed: ${err} (#230)"
+    fi
+    mv -f "$tmp" "$file" || { rm -f "$tmp"; die "cannot move the drop-in into ${file} (#230)"; }
+    log "wrote ${file}: ${user} ALL=(ALL) NOPASSWD:ALL"
+  fi
+  runuser -u "$user" -- sudo -n true >/dev/null 2>&1 \
+    || die "'sudo -n true' does not answer for ${user} after writing ${file} — does /etc/sudoers include /etc/sudoers.d? (#230)"
+}
+
+converge_tenant_user "$TENANT_USER"
 TENANT_HOME="$(getent passwd "$TENANT_USER" | cut -d: -f6)"
 TENANT_GROUP="$(id -gn "$TENANT_USER")"
 [ -d "$TENANT_HOME" ] || die "user '$TENANT_USER' has no home directory ($TENANT_HOME)"
@@ -423,6 +506,17 @@ if [ "$TPL_AGENT" = "yes" ]; then
   # Agentless tenants are exempt with the rest of this block: no duty engine.
   converge_cron
 fi
+
+# --- sudo (definitions carrying USER_SUDO="nopasswd") -------------------------
+# After the package step so apt is fresh: a base image may ship without sudo,
+# and visudo is part of it. Unset converges too — it removes rig's drop-in.
+# /usr/sbin is checked by path too: root's PATH may lack it (su without -).
+if [ "$TPL_USER_SUDO" = "nopasswd" ] && [ ! -x /usr/sbin/visudo ] \
+  && ! command -v visudo >/dev/null 2>&1; then
+  log "installing sudo (USER_SUDO=nopasswd)"
+  apt-get install -y -qq sudo
+fi
+converge_user_sudo "$TENANT_USER" "$TPL_USER_SUDO" /etc/sudoers.d
 
 # --- docker ------------------------------------------------------------------
 # Every tenant gets docker. Docker's own installer, convergence-guarded — its
