@@ -469,8 +469,9 @@ rig bootstrap claude-box --user dev   # a tenant user other than the definition'
 
 **The layering** (rig#31, originating with box#81): a box template stops being
 where tenant content lives. box mints a **thin, creds-free seed** — base image,
-the `BOX_USER`, fixed `/tmp` (swap leaves the seed for `SWAP_SIZE`, below), `tmux`, `curl`, `ca-certificates`,
-`chrony`, `python3-venv` and `shellcheck` — and everything the guest *becomes*
+a fixed `/tmp`, `curl`, `ca-certificates` and `chrony`, and since box 0.11.0
+no user at all (rig creates the tenant, below; swap is `SWAP_SIZE`, and the
+toolchain is `APT_EXTRAS`) — and everything the guest *becomes*
 is a rig tenant role. cloud-init is a first-boot
 one-shot: not convergent, not re-runnable, and only parse-and-grep testable.
 rig roles are idempotent scripts with effective-state asserts, driven by the
