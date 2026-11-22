@@ -6,6 +6,19 @@ without version epics is not out of compliance. A repo-local roadmap is the
 map; each epic remains the source of truth for its own release. Where an older
 repo-local description differs from this file, this file governs.
 
+## Versioning and artifact publication
+
+A release has two halves: the repository records its progression, and it may
+publish an artifact. The first half is universal — a repository that publishes
+no artifact still releases by cutting a tag, stamping its version and
+assembling its changelog section. The artifact hook is the optional half.
+Describe repositories on the **publishes an artifact / does not publish an
+artifact** axis, never the **releases / does not release** axis.
+
+`heavy-duty/la-familia-infra` is the live worked example: its releases version
+infrastructure state and record that progression without publishing an
+installer, package or image.
+
 ## The ladder
 
 Represent each planned release with one version epic. The epic is the working
@@ -35,9 +48,12 @@ separate version epics. Their worked ladder is
 `X.Y.Z-dev` → `X.Y.Z-rc1` → `X.Y.Z-rc2-dev` → `X.Y.Z-rc2` → … →
 `X.Y.Z`. Each candidate is a tag-only cut: its ceremony PR changes the
 version to the bare `X.Y.Z-rcN` and adds `drills/X.Y.Z-rcN.md`, but leaves
-`CHANGELOG.md` and every fragment untouched. The release doors assemble the
-surviving fragments into cumulative notes, publish the candidate with
-`--prerelease`, and the merge door deterministically re-arms main as
+`CHANGELOG.md` and every fragment untouched. The release doors publish the
+candidate with `--prerelease`. Its notes are the fragments added since the
+previous candidate's tag, opened by a line that names that tag and links to
+every surviving fragment; the first candidate publishes them all. Every
+release's notes are capped under GitHub's body limit and end with that link
+when cut (#635). The merge door deterministically re-arms main as
 `X.Y.Z-rc(N+1)-dev`. Repeat those steps for each candidate. Promotion to
 `X.Y.Z` is the ordinary final ceremony: assemble and stamp the final section,
 consume the fragments, publish the final release, and re-arm the next patch
@@ -193,39 +209,24 @@ releases exactly its declared successors, and that whole set is concurrently
 claimable: a member may have multiple successors, while the collision rule
 already orders any that share a deliverable. Insertion re-points downstream
 edges rather than merely appending membership at the sink. It follows that
-every `ready` issue is a member. `epic` and `post-merge` issues are exempt
-because neither is claimable (#292).
+every `ready` issue is a member. An `epic` is exempt because builders never
+claim it (#292).
 
-A member that lands `post-merge` releases nothing: that exemption is about
-claimability, while a `post-merge` issue is still open and an open predecessor
-holds its successors, so every successor declaring on it stays held and the
-window stops advancing along that edge (#329).
-
-**When a member reaches `post-merge` and any open declaration names it, triage
-splits the remainder**: mint a fresh issue carrying the outstanding criteria
+**The merge-door repair for after-close work is a split.** When an issue is
+found mid-flight to carry work whose evidence cannot exist before merge,
+triage mints a fresh issue carrying the outstanding criteria
 verbatim, naming its owner and its wake condition and citing the original, then
 close the original on what it delivered. Triage owns this because only triage
-mints issues and `post-merge` is its completion queue (#329).
+mints issues (#329, #536).
 
 **The release edge is the original's close, never the remainder's.** Each
 successor's declaration names the original's number, so closing the new issue
 releases nothing (#329).
 
-**Split only when an open declaration names the issue.** The trigger is a check
-rather than a judgement — run the blocker parse over every open `blocked` body
-and see whether this number appears — because an issue that strands nothing is
-`post-merge` working as intended (#329).
-
 **Never close work out from under a builder.** Where the original is assigned,
 `claimed`, or carrying an open PR, amend its body to hand the outstanding
 criteria to the new issue and let its holder close it, so the release edge above
 is reached without taking the work from them (#329).
-
-**Do not instead teach the blocker parse that `post-merge` counts as landed.**
-That promotes a successor while its predecessor still owes acceptance criteria,
-inverts a parser whose deliberate error direction is to hold or flag a reference
-it cannot read rather than release it, and needs label data a reference-state
-lookup does not carry (#329).
 
 The operator may declare a parallel track at init when its footprint is
 disjoint from the primary window: another repository, another artifact, or
@@ -233,6 +234,25 @@ provably non-overlapping clusters. The declaration names the boundary and any
 bridge work that must rejoin the primary. A repository whose app and artifact
 are disjoint from the primary window forms a parallel track, while its bridge
 work stays in the primary window. (#248)
+
+## Release tracks
+
+One repository may ship more than one app, each on its own version line: a
+**release track** is a directory holding the app's own version source,
+`CHANGELOG.md`, `changelog.d/` and `drills/`, released under its own tag
+prefix (#618). The repository declares its tracks in one caller of the
+release workflow, a matrix leg per track with `path` and `tag-prefix`
+([docs/CONSUMERS.md](docs/CONSUMERS.md)), because the pin is one `uses:` line
+and the legs run one at a time (#623). A repository with one app has one
+track, the default one, and nothing here changes it.
+
+Each track runs its own ladder, its own release-candidate windows and its own
+membership record: a ceremony PR stamps exactly one track's `VERSION` and
+`CHANGELOG.md` and touches no other track's files. A second track's windows
+are a declared parallel track in the sense above — another artifact with a
+disjoint footprint — so the operator declares them at init like any other;
+work that changes both apps is bridge work, and it writes one fragment into
+each track's `changelog.d/` it changes.
 
 ## Flip mechanics
 
