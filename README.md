@@ -469,7 +469,7 @@ rig bootstrap claude-box --user dev   # when the seed's BOX_USER differs
 
 **The layering** (rig#31, originating with box#81): a box template stops being
 where tenant content lives. box mints a **thin, creds-free seed** — base image,
-the `BOX_USER`, fixed `/tmp` and swap, `tmux`, `curl`, `ca-certificates`,
+the `BOX_USER`, fixed `/tmp` (swap leaves the seed for `SWAP_SIZE`, below), `tmux`, `curl`, `ca-certificates`,
 `chrony`, `python3-venv` and `shellcheck` — and everything the guest *becomes*
 is a rig tenant role. cloud-init is a first-boot
 one-shot: not convergent, not re-runnable, and only parse-and-grep testable.
@@ -494,6 +494,17 @@ contract, while `HARDEN_SSHD="yes"` independently invokes the shared
 `lib/sshd.sh` mechanism. Those two keys are what let the registry describe
 `staging-box` — user `ops`, no agent, box#69's hardened server posture — so
 rig's tree now defines **no** tenant role at all (#185).
+
+**Swap is a definition fact too** (#229). An optional `SWAP_SIZE` — a number
+then `M` or `G`, from `256M` to `64G`, anything else refused at parse —
+converges a `/swapfile` of that size with an `/etc/fstab` line, **on a VM
+only**: a container logs one skip line and creates nothing. A re-run leaves a
+right-sized swapfile alone and recreates one of any other size (swapoff,
+recreate, swapon); with no `SWAP_SIZE`, rig neither creates nor removes swap.
+It replaces the 4GiB `/swapfile` box's cloud-init used to give every guest,
+which box#253 removes, so a definition that wants the old behaviour says
+`SWAP_SIZE="4G"`. An existing box's 4GiB file already matches that and is
+left as it is.
 
 **Where the registry comes from — precedence high to low:**
 

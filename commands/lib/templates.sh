@@ -57,7 +57,7 @@ RIG_TEMPLATES_PIN=4011092d8b23a2c8f077899325a98f3d84c275b9
 # KEY="value" — nothing else. Parsed by regex, never sourced.
 TEMPLATE_KEYS_REQUIRED=(USER)
 TEMPLATE_AGENT_KEYS=(CONTEXT_PATH CLI_NAME CLI_SRC PATH_LINE NEEDS_NODE)
-TEMPLATE_KEYS_OPTIONAL=(AGENT HARDEN_SSHD CONTEXT_PATH CLI_NAME CLI_SRC PATH_LINE NEEDS_NODE APT_EXTRAS)
+TEMPLATE_KEYS_OPTIONAL=(AGENT HARDEN_SSHD CONTEXT_PATH CLI_NAME CLI_SRC PATH_LINE NEEDS_NODE APT_EXTRAS SWAP_SIZE)
 MACHINE_KEYS_REQUIRED=(ROOT_DOOR HOST JOIN)
 
 # templates_source_desc — where the resolved registry came from, for error
@@ -194,7 +194,8 @@ templates_machine_roles() {
 # template_parse_env <template.env> — parse against the allowlist. Sets
 # TPL_USER, TPL_CONTEXT_PATH, TPL_CLI_NAME, TPL_CLI_SRC, TPL_PATH_LINE,
 # TPL_AGENT (default yes), TPL_HARDEN_SSHD (default no), TPL_NEEDS_NODE
-# (default no), TPL_APT_EXTRAS. Every refusal names the
+# (default no), TPL_APT_EXTRAS, TPL_SWAP_SIZE (default empty: no swap
+# change). Every refusal names the
 # failing key (or line): the box.env discipline — a definition is data, and
 # bad data is refused loudly, never executed to find out.
 # shellcheck disable=SC2034  # the TPL_* globals are this function's OUTPUT, read by the sourcing script
@@ -202,7 +203,7 @@ template_parse_env() {
   local file="$1" line key val n=0 seen=" " k ok
   TPL_USER="" TPL_CONTEXT_PATH="" TPL_CLI_NAME="" TPL_CLI_SRC=""
   TPL_PATH_LINE="" TPL_AGENT="yes" TPL_HARDEN_SSHD="no"
-  TPL_NEEDS_NODE="no" TPL_APT_EXTRAS=""
+  TPL_NEEDS_NODE="no" TPL_APT_EXTRAS="" TPL_SWAP_SIZE=""
   [ -f "$file" ] || { printf 'template.env missing: %s\n' "$file" >&2; return 1; }
   while IFS= read -r line || [ -n "$line" ]; do
     n=$((n+1))
@@ -232,6 +233,7 @@ template_parse_env() {
       PATH_LINE)    TPL_PATH_LINE="$val" ;;
       NEEDS_NODE)   TPL_NEEDS_NODE="$val" ;;
       APT_EXTRAS)   TPL_APT_EXTRAS="$val" ;;
+      SWAP_SIZE)    TPL_SWAP_SIZE="$val" ;;
     esac
   done < "$file"
   for k in "${TEMPLATE_KEYS_REQUIRED[@]}"; do
@@ -294,6 +296,31 @@ template_parse_env() {
     [[ "$pkg" =~ ^[a-z0-9][a-z0-9.+-]*$ ]] \
       || { printf 'template.env: APT_EXTRAS: not a sane package name: %s\n' "$pkg" >&2; return 1; }
   done
+  # SWAP_SIZE reaches fallocate as one quoted argument, and only after this
+  # gate: a number and a unit, M or G, inside 256M..64G. Empty means unset.
+  if [ -n "$TPL_SWAP_SIZE" ]; then
+    swap_size_bytes "$TPL_SWAP_SIZE" >/dev/null \
+      || { printf 'template.env: SWAP_SIZE: want a size from 256M to 64G (a number then M or G), got: %s\n' "$TPL_SWAP_SIZE" >&2; return 1; }
+  fi
+}
+
+# swap_size_bytes <size> — the byte count of a SWAP_SIZE value, on stdout, or
+# return 1 when the value is not a number followed by M or G within 256M..64G
+# (fallocate -l reads M and G as MiB and GiB). The parser's gate and the
+# swap converger's size comparison share this one reading of the value. The
+# digit cap keeps the arithmetic far from overflow.
+SWAP_SIZE_MIN_MIB=256
+SWAP_SIZE_MAX_MIB=65536
+swap_size_bytes() {
+  local n unit mib
+  [[ "${1:-}" =~ ^([1-9][0-9]{0,5})([MG])$ ]] || return 1
+  n="${BASH_REMATCH[1]}" unit="${BASH_REMATCH[2]}"
+  case "$unit" in
+    M) mib=$((10#$n)) ;;
+    G) mib=$((10#$n * 1024)) ;;
+  esac
+  [ "$mib" -ge "$SWAP_SIZE_MIN_MIB" ] && [ "$mib" -le "$SWAP_SIZE_MAX_MIB" ] || return 1
+  printf '%s\n' "$((mib * 1024 * 1024))"
 }
 
 # machine_template_parse_env <template.env> — the fleet-machine traits schema.

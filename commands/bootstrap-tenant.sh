@@ -297,7 +297,94 @@ converge_cron() {
   systemctl is-active  cron >/dev/null 2>&1 || die "cron.service is not active after converge — the duty engine's timer never fires without it (#162)"
 }
 
+# converge_swap <size> <swapfile> <fstab> — the definition's SWAP_SIZE as a
+# swapfile (#229). box's cloud-init used to give every guest a 4GiB /swapfile;
+# box#253 drops it, so the size is now the definition's fact and the file is
+# converged here. VM-only: a container shares its host's kernel, so it has no
+# swap of its own to turn on. Idempotent on the effective state — a file of the
+# declared size that is active is left alone, any other size is swapped off,
+# recreated and swapped on — and an unset SWAP_SIZE touches nothing, neither
+# creating nor removing swap. The size reaches fallocate as one quoted word,
+# and only after swap_size_bytes accepted it. Paths are arguments, not
+# constants, so test/cli.sh can lift this verbatim and drive it on fixtures.
+converge_swap() {
+  local size="$1" file="$2" fstab="$3" want have virt changed="" stale="" err
+  local fresh="${2}.rig-new"
+  [ -n "$size" ] || return 0
+  want="$(swap_size_bytes "$size")" || die "SWAP_SIZE: not a size from 256M to 64G: ${size} (#229)"
+  if ! systemd-detect-virt --vm --quiet 2>/dev/null \
+    || systemd-detect-virt --container --quiet 2>/dev/null; then
+    virt="$(systemd-detect-virt 2>/dev/null || true)"
+    log "SWAP_SIZE=${size}: not a VM (${virt:-unknown}) — skipping swap"
+    return 0
+  fi
+  if [ -L "$file" ] || { [ -e "$file" ] && [ ! -f "$file" ]; }; then
+    die "swap path exists but is not a regular file: ${file} (#229)"
+  fi
+  if [ -f "$file" ]; then
+    have="$(stat -c %s "$file")"
+    if [ "$have" != "$want" ]; then
+      log "${file} is ${have} bytes, SWAP_SIZE=${size} wants ${want} — recreating"
+      stale=1
+    fi
+  fi
+  if [ ! -e "$file" ] || [ -n "$stale" ]; then
+    # Built beside the old file and moved over it only once it is ready, so a
+    # failed create (disk full) leaves the old swap on and its fstab line true.
+    # dd is the fallback for filesystems that refuse fallocate, as box's
+    # cloud-init did. A failure removes the half-built file.
+    log "creating ${file} (${size})"
+    rm -f "$fresh"
+    ( umask 077
+      fallocate -l "$size" "$fresh" 2>/dev/null \
+        || dd if=/dev/zero of="$fresh" bs=1M count="$((want / 1048576))" status=none ) \
+      || { rm -f "$fresh"; die "cannot create ${fresh} (${size}) with fallocate or dd — enough free disk? (#229)"; }
+    mkswap "$fresh" >/dev/null \
+      || { rm -f "$fresh"; die "mkswap ${fresh} failed (#229)"; }
+    if [ -n "$stale" ] && swapon --show=NAME --noheadings --raw | grep -qxF "$file"; then
+      swapoff "$file" \
+        || { rm -f "$fresh"; die "swapoff ${file} failed — the old swap stays on; is there enough free memory to take it down? (#229)"; }
+    fi
+    mv -f "$fresh" "$file"
+    changed=1
+  fi
+  chmod 600 "$file"
+  if ! swapon --show=NAME --noheadings --raw | grep -qxF "$file"; then
+    # A right-sized file that will not swap on has lost its signature: one
+    # mkswap, then the swapon that must succeed.
+    if ! err="$(swapon "$file" 2>&1)"; then
+      mkswap "$file" >/dev/null || die "mkswap ${file} failed (first swapon said: ${err}) (#229)"
+      swapon "$file" || die "swapon ${file} failed (first swapon said: ${err}) (#229)"
+    fi
+    log "swap on: ${file} (${size})"
+    changed=1
+  fi
+  if ! awk -v f="$file" '$1 == f && $3 == "swap" { found = 1 } END { exit !found }' "$fstab" 2>/dev/null; then
+    # Never fuse onto a last line that lacks its newline — that line is
+    # usually the root mount.
+    if [ -s "$fstab" ] && [ -n "$(tail -c1 "$fstab")" ]; then
+      printf '\n' >> "$fstab"
+    fi
+    printf '%s none swap sw 0 0\n' "$file" >> "$fstab"
+    log "appended to ${fstab}: ${file} none swap sw 0 0"
+    changed=1
+  fi
+  # The effective state is the authority, not the exit codes above.
+  swapon --show=NAME --noheadings --raw | grep -qxF "$file" \
+    || die "${file} is not an active swap area after converge (#229)"
+  [ "$(stat -c %s "$file")" = "$want" ] \
+    || die "${file} is not ${size} after converge (#229)"
+  if [ -n "$changed" ]; then
+    log "swap converged: ${file} (${size})"
+  else
+    log "swap already current: ${file} (${size})"
+  fi
+}
+
 # --- packages ----------------------------------------------------------------
+# Swap first: the package installs below are where a small guest spikes.
+converge_swap "$TPL_SWAP_SIZE" /swapfile /etc/fstab
+
 export DEBIAN_FRONTEND=noninteractive
 log "installing base packages (tenant ${ROLE})"
 apt-get update -qq

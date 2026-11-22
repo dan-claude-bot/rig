@@ -1016,6 +1016,238 @@ check "converge_cron: the dying path tried to converge first" 0 "" \
 check "converge_cron: enabled-but-dead start dies nonzero" 0 "" cron_has "$CRON_DEAD" "RC=1"
 check "converge_cron: that death names the active assert" 0 "" \
   cron_has "$CRON_DEAD" "cron.service is not active after converge"
+
+# #229: SWAP_SIZE, the definition's swapfile. The value is refused at the
+# parser unless it is a number then M or G inside 256M..64G — the one reading
+# swap_size_bytes gives both the parser and the converger.
+swap_bytes() { bash -c '. "$1/commands/lib/templates.sh"; swap_size_bytes "$2"' _ "$ROOT" "$1"; }
+check "SWAP_SIZE: 4G reads as 4GiB" 0 "4294967296" swap_bytes 4G
+check "SWAP_SIZE: 256M, the floor, is accepted" 0 "268435456" swap_bytes 256M
+check "SWAP_SIZE: 64G, the ceiling, is accepted" 0 "68719476736" swap_bytes 64G
+check "SWAP_SIZE: 65536M, the ceiling in MiB, is accepted" 0 "68719476736" swap_bytes 65536M
+# shellcheck disable=SC2016  # '$(id)' is a literal: it must never expand
+for bad in 4 100G '4G; rm' 255M 65537M 0G 04G 4g 4GB 4.5G ' 4G' '4G ' -4G '$(id)' 9999999G; do
+  check "SWAP_SIZE: '$bad' is refused" 1 "" swap_bytes "$bad"
+done
+# ...and refused by key at bootstrap, before the root check, so a bad value
+# never reaches a converge (the acceptance criterion's three, by name).
+SWAP_FIX="$(mktemp -d)"
+swap_def() {   # swap_def <role> <value>
+  mkdir -p "$SWAP_FIX/$1"
+  printf 'USER="x"\nAGENT="no"\nSWAP_SIZE="%s"\n' "$2" > "$SWAP_FIX/$1/template.env"
+}
+swap_def nounit-box 4
+swap_def huge-box 100G
+swap_def inject-box '4G; rm'
+swap_def okswap-box 4G
+for role in nounit-box huge-box inject-box; do
+  check "tenant: SWAP_SIZE in $role is refused by key" 2 "SWAP_SIZE" \
+    env RIG_ROLE_MARKER="$SWAP_FIX/absent" RIG_TEMPLATES_DIR="$SWAP_FIX" \
+    "$ROOT/commands/bootstrap-tenant.sh" "$role"
+done
+if [ "$(id -u)" -ne 0 ]; then
+  check "tenant: a valid SWAP_SIZE parses, refuses non-root" 1 "must run as root" \
+    env RIG_ROLE_MARKER="$SWAP_FIX/absent" RIG_TEMPLATES_DIR="$SWAP_FIX" \
+    "$ROOT/commands/bootstrap-tenant.sh" okswap-box
+fi
+check "template-lint: a bad SWAP_SIZE is refused by key" 1 "SWAP_SIZE" \
+  "$ROOT/bin/rig" template-lint "$SWAP_FIX/inject-box"
+check "template-lint: a good SWAP_SIZE passes" 0 "" \
+  "$ROOT/bin/rig" template-lint "$SWAP_FIX/okswap-box"
+rm -rf "$SWAP_FIX"
+
+# converge_swap is lifted out of the real file verbatim and driven against
+# stub systemd-detect-virt, fallocate, mkswap, swapon and swapoff whose state
+# lives in files; the fixture swapfile is sparse, so no real disk is spent.
+SWAP_FN="$(sed -n '/^converge_swap() {/,/^}/p' "$ROOT/commands/bootstrap-tenant.sh")"
+# shellcheck disable=SC2016  # $1 is the inner bash -c's positional
+check "tenant: converge_swap lifts out of the real file whole" 0 "" \
+  bash -c '[ -n "$1" ] && printf %s "$1" | grep -q "^}$"' _ "$SWAP_FN"
+# shellcheck disable=SC2016  # literal source text, matched verbatim
+check "tenant: converge_swap is invoked with /swapfile and /etc/fstab" 0 "" \
+  grep -qE '^converge_swap "\$TPL_SWAP_SIZE" /swapfile /etc/fstab$' "$ROOT/commands/bootstrap-tenant.sh"
+# shellcheck disable=SC2016  # literal source text, matched verbatim
+check "tenant: SWAP_SIZE reaches fallocate as one quoted word" 0 "" \
+  grep -qF 'fallocate -l "$size" "$fresh"' "$ROOT/commands/bootstrap-tenant.sh"
+
+# drive_swap <virt> <size> <setup> [runs] — virt: vm|container|nested|none;
+# setup: fresh | same (active 4G file + fstab line) | small (active 2G file) |
+# idle (4G file, signed, inactive) | unsigned (4G file, no signature) |
+# symlink. Prints RC, the LAST run's stub calls, size, fstab lines, active.
+drive_swap() {
+  local virt="$1" size="$2" setup="$3" runs="${4:-1}" d
+  d="$(mktemp -d)"
+  mkdir -p "$d/bin"
+  : > "$d/active"; : > "$d/signed"; : > "$d/fstab"
+  printf 'UUID=x / ext4 defaults 0 1\n#%s/swapfile none swap sw 0 0\n' "$d" > "$d/fstab"
+  case "$setup" in
+    same) truncate -s 4G "$d/swapfile"; echo "$d/swapfile" > "$d/active"; echo "$d/swapfile" > "$d/signed"
+          printf '%s none swap sw 0 0\n' "$d/swapfile" >> "$d/fstab" ;;
+    small) truncate -s 2G "$d/swapfile"; echo "$d/swapfile" > "$d/active"; echo "$d/swapfile" > "$d/signed" ;;
+    idle) truncate -s 4G "$d/swapfile"; echo "$d/swapfile" > "$d/signed" ;;
+    unsigned) truncate -s 4G "$d/swapfile" ;;
+    symlink) ln -s "$d/elsewhere" "$d/swapfile" ;;
+    busy) truncate -s 2G "$d/swapfile"; echo "$d/swapfile" > "$d/active"; echo "$d/swapfile" > "$d/signed"
+          : > "$d/swapoff-fails" ;;
+    nofalloc) : > "$d/fallocate-fails" ;;
+    nonl) printf 'UUID=x / ext4 defaults 0 1' > "$d/fstab" ;;
+  esac
+  cat > "$d/bin/systemd-detect-virt" <<EOF
+#!/bin/sh
+echo "systemd-detect-virt \$*" >> "$d/calls"
+case "\$1" in
+  --vm) case "$virt" in vm|nested) exit 0 ;; *) exit 1 ;; esac ;;
+  --container) case "$virt" in container|nested) exit 0 ;; *) exit 1 ;; esac ;;
+  *) case "$virt" in vm) echo kvm ;; container|nested) echo lxc ;; *) echo none; exit 1 ;; esac ;;
+esac
+EOF
+  cat > "$d/bin/fallocate" <<EOF
+#!/bin/sh
+echo "fallocate \$*" >> "$d/calls"
+[ -e "$d/fallocate-fails" ] && exit 1
+[ "\$1" = -l ] && truncate -s "\$2" "\$3"
+EOF
+  cat > "$d/bin/dd" <<EOF
+#!/bin/sh
+echo "dd \$*" >> "$d/calls"
+of="" bs="" count=""
+for a in "\$@"; do case "\$a" in of=*) of="\${a#of=}" ;; bs=*) bs="\${a#bs=}" ;; count=*) count="\${a#count=}" ;; esac; done
+[ "\$bs" = 1M ] && truncate -s "\$((count * 1048576))" "\$of"
+EOF
+  cat > "$d/bin/mkswap" <<EOF
+#!/bin/sh
+echo "mkswap \$*" >> "$d/calls"
+echo "\$1" >> "$d/signed"
+EOF
+  cat > "$d/bin/swapon" <<EOF
+#!/bin/sh
+case "\$1" in
+  --show=*) cat "$d/active"; exit 0 ;;
+esac
+echo "swapon \$*" >> "$d/calls"
+grep -qxF "\$1" "$d/signed" || exit 255
+echo "\$1" >> "$d/active"
+EOF
+  cat > "$d/bin/swapoff" <<EOF
+#!/bin/sh
+echo "swapoff \$*" >> "$d/calls"
+[ -e "$d/swapoff-fails" ] && exit 1
+grep -vxF "\$1" "$d/active" > "$d/active.new"; mv "$d/active.new" "$d/active"
+EOF
+  chmod +x "$d/bin/"*
+  for _ in $(seq 1 "$runs"); do
+    : > "$d/calls"
+    # shellcheck disable=SC2016  # expanded by the driving shell
+    PATH="$d/bin:$PATH" bash -c '
+      set -euo pipefail
+      . "$1/commands/lib/templates.sh"
+      log() { printf "rig-bootstrap: %s\n" "$*"; }
+      die() { printf "rig-bootstrap: ERROR: %s\n" "$1" >&2; exit "${2:-1}"; }
+      '"$SWAP_FN"'
+      converge_swap "$2" "$3/swapfile" "$3/fstab"' _ "$ROOT" "$size" "$d" 2>&1
+    echo "RC=$?"
+  done
+  sed 's/^/CALL /' "$d/calls"
+  if [ -f "$d/swapfile" ] && [ ! -L "$d/swapfile" ]; then
+    echo "SIZE=$(stat -c %s "$d/swapfile")"
+    echo "MODE=$(stat -c %a "$d/swapfile")"
+  else
+    echo "SIZE=none"
+  fi
+  echo "FSTAB=$(grep -c "^$d/swapfile none swap sw 0 0$" "$d/fstab")"
+  echo "ROOTLINE=$(grep -cx 'UUID=x / ext4 defaults 0 1' "$d/fstab")"
+  echo "LEFTOVER=$(find "$d" -maxdepth 1 -name 'swapfile.rig-new' | grep -c .)"
+  echo "ACTIVE=$(grep -c . "$d/active")"
+  rm -rf "$d"
+}
+SWAP_FRESH="$(drive_swap vm 4G fresh)"
+SWAP_RERUN="$(drive_swap vm 4G fresh 2)"
+SWAP_SAME="$(drive_swap vm 4G same)"
+SWAP_SMALL="$(drive_swap vm 4G small)"
+SWAP_IDLE="$(drive_swap vm 4G idle)"
+SWAP_UNSIGNED="$(drive_swap vm 4G unsigned)"
+SWAP_CONTAINER="$(drive_swap container 4G fresh)"
+SWAP_NESTED="$(drive_swap nested 4G fresh)"
+SWAP_UNSET="$(drive_swap vm "" small)"
+SWAP_LINK="$(drive_swap vm 4G symlink)"
+SWAP_BUSY="$(drive_swap vm 4G busy)"
+SWAP_NOFALLOC="$(drive_swap vm 4G nofalloc)"
+SWAP_NONL="$(drive_swap vm 4G nonl)"
+swap_has() { printf '%s\n' "$1" | grep -qxF -e "$2"; }        # whole line
+swap_mentions() { printf '%s' "$1" | grep -qF -e "$2"; }      # substring
+
+check "converge_swap: a fresh VM exits 0" 0 "" swap_has "$SWAP_FRESH" "RC=0"
+check "converge_swap: a fresh VM gets a 4GiB file" 0 "" swap_has "$SWAP_FRESH" "SIZE=4294967296"
+check "converge_swap: the file is mode 600" 0 "" swap_has "$SWAP_FRESH" "MODE=600"
+check "converge_swap: the file is fallocated at the declared size" 0 "" \
+  swap_mentions "$SWAP_FRESH" "CALL fallocate -l 4G "
+check "converge_swap: the file is formatted" 0 "" swap_mentions "$SWAP_FRESH" "CALL mkswap "
+check "converge_swap: the file is swapped on" 0 "" swap_has "$SWAP_FRESH" "ACTIVE=1"
+check "converge_swap: one fstab line, beside a commented-out one" 0 "" swap_has "$SWAP_FRESH" "FSTAB=1"
+check "converge_swap: the log says it converged" 0 "" swap_mentions "$SWAP_FRESH" "swap converged:"
+
+# shellcheck disable=SC2016  # expanded by the inner bash
+check "converge_swap: both runs exit 0" 0 "" \
+  bash -c '[ "$(printf "%s\n" "$1" | grep -cx "RC=0")" -eq 2 ]' _ "$SWAP_RERUN"
+check "converge_swap: a re-run never fallocates" 1 "" swap_mentions "$SWAP_RERUN" "CALL fallocate"
+check "converge_swap: a re-run never formats" 1 "" swap_mentions "$SWAP_RERUN" "CALL mkswap"
+check "converge_swap: a re-run never swaps on or off" 1 "" swap_mentions "$SWAP_RERUN" "CALL swap"
+check "converge_swap: a re-run leaves one fstab line" 0 "" swap_has "$SWAP_RERUN" "FSTAB=1"
+check "converge_swap: a re-run says it is already current" 0 "" \
+  swap_mentions "$SWAP_RERUN" "swap already current:"
+check "converge_swap: box's old 4G swapfile is left alone" 1 "" swap_mentions "$SWAP_SAME" "CALL swap"
+check "converge_swap: box's old fstab line is not duplicated" 0 "" swap_has "$SWAP_SAME" "FSTAB=1"
+
+check "converge_swap: a size change exits 0" 0 "" swap_has "$SWAP_SMALL" "RC=0"
+check "converge_swap: a size change swaps the old file off" 0 "" swap_mentions "$SWAP_SMALL" "CALL swapoff "
+check "converge_swap: a size change recreates at the new size" 0 "" swap_has "$SWAP_SMALL" "SIZE=4294967296"
+check "converge_swap: a size change swaps the new file on" 0 "" swap_has "$SWAP_SMALL" "ACTIVE=1"
+check "converge_swap: a size change says so" 0 "" swap_mentions "$SWAP_SMALL" "recreating"
+
+check "converge_swap: an idle right-sized file is swapped on, not rebuilt" 1 "" \
+  swap_mentions "$SWAP_IDLE" "CALL fallocate"
+check "converge_swap: ...and is active afterwards" 0 "" swap_has "$SWAP_IDLE" "ACTIVE=1"
+check "converge_swap: a file that lost its signature is formatted once" 0 "" \
+  swap_mentions "$SWAP_UNSIGNED" "CALL mkswap "
+check "converge_swap: ...and is active afterwards" 0 "" swap_has "$SWAP_UNSIGNED" "ACTIVE=1"
+
+check "converge_swap: a container exits 0" 0 "" swap_has "$SWAP_CONTAINER" "RC=0"
+check "converge_swap: a container logs one skip line" 0 "" \
+  swap_mentions "$SWAP_CONTAINER" "SWAP_SIZE=4G: not a VM (lxc) — skipping swap"
+check "converge_swap: a container creates nothing" 0 "" swap_has "$SWAP_CONTAINER" "SIZE=none"
+check "converge_swap: a container's fstab is untouched" 0 "" swap_has "$SWAP_CONTAINER" "FSTAB=0"
+# shellcheck disable=SC2016  # expanded by the inner bash
+check "converge_swap: a container calls nothing but systemd-detect-virt" 0 "" \
+  bash -c '! printf "%s\n" "$1" | grep "^CALL " | grep -qv "^CALL systemd-detect-virt"' _ "$SWAP_CONTAINER"
+check "converge_swap: a container inside a VM is still skipped" 0 "" swap_has "$SWAP_NESTED" "SIZE=none"
+check "converge_swap: ...with its skip line" 0 "" swap_mentions "$SWAP_NESTED" "skipping swap"
+check "converge_swap: ...and no fstab line" 0 "" swap_has "$SWAP_NESTED" "FSTAB=0"
+
+check "converge_swap: unset SWAP_SIZE exits 0" 0 "" swap_has "$SWAP_UNSET" "RC=0"
+check "converge_swap: unset SWAP_SIZE calls nothing" 1 "" swap_mentions "$SWAP_UNSET" "CALL "
+check "converge_swap: unset SWAP_SIZE keeps existing swap" 0 "" swap_has "$SWAP_UNSET" "SIZE=2147483648"
+check "converge_swap: unset SWAP_SIZE keeps it active" 0 "" swap_has "$SWAP_UNSET" "ACTIVE=1"
+
+check "converge_swap: a symlinked swap path dies" 0 "" swap_has "$SWAP_LINK" "RC=1"
+check "converge_swap: that death names the path" 0 "" \
+  swap_mentions "$SWAP_LINK" "swap path exists but is not a regular file"
+
+# Review round 1: a failed size change keeps the old swap; a refused
+# fallocate falls back to dd; an fstab without a final newline is never
+# fused onto.
+check "converge_swap: a refused swapoff dies" 0 "" swap_has "$SWAP_BUSY" "RC=1"
+check "converge_swap: ...saying the old swap stays on" 0 "" swap_mentions "$SWAP_BUSY" "the old swap stays on"
+check "converge_swap: ...keeping the old file" 0 "" swap_has "$SWAP_BUSY" "SIZE=2147483648"
+check "converge_swap: ...still active" 0 "" swap_has "$SWAP_BUSY" "ACTIVE=1"
+check "converge_swap: ...and leaving no half-built file" 0 "" swap_has "$SWAP_BUSY" "LEFTOVER=0"
+check "converge_swap: a fresh build leaves no half-built file" 0 "" swap_has "$SWAP_FRESH" "LEFTOVER=0"
+check "converge_swap: a refused fallocate falls back to dd" 0 "" \
+  swap_mentions "$SWAP_NOFALLOC" "CALL dd if=/dev/zero of="
+check "converge_swap: ...at the declared size" 0 "" swap_has "$SWAP_NOFALLOC" "SIZE=4294967296"
+check "converge_swap: ...and swaps it on" 0 "" swap_has "$SWAP_NOFALLOC" "ACTIVE=1"
+check "converge_swap: fstab without a final newline keeps its root line" 0 "" \
+  swap_has "$SWAP_NONL" "ROOTLINE=1"
+check "converge_swap: ...and gains the swap line on its own line" 0 "" swap_has "$SWAP_NONL" "FSTAB=1"
 # The machine-role traits die with the tenant story, never "unknown flag" — an
 # operator coming from the machine families needs the boundary, not a shrug.
 check "tenant: trait flags die with the tenant story" 2 "have no traits" \
