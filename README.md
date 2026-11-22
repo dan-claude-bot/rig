@@ -554,7 +554,10 @@ moved into place, installing `sudo` first when it is missing) and asserts
 `sudo -n true` answers as the user. Remove the key and the next run deletes
 that file — only a `90-rig-<user>` that carries rig's first line, never any
 other sudoers file. Agent tenants leave it unset (agents hold no root,
-heavy-duty/box#177); `staging-box`'s `ops` sets it.
+heavy-duty/box#177); `staging-box`'s `ops` sets it. A grant rig did not write
+stays: on a box ≤ `0.10`, cloud-init's own `90-cloud-init-users` keeps `ops`'s
+sudo after the key is removed until an operator deletes it. A new account is
+refused when its home path already exists, so it never inherits a stale home.
 
 Every install is **asserted on effective state**, not exit codes: the CLI must
 *answer* (`--version`, run as the tenant user — a CLI that exists but cannot

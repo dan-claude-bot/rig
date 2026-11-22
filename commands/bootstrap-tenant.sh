@@ -211,13 +211,25 @@ fi
 # reshaped, home and shell kept, so a box whose seed made the user converges
 # exactly as it did before #230, without one extra line of output. A function
 # so test/cli.sh can lift it verbatim and drive it against stubs.
+#
+# A home left behind by an earlier user of that name (userdel without -r, a
+# restored snapshot) is refused BEFORE useradd: useradd -m would adopt it
+# without chowning it, and the tenant would own nothing in its own home. A
+# failing passwd -l takes the new user back out (userdel -r), so the next run
+# creates it again rather than finding a half-made account and moving on.
 converge_tenant_user() {
-  local user="$1"
+  local user="$1" home_base
   id -u "$user" >/dev/null 2>&1 && return 0
+  home_base="$(useradd -D | sed -n 's/^HOME=//p')"
+  if [ -e "${home_base:-/home}/$user" ] || [ -L "${home_base:-/home}/$user" ]; then
+    die "user '${user}' does not exist but ${home_base:-/home}/${user} does — remove it or move it aside, then re-run; rig will not hand a new account someone else's home (#230)"
+  fi
   useradd -m -s /bin/bash "$user" \
     || die "useradd -m -s /bin/bash ${user} failed — is a group named '${user}' already present? (#230)"
-  passwd -l "$user" >/dev/null \
-    || die "passwd -l ${user} failed — the new user's password is not locked (#230)"
+  if ! passwd -l "$user" >/dev/null; then
+    userdel -r "$user" >/dev/null 2>&1 || true
+    die "passwd -l ${user} failed — the new user was removed again so a re-run starts clean (#230)"
+  fi
   id -u "$user" >/dev/null 2>&1 \
     || die "user '${user}' is still absent after useradd (#230)"
   log "created tenant user ${user} (home, /bin/bash, password locked, no sudo)"
@@ -240,12 +252,9 @@ RIG_SUDOERS_MARK='# rig bootstrap: USER_SUDO="nopasswd" (#230). rig removes this
 converge_user_sudo() {
   local user="$1" mode="$2" dir="$3" file want tmp err
   file="$dir/90-rig-$user"
-  if [ -L "$file" ] || { [ -e "$file" ] && [ ! -f "$file" ]; }; then
-    die "sudoers path exists but is not a regular file: ${file} (#230)"
-  fi
   if [ -z "$mode" ]; then
-    [ -e "$file" ] || return 0
-    if [ "$(head -n1 "$file")" = "$RIG_SUDOERS_MARK" ]; then
+    [ -e "$file" ] || [ -L "$file" ] || return 0
+    if [ -f "$file" ] && [ ! -L "$file" ] && [ "$(head -n1 "$file")" = "$RIG_SUDOERS_MARK" ]; then
       rm -f "$file"
       log "removed ${file} (USER_SUDO unset)"
     else
@@ -254,7 +263,10 @@ converge_user_sudo() {
     return 0
   fi
   [ "$mode" = "nopasswd" ] || die "USER_SUDO: want nopasswd or unset, got: ${mode} (#230)"
-  [ -d "$dir" ] || die "USER_SUDO=nopasswd but ${dir} is not a directory — is sudo installed? (#230)"
+  [ -d "$dir" ] || die "USER_SUDO=nopasswd but ${dir} is not a directory — this image's sudo has no drop-in directory (#230)"
+  if [ -L "$file" ] || { [ -e "$file" ] && [ ! -f "$file" ]; }; then
+    die "sudoers path exists but is not a regular file: ${file} (#230)"
+  fi
   want="$(printf '%s\n%s ALL=(ALL) NOPASSWD:ALL' "$RIG_SUDOERS_MARK" "$user")"
   if [ -f "$file" ] && [ "$(cat "$file")" = "$want" ] \
     && [ "$(stat -c '%a %U:%G' "$file")" = "440 $SUDOERS_OWNER" ]; then
@@ -498,7 +510,9 @@ fi
 # --- sudo (definitions carrying USER_SUDO="nopasswd") -------------------------
 # After the package step so apt is fresh: a base image may ship without sudo,
 # and visudo is part of it. Unset converges too — it removes rig's drop-in.
-if [ "$TPL_USER_SUDO" = "nopasswd" ] && ! command -v visudo >/dev/null 2>&1; then
+# /usr/sbin is checked by path too: root's PATH may lack it (su without -).
+if [ "$TPL_USER_SUDO" = "nopasswd" ] && [ ! -x /usr/sbin/visudo ] \
+  && ! command -v visudo >/dev/null 2>&1; then
   log "installing sudo (USER_SUDO=nopasswd)"
   apt-get install -y -qq sudo
 fi

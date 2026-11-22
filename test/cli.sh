@@ -951,7 +951,7 @@ check "tenant user: the old 'the box seed creates it' refusal is gone" 1 "" \
 check "tenant user: the user step precedes the home lookup" 0 "" \
   bash -c 'u=$(grep -nxF "converge_tenant_user \"\$TENANT_USER\"" "$1" | cut -d: -f1); h=$(grep -n "^TENANT_HOME=" "$1" | cut -d: -f1); [ -n "$u" ] && [ -n "$h" ] && [ "$u" -lt "$h" ]' _ "$ROOT/commands/bootstrap-tenant.sh"
 
-# drive_user <present|absent|failadd> — the real converge_tenant_user, twice,
+# drive_user <present|absent|failadd|staleh|failpasswd> — the real converge_tenant_user, twice,
 # against a passwd database that is one file of names. Every stub logs to
 # calls; the output of each run is captured separately so the "present" case
 # can assert it says nothing at all (byte-identical to pre-#230).
@@ -960,14 +960,20 @@ drive_user() {
   d="$(mktemp -d)"
   : > "$d/users"; : > "$d/calls"
   [ "$mode" = present ] && echo scratch > "$d/users"
+  mkdir -p "$d/home"
+  [ "$mode" = staleh ] && mkdir "$d/home/scratch"
   # shellcheck disable=SC2016  # expanded by the inner bash
   RIG_T="$d" RIG_MODE="$mode" bash -c '
     set -euo pipefail
     log() { printf "rig-bootstrap: %s\n" "$*"; }
     die() { printf "rig-bootstrap: ERROR: %s\n" "$1" >&2; exit "${2:-1}"; }
     id() { [ "$1" = -u ] && grep -qx "$2" "$RIG_T/users"; }
-    useradd() { echo "useradd $*" >> "$RIG_T/calls"; [ "$RIG_MODE" != failadd ] || return 1; echo "${!#}" >> "$RIG_T/users"; }
-    passwd() { echo "passwd $*" >> "$RIG_T/calls"; echo "passwd: password changed."; }
+    useradd() {
+      [ "$1" != -D ] || { printf "GROUP=100\nHOME=%s\nSHELL=/bin/sh\n" "$RIG_T/home"; return 0; }
+      echo "useradd $*" >> "$RIG_T/calls"; [ "$RIG_MODE" != failadd ] || return 1; echo "${!#}" >> "$RIG_T/users"
+    }
+    passwd() { echo "passwd $*" >> "$RIG_T/calls"; echo "passwd: password changed."; [ "$RIG_MODE" != failpasswd ]; }
+    userdel() { echo "userdel $*" >> "$RIG_T/calls"; sed -i "/^${!#}\$/d" "$RIG_T/users"; }
     '"$USER_FN"'
     converge_tenant_user scratch > "$RIG_T/run1" 2>&1
     converge_tenant_user scratch > "$RIG_T/run2" 2>&1
@@ -984,6 +990,8 @@ drive_user() {
 USR_ABSENT="$(drive_user absent)"
 USR_PRESENT="$(drive_user present)"
 USR_FAIL="$(drive_user failadd)"
+USR_STALE="$(drive_user staleh)"
+USR_NOLOCK="$(drive_user failpasswd)"
 usr_has() { printf '%s' "$1" | grep -qxF -e "$2"; }   # usr_has <captured> <exact line>
 usr_count() { [ "$(printf '%s\n' "$1" | grep -c "$2")" -eq "$3" ]; }
 check "tenant user: an absent user is created with home and bash" 0 "" \
@@ -1002,6 +1010,13 @@ check "tenant user: a failing useradd dies nonzero" 0 "" usr_has "$USR_FAIL" "RC
 check "tenant user: that death names useradd and #230" 0 "useradd -m -s /bin/bash scratch failed" \
   printf '%s' "$USR_FAIL"
 check "tenant user: a failed useradd never locks a password" 0 "" usr_count "$USR_FAIL" "^CALL: passwd" 0
+check "tenant user: a leftover home with no user dies before useradd" 0 "" usr_has "$USR_STALE" "RC=1"
+check "tenant user: that death names the stale home" 0 "/home/scratch does — remove it" printf '%s' "$USR_STALE"
+check "tenant user: a leftover home never reaches useradd" 0 "" usr_count "$USR_STALE" "^CALL: useradd" 0
+check "tenant user: a failing passwd -l dies nonzero" 0 "" usr_has "$USR_NOLOCK" "RC=1"
+check "tenant user: and takes the half-made user back out" 0 "" usr_has "$USR_NOLOCK" "CALL: userdel -r scratch"
+check "tenant user: the sudo install gate also finds visudo by path" 0 "" \
+  grep -qF '[ ! -x /usr/sbin/visudo ]' "$ROOT/commands/bootstrap-tenant.sh"
 
 # drive_sudo <steps...> — the real converge_user_sudo over a fixture
 # sudoers.d, owned by whoever runs the harness (SUDOERS_OWNER is overridden
@@ -1060,6 +1075,7 @@ SUDO_SFAIL="$(drive_sudo set:sudo-fail)"
 SUDO_BAD="$(drive_sudo yes)"
 SUDO_FOREIGN="$(PRE=foreign drive_sudo unset)"
 SUDO_LINK="$(PRE=symlink drive_sudo set)"
+SUDO_LINK_UNSET="$(PRE=symlink drive_sudo unset)"
 sudo_has() { printf '%s\n' "$1" | grep -qxF -e "$2"; }
 cap_grep() { local c="$1"; shift; printf '%s\n' "$c" | grep "$@"; }   # cap_grep <captured> <grep args...>
 # sudo_step <captured> <n> — the nth step's block: its STEP line and output.
@@ -1105,6 +1121,9 @@ check "USER_SUDO: unset leaves a 90-rig file rig did not write" 0 "" \
 check "USER_SUDO: and warns about it" 0 "was not written by rig" printf '%s' "$SUDO_FOREIGN"
 check "USER_SUDO: a symlink at the drop-in path dies" 0 "" sudo_has "$SUDO_LINK" "STEP set RC=1"
 check "USER_SUDO: that death names the path shape" 0 "not a regular file" printf '%s' "$SUDO_LINK"
+check "USER_SUDO: unset leaves a symlink at the drop-in path alone, exit 0" 0 "" \
+  sudo_has "$SUDO_LINK_UNSET" "STEP unset RC=0"
+check "USER_SUDO: and warns about it" 0 "was not written by rig" printf '%s' "$SUDO_LINK_UNSET"
 
 # The parser half: USER_SUDO is "nopasswd" or absent, refused by key
 # otherwise — an empty value included, so a typo never reads as "no sudo".
