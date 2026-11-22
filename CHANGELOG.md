@@ -4,6 +4,18 @@ History before 0.1.0 lives in git — rig grew its version surface (`VERSION`,
 `rig --version`, the side-by-side `versions/<v>` install layout; #35/#36)
 on the way to cutting its first release, and this file starts there.
 
+## 0.4.1-rc1 — 2026-11-22
+
+### Added
+
+- `rig bootstrap <role>-box` creates the tenant user when it is absent (home, bash, locked password, no sudo); an existing user is left as it is (#230).
+- Optional template key `USER_SUDO="nopasswd"` writes `/etc/sudoers.d/90-rig-<user>`, validated with `visudo`; removing the key removes the file (#230).
+- Tenant definitions take an optional `SWAP_SIZE` (`256M`–`64G`, a number then `M` or `G`): on a VM, `rig bootstrap` converges a `/swapfile` of that size and its `/etc/fstab` line, recreating it when the size changes; containers skip it, and no `SWAP_SIZE` changes no swap (#229).
+
+### Changed
+
+- Ceremony automation and doctrine are pinned to 0.7.12, stepped from 0.7.7 one migration at a time with `ceremony-upgrade` (#236).
+
 ## 0.4.0 — 2026-09-03
 
 ### Added
