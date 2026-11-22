@@ -25,4 +25,4 @@ permissions:
   pull-requests: write  # remove rerun-owed, post the outcome
 jobs:
   ci-rerun:
-    uses: heavy-duty/ceremony/.github/workflows/ci-rerun.yml@0.7.9
+    uses: heavy-duty/ceremony/.github/workflows/ci-rerun.yml@0.7.12
