@@ -34,4 +34,4 @@ permissions:
   pull-requests: write
 jobs:
   sweep:
-    uses: heavy-duty/ceremony/.github/workflows/labels-sweep.yml@0.7.8
+    uses: heavy-duty/ceremony/.github/workflows/labels-sweep.yml@0.7.9

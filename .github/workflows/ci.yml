@@ -52,27 +52,27 @@ jobs:
       #
       # changelog-armed: the version-keyed arming rule (rig#66; the
       # unconditional form rig#44 reverted — this is its correct return).
-      - uses: heavy-duty/ceremony/actions/changelog-armed@0.7.8
+      - uses: heavy-duty/ceremony/actions/changelog-armed@0.7.9
       # changelog-monotonic: no shipped heading deleted or duplicated
       # (#98, box#122). Strict by default: an unresolvable base ref is red,
       # never a quiet skip — hence the fetch-depth: 0 above.
-      - uses: heavy-duty/ceremony/actions/changelog-monotonic@0.7.8
+      - uses: heavy-duty/ceremony/actions/changelog-monotonic@0.7.9
       # changelog-assembled: a release's stamped section must exactly match
       # the fragments it consumed. Vacuous on non-release PRs.
-      - uses: heavy-duty/ceremony/actions/changelog-assembled@0.7.8
+      - uses: heavy-duty/ceremony/actions/changelog-assembled@0.7.9
       # drill-recorded: a release version carries drills/<version>.md
       # (rig's drill meaning: drills/README.md). Vacuous on -dev trees.
-      - uses: heavy-duty/ceremony/actions/drill-recorded@0.7.8
+      - uses: heavy-duty/ceremony/actions/drill-recorded@0.7.9
       # runner-isolated: PR-triggered workflows never execute unreviewed
       # branch code on a self-hosted runner.
-      - uses: heavy-duty/ceremony/actions/runner-isolated@0.7.8
+      - uses: heavy-duty/ceremony/actions/runner-isolated@0.7.9
       # sha-pinned: third-party actions use immutable commit SHAs with readable
       # version comments; heavy-duty-owned references keep one release pin.
-      - uses: heavy-duty/ceremony/actions/sha-pinned@0.7.8
+      - uses: heavy-duty/ceremony/actions/sha-pinned@0.7.9
       # docs-sync: the .ceremony/ doctrine mirror is byte-identical to the
       # pin read from release.yml (ceremony#19) — a hand edit or a
       # half-done pin bump goes red here.
-      - uses: heavy-duty/ceremony/actions/docs-sync@0.7.8
+      - uses: heavy-duty/ceremony/actions/docs-sync@0.7.9
 
   # The install LIFECYCLE against a tree install.sh itself produced — the four
   # beats box and cast already run in CI (#106): install from this checkout,
