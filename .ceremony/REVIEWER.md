@@ -27,21 +27,45 @@ The machine reads only your **verdict**; humans read your reasons.
 In order of authority:
 
 1. **The issue's acceptance criteria** — the PR's `Closes #N`, its
-   cross-repo `Part of <owner>/<repo>#N`, or its `Refs #N` when the issue
-   body marks a criterion post-merge, names your spec. That last shape is
-   not a defect: the issue directs it, triage owns that close, and a
-   request-changes on the "missing" keyword enforces the bug the shape
-   exists to fix — `Closes #137` closed its issue with a post-merge
-   criterion unmet (#151). For a `Refs #N` body, also verify that no closing
-   keyword immediately precedes `#N` anywhere in the body, even in prose
-   explaining the hand close: GitHub used that shape to close #209 and #212
-   (#200, #218). The `refs-not-closing` guard and GitHub's closing-issue graph
-   settle the check: a `Refs #N` head with a clean graph closes nothing, and a
-   closing keyword quoted inside a code span at such a head is not a defect or
-   grounds for request-changes. The safe forms put the number first (`#N is
-   closed by hand`) or omit it (`triage closes the issue by hand`). Check every
-   criterion; a PR that ships less than the issue says is a request-changes
-   even if the code is beautiful.
+   cross-repo `Part of <owner>/<repo>#N`, or its `Refs #N` on a round-cap cut
+   **predecessor**, names your spec. A same-repo PR carrying acceptance
+   criteria carries `Closes #N`, so the only `Refs #N` head you meet is that
+   predecessor, and there the shape is not a defect: the cut directs it and a
+   request-changes on the "missing" keyword asks for a close the successor
+   owns. The shape once served a post-merge criterion too — `Closes #137`
+   closed its issue with such a criterion unmet, which is what bought the rule
+   (#151) — and that path is retired, no mint producing one (#536). At a
+   `Refs #N` head, verify that no closing keyword immediately precedes `#N`
+   in **either** carrier: anywhere in the body, even in prose explaining the
+   hand close, and anywhere in the PR's **commit messages**, whose list you
+   read as part of this check. GitHub used that shape to close #209 and #212
+   (#200, #218). The `refs-not-closing` guard and GitHub's closing-issue
+   graph settle the **body** half and no more: a clean graph at such a head
+   means the body carries no closing reference, and a closing keyword quoted
+   inside a code span there is not a defect or grounds for request-changes.
+   The graph never sees the commit carrier, so a clean one is no evidence
+   that the issue will not close; read the commit list yourself and treat an
+   adjacent keyword there exactly as you would one in the body (#591).
+   The safe forms put the number first (`#N is
+   closed by hand`) or omit it (`triage closes the issue by hand`).
+   **At a `Closes #N` head — every same-repo PR carrying criteria, since
+   #536 — read the closing-issue graph and compare it with what the body
+   declares.** This is the ordinary shape and not an edge, and it is the one
+   direction nothing checks: the guard intersects the graph with a promise on
+   a `Refs #N` head and compares it with the declaration on none. A graph
+   node the body does not declare closes an issue nobody decided to close,
+   and where nobody meant to enrol it — the measured case is a quoted line
+   enrolling itself — it is a request-changes. Two kinds of node sit outside
+   that: a link the builder placed **deliberately** in the Development
+   sidebar, and a cross-repo node. Whether either must also be declared in
+   the body is open on #612, so ask about one, never request changes on it.
+   Quantify over the **nodes**, never over the body's matches — a closing
+   keyword that enrolled nothing is the quoting case above, and no defect.
+   Read the graph at the head you are approving **and after the body's last
+   edit**: the graph is recomputed from the body, so a read taken over an
+   earlier one is evidence about that body and not about this one (#613).
+   Check every criterion; a PR that ships less than the issue says is a
+   request-changes even if the code is beautiful.
 2. **The repo's load-bearing constraints** — the rules bought with
    incidents (in ceremony itself: issue #1's constraint list; in a governed
    repo: its own CONTRIBUTING plus ceremony's README). A change that
