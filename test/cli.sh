@@ -926,6 +926,211 @@ check "tenant TMPDIR: a pre-existing symlink fails deliberately" 1 "not a direct
 check "tenant TMPDIR: a tmpfs scratch path is refused" 1 "not disk-backed (tmpfs)" \
   drive_tmpdir_failure tmpfs
 
+# #230: the tenant user is rig's to create (box 0.11.0 seeds none), and
+# USER_SUDO="nopasswd" is the one sudo opt-in. The convergers are lifted out
+# of the real file verbatim and driven against stubbed useradd, passwd, id,
+# visudo and runuser over a fixture sudoers.d — never this machine's accounts
+# or /etc/sudoers.d, and never as root.
+USER_FN="$(sed -n '/^converge_tenant_user() {/,/^}/p' "$ROOT/commands/bootstrap-tenant.sh")"
+SUDO_FN="$(sed -n '/^SUDOERS_OWNER=/p; /^RIG_SUDOERS_MARK=/p; /^converge_user_sudo() {/,/^}/p' "$ROOT/commands/bootstrap-tenant.sh")"
+# shellcheck disable=SC2016  # expanded by the inner bash
+check "tenant user: converge_tenant_user lifts out of the real file whole" 0 "" \
+  bash -c '[ "$(printf %s "$1" | grep -c "^}$")" -eq 1 ]' _ "$USER_FN"
+# shellcheck disable=SC2016  # expanded by the inner bash
+check "tenant user: converge_user_sudo and its globals lift out whole" 0 "" \
+  bash -c '[ "$(printf %s "$1" | grep -c "^}$")" -eq 1 ] && printf %s "$1" | grep -q "^SUDOERS_OWNER=" && printf %s "$1" | grep -q "^RIG_SUDOERS_MARK="' _ "$SUDO_FN"
+# shellcheck disable=SC2016  # literal source text / expanded by the inner bash
+check "tenant user: the user is converged before anything reads its home" 0 "" \
+  grep -qxF 'converge_tenant_user "$TENANT_USER"' "$ROOT/commands/bootstrap-tenant.sh"
+# shellcheck disable=SC2016  # literal source text / expanded by the inner bash
+check "tenant user: USER_SUDO converges against the real sudoers.d" 0 "" \
+  grep -qxF 'converge_user_sudo "$TENANT_USER" "$TPL_USER_SUDO" /etc/sudoers.d' "$ROOT/commands/bootstrap-tenant.sh"
+check "tenant user: the old 'the box seed creates it' refusal is gone" 1 "" \
+  grep -nF "the box seed creates it" "$ROOT/commands/bootstrap-tenant.sh"
+# shellcheck disable=SC2016  # literal source text / expanded by the inner bash
+check "tenant user: the user step precedes the home lookup" 0 "" \
+  bash -c 'u=$(grep -nxF "converge_tenant_user \"\$TENANT_USER\"" "$1" | cut -d: -f1); h=$(grep -n "^TENANT_HOME=" "$1" | cut -d: -f1); [ -n "$u" ] && [ -n "$h" ] && [ "$u" -lt "$h" ]' _ "$ROOT/commands/bootstrap-tenant.sh"
+
+# drive_user <present|absent|failadd> — the real converge_tenant_user, twice,
+# against a passwd database that is one file of names. Every stub logs to
+# calls; the output of each run is captured separately so the "present" case
+# can assert it says nothing at all (byte-identical to pre-#230).
+drive_user() {
+  local mode="$1" d
+  d="$(mktemp -d)"
+  : > "$d/users"; : > "$d/calls"
+  [ "$mode" = present ] && echo scratch > "$d/users"
+  # shellcheck disable=SC2016  # expanded by the inner bash
+  RIG_T="$d" RIG_MODE="$mode" bash -c '
+    set -euo pipefail
+    log() { printf "rig-bootstrap: %s\n" "$*"; }
+    die() { printf "rig-bootstrap: ERROR: %s\n" "$1" >&2; exit "${2:-1}"; }
+    id() { [ "$1" = -u ] && grep -qx "$2" "$RIG_T/users"; }
+    useradd() { echo "useradd $*" >> "$RIG_T/calls"; [ "$RIG_MODE" != failadd ] || return 1; echo "${!#}" >> "$RIG_T/users"; }
+    passwd() { echo "passwd $*" >> "$RIG_T/calls"; echo "passwd: password changed."; }
+    '"$USER_FN"'
+    converge_tenant_user scratch > "$RIG_T/run1" 2>&1
+    converge_tenant_user scratch > "$RIG_T/run2" 2>&1
+  ' > "$d/err" 2>&1
+  echo "RC=$?"
+  sed 's/^/RUN1: /' "$d/run1" 2>/dev/null
+  sed 's/^/RUN2: /' "$d/run2" 2>/dev/null
+  sed 's/^/CALL: /' "$d/calls"
+  sed 's/^/ERR: /' "$d/err"
+  printf 'RUN2-BYTES=%s\n' "$(wc -c 2>/dev/null < "$d/run2" || echo none)"
+  printf 'RUN1-BYTES=%s\n' "$(wc -c 2>/dev/null < "$d/run1" || echo none)"
+  rm -rf "$d"
+}
+USR_ABSENT="$(drive_user absent)"
+USR_PRESENT="$(drive_user present)"
+USR_FAIL="$(drive_user failadd)"
+usr_has() { printf '%s' "$1" | grep -qxF -e "$2"; }   # usr_has <captured> <exact line>
+usr_count() { [ "$(printf '%s\n' "$1" | grep -c "$2")" -eq "$3" ]; }
+check "tenant user: an absent user is created with home and bash" 0 "" \
+  usr_has "$USR_ABSENT" "CALL: useradd -m -s /bin/bash scratch"
+check "tenant user: the new user's password is locked" 0 "" \
+  usr_has "$USR_ABSENT" "CALL: passwd -l scratch"
+check "tenant user: creation logs exactly one line" 0 "" \
+  usr_has "$USR_ABSENT" "RUN1: rig-bootstrap: created tenant user scratch (home, /bin/bash, password locked, no sudo)"
+check "tenant user: passwd's own chatter is not logged" 0 "" usr_count "$USR_ABSENT" "^RUN1: " 1
+check "tenant user: a second run creates nothing" 0 "" usr_count "$USR_ABSENT" "^CALL: useradd" 1
+check "tenant user: a second run says nothing" 0 "" usr_has "$USR_ABSENT" "RUN2-BYTES=0"
+check "tenant user: a seed-made user is never recreated" 0 "" usr_count "$USR_PRESENT" "^CALL: " 0
+check "tenant user: a seed-made user converges silently (byte-identical)" 0 "" \
+  usr_has "$USR_PRESENT" "RUN1-BYTES=0"
+check "tenant user: a failing useradd dies nonzero" 0 "" usr_has "$USR_FAIL" "RC=1"
+check "tenant user: that death names useradd and #230" 0 "useradd -m -s /bin/bash scratch failed" \
+  printf '%s' "$USR_FAIL"
+check "tenant user: a failed useradd never locks a password" 0 "" usr_count "$USR_FAIL" "^CALL: passwd" 0
+
+# drive_sudo <steps...> — the real converge_user_sudo over a fixture
+# sudoers.d, owned by whoever runs the harness (SUDOERS_OWNER is overridden
+# after the lift, the only seam). A step is <mode>[:visudo-fail|:sudo-fail],
+# mode "set" (nopasswd), "unset" (empty) or a literal bad value. runuser's
+# "sudo -n true" answers from the fixture file itself — the effective state.
+# Each step's exit code and output are recorded, then the directory listing.
+drive_sudo() {
+  local d step
+  d="$(mktemp -d)"
+  mkdir -p "$d/sudoers.d"
+  : > "$d/calls"
+  printf 'cloud\n' > "$d/sudoers.d/90-cloud-init-users"
+  case "${PRE:-}" in
+    foreign) printf 'scratch ALL=(ALL) ALL\n' > "$d/sudoers.d/90-rig-scratch" ;;
+    symlink) ln -s /etc/hostname "$d/sudoers.d/90-rig-scratch" ;;
+  esac
+  for step in "$@"; do
+    # shellcheck disable=SC2016  # expanded by the inner bash
+    RIG_T="$d" RIG_STEP="$step" bash -c '
+      set -euo pipefail
+      log()  { printf "rig-bootstrap: %s\n" "$*"; }
+      warn() { printf "rig-bootstrap: WARNING: %s\n" "$*" >&2; }
+      die()  { printf "rig-bootstrap: ERROR: %s\n" "$1" >&2; exit "${2:-1}"; }
+      visudo() {
+        echo "visudo $1 $(basename "$2")" >> "$RIG_T/calls"
+        case "$RIG_STEP" in *:visudo-fail) echo "parse error in $2 near line 2" >&2; return 1 ;; esac
+        grep -qx "scratch ALL=(ALL) NOPASSWD:ALL" "$2"
+      }
+      runuser() {
+        echo "runuser $*" >> "$RIG_T/calls"
+        case "$RIG_STEP" in *:sudo-fail) return 1 ;; esac
+        [ "$*" = "-u scratch -- sudo -n true" ] && grep -qx "scratch ALL=(ALL) NOPASSWD:ALL" "$RIG_T/sudoers.d/90-rig-scratch"
+      }
+      '"$SUDO_FN"'
+      SUDOERS_OWNER="$(id -un):$(id -gn)"
+      mode="${RIG_STEP%%:*}"
+      case "$mode" in set) mode=nopasswd ;; unset) mode="" ;; esac
+      converge_user_sudo scratch "$mode" "$RIG_T/sudoers.d"
+    ' > "$d/out" 2>&1
+    echo "STEP $step RC=$?"
+    sed 's/^/  /' "$d/out"
+    if [ -f "$d/sudoers.d/90-rig-scratch" ] && [ ! -L "$d/sudoers.d/90-rig-scratch" ]; then
+      echo "  MODE=$(stat -c %a "$d/sudoers.d/90-rig-scratch")"
+      sed 's/^/  FILE: /' "$d/sudoers.d/90-rig-scratch"
+    fi
+    echo "  LS=$(cd "$d/sudoers.d" && find . -mindepth 1 -printf '%f ' | tr ' ' '\n' | sort | tr '\n' ' ')"
+  done
+  sed 's/^/CALL: /' "$d/calls"
+  printf 'CLOUD=%s\n' "$(cat "$d/sudoers.d/90-cloud-init-users")"
+  rm -rf "$d"
+}
+SUDO_CYCLE="$(drive_sudo set set unset unset)"
+SUDO_VFAIL="$(drive_sudo set:visudo-fail)"
+SUDO_SFAIL="$(drive_sudo set:sudo-fail)"
+SUDO_BAD="$(drive_sudo yes)"
+SUDO_FOREIGN="$(PRE=foreign drive_sudo unset)"
+SUDO_LINK="$(PRE=symlink drive_sudo set)"
+sudo_has() { printf '%s\n' "$1" | grep -qxF -e "$2"; }
+cap_grep() { local c="$1"; shift; printf '%s\n' "$c" | grep "$@"; }   # cap_grep <captured> <grep args...>
+# sudo_step <captured> <n> — the nth step's block: its STEP line and output.
+sudo_step() { printf '%s\n' "$1" | awk -v want="$2" '/^STEP / { n++ } /^(CALL: |CLOUD=)/ { next } n == want { print }'; }
+check "USER_SUDO: set writes the drop-in, exit 0" 0 "" sudo_has "$(sudo_step "$SUDO_CYCLE" 1)" "STEP set RC=0"
+check "USER_SUDO: the drop-in grants exactly NOPASSWD:ALL" 0 "" \
+  sudo_has "$(sudo_step "$SUDO_CYCLE" 1)" "  FILE: scratch ALL=(ALL) NOPASSWD:ALL"
+check "USER_SUDO: the drop-in carries rig's mark as its first line" 0 "" \
+  cap_grep "$(sudo_step "$SUDO_CYCLE" 1)" -qxF '  FILE: # rig bootstrap: USER_SUDO="nopasswd" (#230). rig removes this file when the key is unset.'
+check "USER_SUDO: the drop-in is mode 0440" 0 "" sudo_has "$(sudo_step "$SUDO_CYCLE" 1)" "  MODE=440"
+check "USER_SUDO: the write logs one line" 0 "" \
+  cap_grep "$(sudo_step "$SUDO_CYCLE" 1)" -q "^  rig-bootstrap: wrote .*/90-rig-scratch: scratch ALL=(ALL) NOPASSWD:ALL$"
+check "USER_SUDO: visudo -cf validates a dotted temp, never the live name" 0 "" \
+  cap_grep "$SUDO_CYCLE" -qE "^CALL: visudo -cf \.90-rig-scratch\.[A-Za-z0-9]+$"
+check "USER_SUDO: no temp file is left after the move" 0 "" \
+  sudo_has "$(sudo_step "$SUDO_CYCLE" 1)" "  LS=90-cloud-init-users 90-rig-scratch "
+check "USER_SUDO: sudo -n true is asserted as the user" 0 "" \
+  sudo_has "$SUDO_CYCLE" "CALL: runuser -u scratch -- sudo -n true"
+check "USER_SUDO: a second set is already current" 0 "" \
+  cap_grep "$(sudo_step "$SUDO_CYCLE" 2)" -q "already current"
+# shellcheck disable=SC2016  # literal source text / expanded by the inner bash
+check "USER_SUDO: a second set never re-runs visudo" 0 "" \
+  bash -c '[ "$(printf "%s\n" "$1" | grep -c "^CALL: visudo")" -eq 1 ]' _ "$SUDO_CYCLE"
+check "USER_SUDO: unset removes rig's drop-in" 0 "" \
+  sudo_has "$(sudo_step "$SUDO_CYCLE" 3)" "  LS=90-cloud-init-users "
+check "USER_SUDO: the removal logs one line" 0 "" \
+  cap_grep "$(sudo_step "$SUDO_CYCLE" 3)" -q "^  rig-bootstrap: removed .*/90-rig-scratch (USER_SUDO unset)$"
+# shellcheck disable=SC2016  # literal source text / expanded by the inner bash
+check "USER_SUDO: unset with nothing to remove says nothing" 0 "" \
+  bash -c '[ "$(printf "%s\n" "$1" | grep -vc -e "^STEP " -e "^  LS=")" -eq 0 ]' _ "$(sudo_step "$SUDO_CYCLE" 4)"
+check "USER_SUDO: other sudoers files are never touched" 0 "" sudo_has "$SUDO_CYCLE" "CLOUD=cloud"
+check "USER_SUDO: a failing visudo dies nonzero" 0 "" sudo_has "$SUDO_VFAIL" "STEP set:visudo-fail RC=1"
+check "USER_SUDO: that death says nothing was installed" 0 "nothing was installed" printf '%s' "$SUDO_VFAIL"
+check "USER_SUDO: a failing visudo leaves no file and no temp behind" 0 "" \
+  sudo_has "$SUDO_VFAIL" "  LS=90-cloud-init-users "
+check "USER_SUDO: sudo -n not answering dies nonzero" 0 "" sudo_has "$SUDO_SFAIL" "STEP set:sudo-fail RC=1"
+check "USER_SUDO: that death names sudo -n true" 0 "'sudo -n true' does not answer for scratch" printf '%s' "$SUDO_SFAIL"
+check "USER_SUDO: a bad value dies at the converger too" 0 "" sudo_has "$SUDO_BAD" "STEP yes RC=1"
+check "USER_SUDO: the bad value is named" 0 "USER_SUDO: want nopasswd or unset, got: yes" printf '%s' "$SUDO_BAD"
+check "USER_SUDO: a bad value writes nothing" 0 "" sudo_has "$SUDO_BAD" "  LS=90-cloud-init-users "
+check "USER_SUDO: unset leaves a 90-rig file rig did not write" 0 "" \
+  sudo_has "$SUDO_FOREIGN" "  FILE: scratch ALL=(ALL) ALL"
+check "USER_SUDO: and warns about it" 0 "was not written by rig" printf '%s' "$SUDO_FOREIGN"
+check "USER_SUDO: a symlink at the drop-in path dies" 0 "" sudo_has "$SUDO_LINK" "STEP set RC=1"
+check "USER_SUDO: that death names the path shape" 0 "not a regular file" printf '%s' "$SUDO_LINK"
+
+# The parser half: USER_SUDO is "nopasswd" or absent, refused by key
+# otherwise — an empty value included, so a typo never reads as "no sudo".
+SUDO_TPL="$(mktemp -d)"
+mkdir -p "$SUDO_TPL/sudo-box" "$SUDO_TPL/badsudo-box" "$SUDO_TPL/emptysudo-box" "$SUDO_TPL/nosudo-box"
+printf 'USER="ops"\nAGENT="no"\nUSER_SUDO="nopasswd"\n' > "$SUDO_TPL/sudo-box/template.env"
+printf 'USER="ops"\nAGENT="no"\nUSER_SUDO="yes"\n'      > "$SUDO_TPL/badsudo-box/template.env"
+printf 'USER="ops"\nAGENT="no"\nUSER_SUDO=""\n'         > "$SUDO_TPL/emptysudo-box/template.env"
+printf 'USER="ops"\nAGENT="no"\n'                       > "$SUDO_TPL/nosudo-box/template.env"
+tenant_sudo_of() {
+  # shellcheck disable=SC2016  # expanded by the inner bash
+  bash -c '. "$1/commands/lib/templates.sh"; template_parse_env "$2/template.env" && printf "sudo=[%s]\n" "$TPL_USER_SUDO"' _ "$ROOT" "$1"
+}
+check "USER_SUDO: the parser accepts nopasswd" 0 "sudo=[nopasswd]" tenant_sudo_of "$SUDO_TPL/sudo-box"
+check "USER_SUDO: absent parses as unset" 0 "sudo=[]" tenant_sudo_of "$SUDO_TPL/nosudo-box"
+check "USER_SUDO: the parser refuses another value by key" 1 "USER_SUDO: want nopasswd" \
+  tenant_sudo_of "$SUDO_TPL/badsudo-box"
+check "USER_SUDO: the parser refuses an empty value" 1 "USER_SUDO: want nopasswd" \
+  tenant_sudo_of "$SUDO_TPL/emptysudo-box"
+check "USER_SUDO: a bad value is refused at bootstrap, before root" 2 "USER_SUDO" \
+  env RIG_ROLE_MARKER=/nonexistent/rig-role RIG_TEMPLATES_DIR="$SUDO_TPL" \
+  "$ROOT/commands/bootstrap-tenant.sh" badsudo-box
+check "USER_SUDO: template-lint passes a nopasswd definition" 0 "" \
+  "$ROOT/commands/template-lint.sh" "$SUDO_TPL/sudo-box"
+rm -rf "$SUDO_TPL"
+
 # The converge is exercised, not argued about (the drop_incus precedent):
 # converge_cron is lifted out of the real file verbatim — column-0
 # 'converge_cron() {' through column-0 '}' — and driven against a stub

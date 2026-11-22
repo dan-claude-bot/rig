@@ -464,7 +464,7 @@ guest. Convergent — safe to re-run; a second run changes nothing.
 ```sh
 rig bootstrap claude-box          # or codex-box, grok-box, kimi-box — the agent tenants
 rig bootstrap staging-box         # the server tenant (docker + sshd hardening)
-rig bootstrap claude-box --user dev   # when the seed's BOX_USER differs
+rig bootstrap claude-box --user dev   # a tenant user other than the definition's USER
 ```
 
 **The layering** (rig#31, originating with box#81): a box template stops being
@@ -536,10 +536,25 @@ above, so a merged template reaches mints only through a reviewed pin bump
 here, or an explicit per-mint `RIG_TEMPLATES_REF`.)*
 
 **The role carries the suffix; the user does not.** A tenant user is the
-account the box *seed* created (`BOX_USER`) and the agent CLI's own dotdir
+definition's `USER` (or `--user <name>`), and the agent CLI's own dotdir
 hangs off it — `claude-box` converges the `claude` user and writes
 `~/.claude/CLAUDE.md`. The suffix is rig's word for "this is a guest", not a
 rename of anything inside the box, so nothing in the guest's filesystem moved.
+
+**rig creates the tenant user; box creates none** (#230). From box `0.11.0`
+the seed holds only root (heavy-duty/box#291), so `rig bootstrap` creates an
+absent tenant user the way the seed used to — `useradd -m -s /bin/bash`, a
+locked password, no sudo — and logs one line. A user that already exists, as
+on a box minted by box ≤ `0.10` whose seed made it (`BOX_USER`), is never
+recreated or reshaped: that box converges exactly as before. The one sudo
+opt-in is the definition's `USER_SUDO="nopasswd"` (any other value is refused
+at parse): rig writes `/etc/sudoers.d/90-rig-<user>` (`<user>
+ALL=(ALL) NOPASSWD:ALL`, mode `0440`, checked with `visudo -cf` before it is
+moved into place, installing `sudo` first when it is missing) and asserts
+`sudo -n true` answers as the user. Remove the key and the next run deletes
+that file — only a `90-rig-<user>` that carries rig's first line, never any
+other sudoers file. Agent tenants leave it unset (agents hold no root,
+heavy-duty/box#177); `staging-box`'s `ops` sets it.
 
 Every install is **asserted on effective state**, not exit codes: the CLI must
 *answer* (`--version`, run as the tenant user — a CLI that exists but cannot

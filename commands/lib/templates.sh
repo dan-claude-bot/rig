@@ -57,7 +57,7 @@ RIG_TEMPLATES_PIN=4011092d8b23a2c8f077899325a98f3d84c275b9
 # KEY="value" — nothing else. Parsed by regex, never sourced.
 TEMPLATE_KEYS_REQUIRED=(USER)
 TEMPLATE_AGENT_KEYS=(CONTEXT_PATH CLI_NAME CLI_SRC PATH_LINE NEEDS_NODE)
-TEMPLATE_KEYS_OPTIONAL=(AGENT HARDEN_SSHD CONTEXT_PATH CLI_NAME CLI_SRC PATH_LINE NEEDS_NODE APT_EXTRAS SWAP_SIZE)
+TEMPLATE_KEYS_OPTIONAL=(AGENT HARDEN_SSHD CONTEXT_PATH CLI_NAME CLI_SRC PATH_LINE NEEDS_NODE APT_EXTRAS SWAP_SIZE USER_SUDO)
 MACHINE_KEYS_REQUIRED=(ROOT_DOOR HOST JOIN)
 
 # templates_source_desc — where the resolved registry came from, for error
@@ -192,7 +192,8 @@ templates_machine_roles() {
 }
 
 # template_parse_env <template.env> — parse against the allowlist. Sets
-# TPL_USER, TPL_CONTEXT_PATH, TPL_CLI_NAME, TPL_CLI_SRC, TPL_PATH_LINE,
+# TPL_USER, TPL_USER_SUDO (default empty: no sudo), TPL_CONTEXT_PATH,
+# TPL_CLI_NAME, TPL_CLI_SRC, TPL_PATH_LINE,
 # TPL_AGENT (default yes), TPL_HARDEN_SSHD (default no), TPL_NEEDS_NODE
 # (default no), TPL_APT_EXTRAS, TPL_SWAP_SIZE (default empty: no swap
 # change). Every refusal names the
@@ -201,7 +202,7 @@ templates_machine_roles() {
 # shellcheck disable=SC2034  # the TPL_* globals are this function's OUTPUT, read by the sourcing script
 template_parse_env() {
   local file="$1" line key val n=0 seen=" " k ok
-  TPL_USER="" TPL_CONTEXT_PATH="" TPL_CLI_NAME="" TPL_CLI_SRC=""
+  TPL_USER="" TPL_USER_SUDO="" TPL_CONTEXT_PATH="" TPL_CLI_NAME="" TPL_CLI_SRC=""
   TPL_PATH_LINE="" TPL_AGENT="yes" TPL_HARDEN_SSHD="no"
   TPL_NEEDS_NODE="no" TPL_APT_EXTRAS="" TPL_SWAP_SIZE=""
   [ -f "$file" ] || { printf 'template.env missing: %s\n' "$file" >&2; return 1; }
@@ -225,6 +226,7 @@ template_parse_env() {
     seen="$seen$key "
     case "$key" in
       USER)         TPL_USER="$val" ;;
+      USER_SUDO)    TPL_USER_SUDO="$val" ;;
       AGENT)        TPL_AGENT="$val" ;;
       HARDEN_SSHD)  TPL_HARDEN_SSHD="$val" ;;
       CONTEXT_PATH) TPL_CONTEXT_PATH="$val" ;;
@@ -248,6 +250,12 @@ template_parse_env() {
   case "$TPL_HARDEN_SSHD" in
     yes|no) ;;
     *) printf 'template.env: HARDEN_SSHD: want yes or no, got: %s\n' "$TPL_HARDEN_SSHD" >&2; return 1 ;;
+  esac
+  # USER_SUDO is "nopasswd" or absent — an empty value is refused too, so a
+  # typo can never read as "no sudo" by accident (#230).
+  case "$seen" in *" USER_SUDO "*)
+    [ "$TPL_USER_SUDO" = "nopasswd" ] \
+      || { printf 'template.env: USER_SUDO: want nopasswd (or leave the key out), got: %s\n' "$TPL_USER_SUDO" >&2; return 1; } ;;
   esac
   if [ "$TPL_AGENT" = "yes" ]; then
     for k in CONTEXT_PATH CLI_NAME PATH_LINE; do
