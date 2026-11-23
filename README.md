@@ -410,7 +410,7 @@ box is present) and **opt-out** (`RIG_SKIP_BOX_INSTALL=1`, plus a graceful skip
 with a manual-command pointer when curl or the network is missing — box is the
 host *extra*, so a failed box install never aborts a bootstrap that otherwise
 succeeded). Source is pinnable with `BOX_REPO` / `BOX_REF` (default
-`heavy-duty/box@0.10.0`). If `/dev/kvm` is absent, rig warns (a host that exists to
+`heavy-duty/box@0.11.0`). If `/dev/kvm` is absent, rig warns (a host that exists to
 run VMs should have it) but does not fail — the shape is rehearsed in containers,
 which legitimately lack it. (The global install path is world-readable by
 construction: box's root install lands in `/opt/box`, readable by every
