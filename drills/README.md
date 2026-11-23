@@ -40,6 +40,24 @@ so that skipping the drill is a deliberate, reviewable commit rather than a
 silence. **A failed drill is still a valid record**: the gate wants evidence,
 not success.
 
+## The rc ladder
+
+**A release candidate carries its own record, and the round can follow the
+publish.** The gate requires a record, not a passing result. So
+`drills/X.Y.Z-rcN.md` may be a **pending record**: it says what the candidate is,
+what changed since the last drilled tree, and which legs are owed. It is
+explicitly not a waiver. The round then runs after the merge, **against the
+published `X.Y.Z-rcN` tag** (`git checkout X.Y.Z-rcN` before `drill/drill.sh`),
+and its record is appended to the same file. This is the ladder heavy-duty/crew
+runs (its `drills/README.md`, "The rc ladder"), adopted here.
+
+- **The tag pins what a branch cannot.** The drilled tree is the tree that ships.
+- **Downstream does not wait.** box and crew can pin the candidate while the
+  round is pending.
+- **The final cannot skip it.** `X.Y.Z` is promoted only after the candidate's
+  record has its round appended. A pending rc record is never carried forward as
+  evidence for the final.
+
 ## The drill
 
 rig's legs (#105; `drill/drill.sh` runs them):
