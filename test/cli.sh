@@ -246,6 +246,28 @@ check "bootstrap: both first-join paths record join-by=rig" 0 "2" \
   grep -c "^[[:space:]]*JOIN_BY=rig$" "$ROOT/commands/bootstrap.sh"
 check "bootstrap: already-joined path defaults to join-by=preexisting" 0 "JOIN_BY=preexisting" \
   grep -F "JOIN_BY=preexisting" "$ROOT/commands/bootstrap.sh"
+# #227: join-by is a fact about the machine. The decision block is lifted out
+# of bootstrap.sh and driven against a fake marker and a fake 'tailscale'.
+JB="$(mktemp -d)"; mkdir -p "$JB/bin"
+# shellcheck disable=SC2016  # literal scripts, expanded when they run
+printf '#!/bin/sh\n[ "$1" = status ] && exit "${TS_JOINED_RC:-0}"\nexit 0\n' > "$JB/bin/tailscale"; chmod +x "$JB/bin/tailscale"
+awk '/^JOIN_BY=preexisting$/{f=1} f{print} f && /JOIN_BY_PRIOR" = rig \] && JOIN_BY=rig/{exit}' "$ROOT/commands/bootstrap.sh" \
+  | sed "s|/etc/rig/role|$JB/role|g" > "$JB/block.sh"
+# shellcheck disable=SC2016  # literal script text
+printf 'fi\necho "$JOIN_BY"\n' >> "$JB/block.sh"
+jb() {  # jb <marker line or ''> → the join-by bootstrap would write on the already-joined path
+  rm -f "$JB/role"; [ -z "$1" ] || printf '%s\n' "$1" > "$JB/role"
+  PATH="$JB/bin:$PATH" bash "$JB/block.sh"
+}
+check "bootstrap: a re-run on a machine rig joined KEEPS join-by=rig (#227 D2)" 0 "rig" \
+  jb 'role=staging-server root-door=open host=yes join=authkey join-by=rig'
+check "bootstrap: ...preexisting stays preexisting — never upgraded by finding it joined (#227 D3)" 0 "preexisting" \
+  jb 'role=staging-server root-door=open host=yes join=authkey join-by=preexisting'
+check "bootstrap: ...a marker with no join-by stays preexisting (#227 D3)" 0 "preexisting" \
+  jb 'role=staging-server class=open'
+check "bootstrap: ...no marker at all stays preexisting (#227 D3)" 0 "preexisting" jb ''
+check "bootstrap: ...a look-alike field does not count (#227)" 0 "preexisting" \
+  jb 'role=x join-by=rigged'
 
 # Drive the narrow inverse end to end. Every refusal also asserts the tailscale
 # shim was NOT called: exit status alone would miss the destructive regression.

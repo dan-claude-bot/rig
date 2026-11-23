@@ -578,8 +578,20 @@ if ! command -v tailscale >/dev/null 2>&1; then
   log "installing tailscale"
   curl -fsSL https://tailscale.com/install.sh | sh
 fi
+# join-by is a fact about the MACHINE, not this run (#227 D1): the only reader,
+# bootstrap --undo, asks "did rig make this join?". So the already-joined path
+# keeps an existing join-by=rig (D2), and precedence is one-way (D3): rig never
+# becomes preexisting; preexisting becomes rig only where rig calls
+# 'tailscale up'. An absent marker, one with no join-by, or one that says
+# preexisting all stay preexisting — finding the node joined proves nothing.
 JOIN_BY=preexisting
+if [ -r /etc/rig/role ] && grep -qE '(^| )join-by=rig( |$)' /etc/rig/role; then
+  JOIN_BY_PRIOR=rig
+else
+  JOIN_BY_PRIOR=""
+fi
 if tailscale status >/dev/null 2>&1; then
+  [ "$JOIN_BY_PRIOR" = rig ] && JOIN_BY=rig
   log "tailnet already joined; skipping tailscale up (no pre-auth key needed)"
   # ...but skipping `tailscale up` also skipped --hostname, so the TAILNET name
   # never converged: a box that joined under the wrong name (e.g. --hostname
