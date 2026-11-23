@@ -411,7 +411,7 @@ check "drill.sh help works through process substitution" 0 "THROWAWAY" \
   drill_process_substitution_help
 check "…and the help says where the subject comes from now" 0 "the tree this script is part of" \
   bash "$ROOT/drill/drill.sh" --help
-check "drill.sh runs exactly two numbered legs" 0 "2" drill_leg_count
+check "drill.sh runs exactly three numbered legs (Leg 3: the tenant, #229/#230)" 0 "3" drill_leg_count
 check "drill leg counter sees a synthetic third leg" 0 "3" \
   drill_leg_count "$DRILL_LEG_COUNT_FIXTURE"
 check "drill installs Docker directly before the db leg" 0 "" docker_source_precedes_db
@@ -483,5 +483,18 @@ check "--help prints the header and exits 0" 0 "THROWAWAY" \
   bash "$ROOT/drill/drill.sh" --help
 
 echo "---"
+# Leg 3 converges a TENANT inside a box — where #229/#230 live — from the
+# installed tree's own template snapshot, and diffs a second converge.
+# shellcheck disable=SC2016  # literal source text
+check "Leg 3 reads the tenant definition from the installed snapshot" 0 "" \
+  grep -qF 'find "$RIG_TREE"/templates@*/"$TENANT"' "$ROOT/drill/drill.sh"
+# shellcheck disable=SC2016  # literal source text
+check "…carries the installed tree in with box cp, offline" 0 "" \
+  grep -qF 'box cp "$RIG_TREE" "$tenant_box:/root/rig-src"' "$ROOT/drill/drill.sh"
+check "…and asserts swap only where the box is a VM" 0 "" \
+  grep -qF 'skip "SWAP_SIZE: the tenant box is a container' "$ROOT/drill/drill.sh"
+check "drill.sh help names --tenant" 0 "--tenant" bash "$ROOT/drill/drill.sh" --help
+
 echo "$PASS passed, $FAIL failed"
 [ "$FAIL" -eq 0 ]
+

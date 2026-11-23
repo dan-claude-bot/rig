@@ -104,9 +104,16 @@ the drill says so itself rather than leaving it to be read off the log.
 `--box-ref` is a tag on purpose: since #103 the box that ships is the
 `BOX_RELEASE` tag, so a `release/…` branch is the wrong thing to pin for box.
 
-It runs unattended from there. Legs execute as 1, 2. Before leg 2 the drill
+It runs unattended from there. Legs execute as 1, 2, 3. Before leg 2 the drill
 installs Debian's Docker package directly, so a pristine machine supplies a
-real daemon for the database round-trip. The record lists legs as they ran.
+real daemon for the database round-trip. **Leg 3 converges a tenant inside a
+box** (`--tenant`, default `staging-box`): it mints a box on the host leg 1
+built, carries the same installed tree in with `box cp`, runs
+`rig bootstrap <tenant>`, asserts what the tenant's definition in the installed
+template snapshot declares (the user exists, `USER_SUDO=nopasswd` gives
+passwordless sudo, `SWAP_SIZE` leaves an active `/swapfile` on a VM), then
+converges again and diffs. The tenant features (#229, #230) live there, never
+in leg 1. The record lists legs as they ran.
 A failing check never aborts the
 run (`set -u`, no `-e`: a failing check is data), and the summary counts
 passes, failures and skips separately.
