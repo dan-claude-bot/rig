@@ -61,6 +61,7 @@ TPLREF="${RIG_TEMPLATES_REF:-}"
 TPL_SHA=""
 TPL_SOURCE="fetched"
 ROLE=staging-server
+TENANT="${DRILL_TENANT:-staging-box}"
 USERS_FILE="${DRILL_USERS_FILE:-}"
 USERS_FROM_GITHUB=""
 GENERATED_USERS_FILE=""
@@ -105,6 +106,7 @@ Options:
   --box-repo <owner/repo>       box repository (default: heavy-duty/box)
   --box-ref <tag>               required box release tag
   --role <machine-role>         role to converge (default: staging-server)
+  --tenant <box-role>           tenant converged inside a box in Leg 3 (default: staging-box)
   --users <path>                existing rig users ledger
   --users-from-github <handle>  render an admin,box ledger from public keys
   --run-id <id>                 shared drill run ID
@@ -120,6 +122,7 @@ while [ $# -gt 0 ]; do
     --box-repo) BOXREPO="$2"; shift 2 ;;
     --box-ref) BOXREF="$2"; shift 2 ;;
     --role) ROLE="$2"; shift 2 ;;
+    --tenant) TENANT="$2"; shift 2 ;;
     --users) USERS_FILE="$2"; shift 2 ;;
     --users-from-github) USERS_FROM_GITHUB="$2"; shift 2 ;;
     --run-id) RUN_ID="$2"; shift 2 ;;
@@ -914,6 +917,109 @@ case "$(classify_leg "$db_rc" "$db_out")" in
     ;;
 esac
 rm -f "$db_out"
+
+# =============================================================================
+phase "Leg 3 — tenant: rig bootstrap $TENANT inside a box"
+# =============================================================================
+# What 0.4.1 is ABOUT lives here, not in Leg 1: the tenant user and USER_SUDO
+# (#230) and SWAP_SIZE (#229) are bootstrap-tenant features, run inside a box,
+# and box 0.11.0 seeds no user at all. Leg 1 converges a machine role and never
+# reaches them. So: mint a box on the host Leg 1 just made, carry the SAME
+# installed tree in (box cp, no network on rig's side), converge the tenant,
+# assert what its definition declares, then converge again and diff.
+# The definition is read from the INSTALLED tree's template snapshot — what the
+# box will actually converge, never this checkout's idea of it.
+tenant_box=drill-tenant
+tdef="$(find "$RIG_TREE"/templates@*/"$TENANT" -maxdepth 1 -name template.env -print -quit 2>/dev/null)"
+tval() { sed -n "s/^$1=\"\{0,1\}\([^\"]*\)\"\{0,1\}$/\1/p" "$tdef" | head -n1; }
+if ! command -v box >/dev/null 2>&1; then
+  skip "tenant leg: no box on this host (role $ROLE left host=no)"
+  leg "tenant: rig bootstrap $TENANT in a box" "SKIPPED — no box on this host"
+elif [ -z "$tdef" ]; then
+  no "tenant leg: no '$TENANT' definition in the installed template snapshot"
+  leg "tenant: rig bootstrap $TENANT in a box" "FAIL — no definition for $TENANT"
+else
+  t_user="$(tval USER)"; t_sudo="$(tval USER_SUDO)"; t_swap="$(tval SWAP_SIZE)"
+  inf "definition: USER=${t_user:-<none>} USER_SUDO=${t_sudo:-<unset>} SWAP_SIZE=${t_swap:-<unset>}"
+  box rm "$tenant_box" --force >/dev/null 2>&1 || true
+  tfail=0
+  inbox() { box exec "$tenant_box" -- "$@"; }
+  if run_logged /tmp/drill-tenant-mint.log box new --name "$tenant_box" --cpu 2 --memory 3GiB --disk 20GiB; then
+    ok "box new --name $tenant_box (box $BOXREF, no seed user)"
+  else
+    no "could not mint the tenant box — tail: $(tail -3 /tmp/drill-tenant-mint.log | tr '\n' ' ')"; tfail=1
+  fi
+  if [ "$tfail" = 0 ]; then
+    for _i in $(seq 1 60); do inbox true >/dev/null 2>&1 && break; sleep 3; done
+    if box cp "$RIG_TREE" "$tenant_box:/root/rig-src" >/dev/null 2>&1 \
+       && run_logged /tmp/drill-tenant-install.log box exec "$tenant_box" -- \
+            env RIG_INSTALL_SOURCE=/root/rig-src RIG_INSTALLED_FROM="$RIG_FROM" bash /root/rig-src/install.sh; then
+      ok "the same rig tree installed inside the box (box cp, offline: $RIG_FROM)"
+    else
+      no "could not install rig inside the box — tail: $(tail -3 /tmp/drill-tenant-install.log 2>/dev/null | tr '\n' ' ')"; tfail=1
+    fi
+  fi
+  tstate() {  # the tenant's converged state, as diffable text
+    # shellcheck disable=SC2016  # the script expands inside the box
+    inbox sh -c '
+      echo "user: $(getent passwd '"${t_user:-_none_}"' | cut -d: -f1,6,7)"
+      echo "sudoers: $(ls /etc/sudoers.d 2>/dev/null | tr "\n" " ")"
+      echo "swap: $(swapon --show=NAME,SIZE --noheadings 2>/dev/null | tr -s " " | tr "\n" ";")"
+      echo "fstab-swap: $(grep -E "[[:space:]]swap[[:space:]]" /etc/fstab 2>/dev/null | tr -s " " | tr "\n" ";")"
+      echo "marker: $(cat /etc/rig/role 2>/dev/null)"
+    ' 2>/dev/null
+  }
+  if [ "$tfail" = 0 ]; then
+    if run_logged /tmp/drill-tenant-bootstrap-1.log box exec "$tenant_box" -- rig bootstrap "$TENANT"; then
+      ok "rig bootstrap $TENANT exited 0 inside the box"
+    else
+      no "rig bootstrap $TENANT FAILED inside the box — tail: $(tail -3 /tmp/drill-tenant-bootstrap-1.log | tr '\n' ' ')"; tfail=1
+    fi
+  fi
+  if [ "$tfail" = 0 ]; then
+    if [ -n "$t_user" ]; then
+      if inbox getent passwd "$t_user" >/dev/null 2>&1; then
+        ok "the tenant user '$t_user' exists — rig created it on a box that seeds none (#230)"
+      else no "the tenant user '$t_user' is missing after bootstrap (#230)"; tfail=1; fi
+    fi
+    case "$t_sudo" in
+      nopasswd)
+        if inbox runuser -u "$t_user" -- sudo -n true >/dev/null 2>&1; then
+          ok "USER_SUDO=nopasswd: '$t_user' has passwordless sudo (#230)"
+        else no "USER_SUDO=nopasswd but '$t_user' cannot 'sudo -n true' (#230)"; tfail=1; fi ;;
+      "") inf "the definition sets no USER_SUDO — nothing to assert" ;;
+      *)  inf "USER_SUDO=$t_sudo — asserted only for nopasswd" ;;
+    esac
+    if [ -n "$t_swap" ]; then
+      if [ "$(box list | awk -v b="$tenant_box" '$1 == b { print $3 }')" = VM ]; then
+        sw="$(inbox swapon --show=NAME,SIZE --noheadings 2>/dev/null | tr -s ' ')"
+        if printf '%s\n' "$sw" | grep -q '^/swapfile '; then
+          ok "SWAP_SIZE=$t_swap: /swapfile is active ($(printf '%s' "$sw" | grep '^/swapfile' | head -1)) (#229)"
+        else no "SWAP_SIZE=$t_swap but no active /swapfile (swapon: ${sw:-none}) (#229)"; tfail=1; fi
+      else
+        skip "SWAP_SIZE: the tenant box is a container, where swap is the host's (#229)"
+      fi
+    fi
+    before="$(mktemp)"; after="$(mktemp)"; tstate > "$before"
+    if run_logged /tmp/drill-tenant-bootstrap-2.log box exec "$tenant_box" -- rig bootstrap "$TENANT"; then
+      tstate > "$after"
+      if diff -q "$before" "$after" >/dev/null; then
+        ok "a second tenant bootstrap changed nothing (idempotent)"
+      else
+        no "the second tenant bootstrap CHANGED the box: $(diff "$before" "$after" | grep '^[<>]' | tr '\n' ' ')"; tfail=1
+      fi
+    else
+      no "the second tenant bootstrap FAILED — tail: $(tail -3 /tmp/drill-tenant-bootstrap-2.log | tr '\n' ' ')"; tfail=1
+    fi
+    rm -f "$before" "$after"
+  fi
+  box rm "$tenant_box" --force >/dev/null 2>&1 || true
+  if [ "$tfail" = 0 ]; then
+    leg "tenant: rig bootstrap $TENANT in a box" "PASS — user ${t_user:-n/a}, sudo ${t_sudo:-n/a}, swap ${t_swap:-n/a}, idempotent"
+  else
+    leg "tenant: rig bootstrap $TENANT in a box" "FAIL — see the findings"
+  fi
+fi
 
 # =============================================================================
 phase "Summary"
