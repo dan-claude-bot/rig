@@ -268,10 +268,13 @@ the only shapes it manages — every other role refuses an effective
 
 After the tag verification passes, bootstrap writes `/etc/rig/role` — one
 line, `role=… root-door=… host=… join=… join-by=…` — recording the
-**effective** traits, overrides and all, plus whether this run performed the
-tailnet join. `join-by=rig` means bootstrap called `tailscale up`;
-`join-by=preexisting` means it found the node already joined. Old markers name
-neither and are treated as unknown, never as permission to remove a join.
+**effective** traits, overrides and all, plus whether rig made this machine's
+tailnet join. `join-by=rig` means a bootstrap called `tailscale up` here, and a
+re-run keeps it (#227): it is a fact about the machine, not the latest run.
+`join-by=preexisting` means bootstrap found the node already joined by something
+else. Precedence is one-way: `rig` never becomes `preexisting`, and finding the
+node joined never upgrades `preexisting` to `rig`. Old markers name neither and
+are treated as unknown, never as permission to remove a join.
 Written post-join and cmp-guarded, so a marker never describes a box that
 failed to become what it claims.
 
@@ -284,7 +287,8 @@ rig bootstrap --undo
 Leaves the tailnet and then removes `/etc/rig/role`, but only when the marker
 says `join-by=rig`. A pre-existing join, an old marker with no provenance, or
 no marker at all is refused without calling `tailscale logout`; the refusal
-names the manual repair. Re-running bootstrap writes the current marker shape.
+names the manual repair. Re-running bootstrap writes the current marker shape, and
+keeps `join-by=rig` on a machine rig joined, so `--undo` still works after a re-converge.
 An installed GitHub runner is also refused so undo cannot leave a ghost
 registration; deregister it outside rig before retrying.
 
