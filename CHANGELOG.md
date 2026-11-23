@@ -4,6 +4,26 @@ History before 0.1.0 lives in git — rig grew its version surface (`VERSION`,
 `rig --version`, the side-by-side `versions/<v>` install layout; #35/#36)
 on the way to cutting its first release, and this file starts there.
 
+## 0.4.1 — 2026-11-23
+
+### Added
+
+- The release drill gains leg 3: a tenant (`--tenant`, default `staging-box`) converged inside a box from the same installed tree, asserting its user, `USER_SUDO`, `SWAP_SIZE` swapfile and a clean re-converge (#244).
+- `rig bootstrap <role>-box` creates the tenant user when it is absent (home, bash, locked password, no sudo); an existing user is left as it is (#230).
+- Optional template key `USER_SUDO="nopasswd"` writes `/etc/sudoers.d/90-rig-<user>`, validated with `visudo`; removing the key removes the file (#230).
+- Tenant definitions take an optional `SWAP_SIZE` (`256M`–`64G`, a number then `M` or `G`): on a VM, `rig bootstrap` converges a `/swapfile` of that size and its `/etc/fstab` line, recreating it when the size changes; containers skip it, and no `SWAP_SIZE` changes no swap (#229).
+
+### Changed
+
+- The template registry pin moves to the rig-templates release that gives `staging-box` and the agent roles `SWAP_SIZE="4G"`, and `staging-box` `USER_SUDO="nopasswd"` (#244).
+- A host role installs box 0.11.0: `BOX_RELEASE` moves from 0.10.0, so a host gets the no-seed-user box with root entry, tenancy grants, firewall drop-ins and `box cp` (#240).
+- The drill docs and help keep the tailnet key off every command line: read it with `read -rs`, or hand it over as a file on a scripted drill host, never as a `TS_AUTHKEY=…` prefix (#238).
+- Ceremony automation and doctrine are pinned to 0.7.12, stepped from 0.7.7 one migration at a time with `ceremony-upgrade` (#236).
+
+### Fixed
+
+- A re-converge keeps `join-by=rig` in the role marker on a machine rig joined, so `bootstrap --undo` can still leave a tailnet rig made after bootstrap runs again; `preexisting` is never upgraded by finding the node joined (#227).
+
 ## 0.4.0 — 2026-09-03
 
 ### Added
