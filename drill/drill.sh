@@ -9,7 +9,7 @@
 #
 #   read -rs TS_AUTHKEY && export TS_AUTHKEY   # the key never goes on a command line
 #   /root/.local/share/rig/current/drill/drill.sh \
-#     --box-ref 0.10.0 --users-from-github danmt \
+#     --box-ref 0.11.0 --users-from-github danmt \
 #     --run-id drill-2026-07-24-a --yes
 #   (--box-ref is a tag: since #103 the box that ships is the BOX_RELEASE tag.)
 #
@@ -92,7 +92,7 @@ drill/drill.sh — rig's release drill: the instrument behind drills/README.md.
 
   read -rs TS_AUTHKEY && export TS_AUTHKEY   # the key never goes on a command line
   /root/.local/share/rig/current/drill/drill.sh \
-    --box-ref 0.10.0 --users-from-github danmt \
+    --box-ref 0.11.0 --users-from-github danmt \
     --run-id drill-2026-07-24-a --yes
   (--box-ref is a tag: since #103 the box that ships is the BOX_RELEASE tag.)
 

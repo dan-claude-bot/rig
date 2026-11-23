@@ -720,7 +720,7 @@ fi
 # must never abort a bootstrap that otherwise fully succeeded.
 #
 # PIN POINTS: BOX_REPO / BOX_REF override the source (default
-# heavy-duty/box@0.10.0). BOX_RELEASE is bumped deliberately when rig releases,
+# heavy-duty/box@0.11.0). BOX_RELEASE is bumped deliberately when rig releases,
 # after the pinned combination has passed the release drill.
 # BOX_YES=1 makes box's installer non-interactive AND keeps setup-host (so the
 # Incus stack is actually built, not just the CLI dropped on PATH).
@@ -732,7 +732,7 @@ fi
 # GLOBAL INSTALL: box installs under /opt/box with a /usr/local/bin shim, so the
 # install path is world-readable and every non-root user on the host reaches it.
 if [ "$HOST" = "yes" ]; then
-  BOX_RELEASE=0.10.0
+  BOX_RELEASE=0.11.0
   BOX_REPO="${BOX_REPO:-heavy-duty/box}"
   BOX_REF="${BOX_REF:-$BOX_RELEASE}"
   BOX_INSTALL_URL="https://raw.githubusercontent.com/${BOX_REPO}/${BOX_REF}/install.sh"

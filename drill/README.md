@@ -83,7 +83,7 @@ scp /tmp/a/rig-0.4.0-rc1.sh root@drill-host:
 bash rig-0.4.0-rc1.sh
 read -rs TS_AUTHKEY && export TS_AUTHKEY     # paste the key; nothing echoes
 /root/.local/share/rig/current/drill/drill.sh \
-  --box-ref 0.10.0 --users-from-github danmt --run-id drill-2026-08-26-a --yes
+  --box-ref 0.11.0 --users-from-github danmt --run-id drill-2026-08-26-a --yes
 ```
 
 The artifact is one self-contained file: it verifies its own payload before
