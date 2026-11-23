@@ -51,7 +51,7 @@
 # on `main` is a pin a fetch can always resolve. The release name lives in this
 # block and never trailing on the assignment: four readers parse that line with
 # `sed -n 's/^RIG_TEMPLATES_PIN=//p'` and not one of them strips a comment.
-RIG_TEMPLATES_PIN=4011092d8b23a2c8f077899325a98f3d84c275b9
+RIG_TEMPLATES_PIN=df8a24b6c91abb200d34b2759f0fefc3ae7f6c1f
 
 # The template.env schema. Grammar: blank lines, '#' comments, and
 # KEY="value" — nothing else. Parsed by regex, never sourced.
