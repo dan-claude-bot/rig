@@ -50,7 +50,13 @@ release (#105, and #107's debt).
   not the candidate, and the record it leaves looks clean.
 - **A single-use, tagged tailscale pre-auth key** in `TS_AUTHKEY`
   (`tag:local` for the default `staging-server` role — bootstrap refuses
-  `tag:server` outside the control-plane shapes).
+  `tag:server` outside the control-plane shapes). Mint it right before the
+  drill, and **keep it off every command line**: a `TS_AUTHKEY=tskey-… cmd`
+  prefix lands in shell history, and `--env`/argv forms show in the process
+  list. Read it without echo (`read -rs TS_AUTHKEY; export TS_AUTHKEY`), or,
+  on a host built with heavy-duty/infra's drill-host runbook, put it in a 0600
+  file and set `DRILLHOST_TS_AUTHKEY_FILE`. That script hands it to the VM on
+  stdin and removes it when the drill ends.
 - **Exactly one operator source.** `--users-from-github <handle>` fetches
   `https://github.com/<handle>.keys` and writes one `admin,box` ledger line
   per public key; the handle must also be a valid lowercase rig username.
@@ -75,7 +81,8 @@ bash dist/release-artifact.sh --version 0.4.0-rc1 --assets-dir /tmp/a
 scp /tmp/a/rig-0.4.0-rc1.sh root@drill-host:
 
 bash rig-0.4.0-rc1.sh
-TS_AUTHKEY=tskey-... /root/.local/share/rig/current/drill/drill.sh \
+read -rs TS_AUTHKEY && export TS_AUTHKEY     # paste the key; nothing echoes
+/root/.local/share/rig/current/drill/drill.sh \
   --box-ref 0.10.0 --users-from-github danmt --run-id drill-2026-08-26-a --yes
 ```
 

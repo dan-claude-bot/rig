@@ -7,7 +7,8 @@
 #     installs box and its Incus stack, and installs Docker for the db
 #     round-trip. Never run it on a machine you care about.
 #
-#   TS_AUTHKEY=tskey-... /root/.local/share/rig/current/drill/drill.sh \
+#   read -rs TS_AUTHKEY && export TS_AUTHKEY   # the key never goes on a command line
+#   /root/.local/share/rig/current/drill/drill.sh \
 #     --box-ref 0.10.0 --users-from-github danmt \
 #     --run-id drill-2026-07-24-a --yes
 #   (--box-ref is a tag: since #103 the box that ships is the BOX_RELEASE tag.)
@@ -89,7 +90,8 @@ drill/drill.sh — rig's release drill: the instrument behind drills/README.md.
     installs box and its Incus stack, and installs Docker for the db
     round-trip. Never run it on a machine you care about.
 
-  TS_AUTHKEY=tskey-... /root/.local/share/rig/current/drill/drill.sh \
+  read -rs TS_AUTHKEY && export TS_AUTHKEY   # the key never goes on a command line
+  /root/.local/share/rig/current/drill/drill.sh \
     --box-ref 0.10.0 --users-from-github danmt \
     --run-id drill-2026-07-24-a --yes
   (--box-ref is a tag: since #103 the box that ships is the BOX_RELEASE tag.)
@@ -612,7 +614,7 @@ fi
 # on the same throwaway). Caught here, not 10 apt-minutes into bootstrap.
 if [ -z "${TS_AUTHKEY:-}" ]; then
   if ! { command -v tailscale >/dev/null 2>&1 && tailscale status >/dev/null 2>&1; }; then
-    echo "drill: TS_AUTHKEY is unset and this machine has not joined a tailnet — leg 1's bootstrap will refuse. Mint a single-use TAGGED pre-auth key and export TS_AUTHKEY." >&2
+    echo "drill: TS_AUTHKEY is unset and this machine has not joined a tailnet — leg 1's bootstrap will refuse. Mint a single-use TAGGED pre-auth key and export TS_AUTHKEY without putting it on a command line (read -rs TS_AUTHKEY; export TS_AUTHKEY)." >&2
     exit 2
   fi
 fi
